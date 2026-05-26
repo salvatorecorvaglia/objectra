@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -112,19 +113,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	// Stop background workers
 	close(s.cleanupStop)
 
-	var firstErr error
+	var errs []error
 
-	if err := s.s3Server.Shutdown(ctx); err != nil && firstErr == nil {
-		firstErr = err
+	if err := s.s3Server.Shutdown(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("S3 API server shutdown error: %w", err))
 	}
 
-	if err := s.consoleServer.Shutdown(ctx); err != nil && firstErr == nil {
-		firstErr = err
+	if err := s.consoleServer.Shutdown(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("Console server shutdown error: %w", err))
 	}
 
-	if err := s.engine.Close(); err != nil && firstErr == nil {
-		firstErr = err
+	if err := s.engine.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("Storage engine close error: %w", err))
 	}
 
-	return firstErr
+	return errors.Join(errs...)
 }
