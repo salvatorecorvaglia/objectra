@@ -3,14 +3,17 @@ package console
 import (
 	"embed"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/salvatorecorvaglia/objectra/internal/auth"
 	"github.com/salvatorecorvaglia/objectra/internal/storage"
@@ -26,14 +29,18 @@ var staticFiles embed.FS
 type Handler struct {
 	engine storage.Engine
 	creds  *auth.Credentials
+	s3Port int
+	region string
 	mux    *http.ServeMux
 }
 
 // NewHandler creates a new console handler.
-func NewHandler(engine storage.Engine, creds *auth.Credentials) *Handler {
+func NewHandler(engine storage.Engine, creds *auth.Credentials, s3Port int, region string) *Handler {
 	h := &Handler{
 		engine: engine,
 		creds:  creds,
+		s3Port: s3Port,
+		region: region,
 		mux:    http.NewServeMux(),
 	}
 	h.setupRoutes()
@@ -217,6 +224,8 @@ func (h *Handler) handleBucketObjects(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case action == "objects" && r.Method == http.MethodGet:
 		h.listObjects(w, r, bucketName)
+	case action == "objects/presign" && r.Method == http.MethodGet:
+		h.handlePresignObject(w, r, bucketName)
 	case action == "objects/upload" && r.Method == http.MethodPost:
 		h.uploadObject(w, r, bucketName)
 	case action == "objects/download" && r.Method == http.MethodGet:
@@ -536,4 +545,53 @@ func (h *Handler) abortMultipart(w http.ResponseWriter, r *http.Request, bucket 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "aborted"})
+}
+
+func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bucket string) {
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing key parameter"})
+		return
+	}
+
+	expiresStr := r.URL.Query().Get("expires")
+	expiresSec := 3600 // Default 1 hour
+	if expiresStr != "" {
+		if val, err := strconv.Atoi(expiresStr); err == nil && val > 0 {
+			expiresSec = val
+		}
+	}
+
+	// Resolve the S3 host from the incoming request (replacing port)
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	
+	hostWithoutPort := r.Host
+	if strings.Contains(r.Host, ":") {
+		h, _, err := net.SplitHostPort(r.Host)
+		if err == nil {
+			hostWithoutPort = h
+		}
+	}
+
+	// Build the S3 endpoint URL
+	s3Endpoint := fmt.Sprintf("%s://%s:%d", scheme, hostWithoutPort, h.s3Port)
+
+	presignedURL, err := auth.PresignGetObject(
+		h.creds.AccessKey,
+		h.creds.SecretKey,
+		h.region,
+		bucket,
+		key,
+		time.Duration(expiresSec)*time.Second,
+		s3Endpoint,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"url": presignedURL})
 }

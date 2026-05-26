@@ -430,3 +430,82 @@ func (t *tempFileReadCloser) Close() error {
 	os.Remove(t.path)
 	return err
 }
+
+// PresignGetObject generates a presigned GET URL for S3 compatibility.
+func PresignGetObject(accessKey, secretKey, region, bucket, key string, expires time.Duration, s3Endpoint string) (string, error) {
+	t := time.Now().UTC()
+	datestamp := t.Format("20060102")
+	amzDate := t.Format("20060102T150405Z")
+	credentialScope := fmt.Sprintf("%s/%s/s3/aws4_request", datestamp, region)
+
+	u, err := url.Parse(s3Endpoint)
+	if err != nil {
+		return "", err
+	}
+	host := u.Host
+
+	query := url.Values{}
+	query.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
+	query.Set("X-Amz-Credential", accessKey+"/"+credentialScope)
+	query.Set("X-Amz-Date", amzDate)
+	query.Set("X-Amz-Expires", fmt.Sprintf("%.0f", expires.Seconds()))
+	query.Set("X-Amz-SignedHeaders", "host")
+
+	cleanKey := strings.TrimPrefix(key, "/")
+	escapedPath := ""
+	for _, part := range strings.Split(cleanKey, "/") {
+		if escapedPath != "" {
+			escapedPath += "/"
+		}
+		escapedPath += url.PathEscape(part)
+	}
+
+	canonicalPath := "/" + bucket + "/" + escapedPath
+
+	// Sort query parameters for the canonical query string
+	var keys []string
+	for k := range query {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var canonicalQueryParts []string
+	for _, k := range keys {
+		canonicalQueryParts = append(canonicalQueryParts, url.QueryEscape(k)+"="+url.QueryEscape(query.Get(k)))
+	}
+	canonicalQuery := strings.Join(canonicalQueryParts, "&")
+
+	// Canonical headers
+	canonicalHeaders := "host:" + host + "\n"
+	signedHeaders := "host"
+
+	// Canonical request
+	canonicalRequest := fmt.Sprintf("GET\n%s\n%s\n%s\n%s\nUNSIGNED-PAYLOAD",
+		canonicalPath,
+		canonicalQuery,
+		canonicalHeaders,
+		signedHeaders,
+	)
+
+	// String to sign
+	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
+		amzDate,
+		credentialScope,
+		hashSHA256([]byte(canonicalRequest)),
+	)
+
+	// Signing key derivation
+	kDate := hmacSHA256([]byte("AWS4"+secretKey), []byte(datestamp))
+	kRegion := hmacSHA256(kDate, []byte(region))
+	kService := hmacSHA256(kRegion, []byte("s3"))
+	kSigning := hmacSHA256(kService, []byte("aws4_request"))
+
+	// Calculate signature
+	signature := hex.EncodeToString(hmacSHA256(kSigning, []byte(stringToSign)))
+
+	// Append signature to query
+	query.Set("X-Amz-Signature", signature)
+
+	endpoint := strings.TrimSuffix(s3Endpoint, "/")
+
+	return endpoint + canonicalPath + "?" + query.Encode(), nil
+}

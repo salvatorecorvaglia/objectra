@@ -46,7 +46,7 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// Web console server
-	consoleHandler := console.NewHandler(engine, creds)
+	consoleHandler := console.NewHandler(engine, creds, cfg.S3Port, cfg.Region)
 	consoleServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ConsolePort),
 		Handler:           consoleHandler,

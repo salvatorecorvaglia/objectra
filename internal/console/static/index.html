@@ -228,6 +228,57 @@
         </div>
     </div>
 
+    <!-- Share Modal -->
+    <div id="share-modal" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Share Object</h3>
+                <button class="modal-close" data-close="share-modal" aria-label="Close Share Modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p class="modal-desc" style="font-size: 0.875rem; color: var(--text-secondary); margin-bottom: 1rem;">Generate a secure temporary pre-signed link to share this file.</p>
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label for="share-expires">Expiration Time</label>
+                    <select id="share-expires" class="form-select" style="width: 100%; padding: 0.625rem; border-radius: 6px; background: var(--input-bg); border: 1px solid var(--border); color: var(--text);">
+                        <option value="600">10 Minutes</option>
+                        <option value="3600" selected>1 Hour</option>
+                        <option value="86400">1 Day</option>
+                        <option value="604800">7 Days</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="share-url-input">Pre-signed Link</label>
+                    <div class="input-with-button" style="display: flex; gap: 0.5rem;">
+                        <input type="text" id="share-url-input" readonly placeholder="Generating link..." style="flex: 1; padding: 0.625rem; border-radius: 6px; background: var(--input-bg); border: 1px solid var(--border); color: var(--text);">
+                        <button id="copy-share-url-btn" class="btn btn-secondary">Copy</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" data-close="share-modal">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Preview Modal -->
+    <div id="preview-modal" class="modal-overlay" style="display:none;">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3 id="preview-title">File Preview</h3>
+                <button class="modal-close" data-close="preview-modal" aria-label="Close Preview Modal">&times;</button>
+            </div>
+            <div class="modal-body preview-body" style="max-height: 70vh; overflow-y: auto; display: flex; justify-content: center; align-items: center;">
+                <div id="preview-content-container" style="width: 100%; display: flex; justify-content: center;">
+                    <!-- Loaded dynamically via JS -->
+                </div>
+            </div>
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                <span id="preview-file-size" class="preview-meta" style="font-size: 0.875rem; color: var(--text-secondary);"></span>
+                <button class="btn btn-ghost" data-close="preview-modal">Close</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Upload Progress -->
     <div id="upload-progress" class="upload-progress" style="display:none;">
         <div class="upload-progress-header">

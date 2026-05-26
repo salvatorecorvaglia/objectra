@@ -1073,3 +1073,43 @@ body {
     font-weight: 500;
 }
 
+/* ================================================================
+   Preview & Share Modal Additions
+   ================================================================ */
+
+.modal-lg {
+    max-width: 800px;
+    width: 95%;
+}
+
+.preview-body {
+    background: rgba(0, 0, 0, 0.2);
+    min-height: 200px;
+}
+
+.preview-meta {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.preview-link {
+    cursor: pointer;
+    font-weight: 500;
+    transition: color var(--transition-fast);
+}
+
+.preview-link:hover {
+    color: var(--text-accent);
+    text-decoration: underline;
+}
+
+.input-with-button button {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+
+.input-with-button input {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+

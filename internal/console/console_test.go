@@ -27,7 +27,7 @@ func TestConsoleEndpoints(t *testing.T) {
 	defer engine.Close()
 
 	creds := auth.NewCredentials("access", "secret")
-	handler := NewHandler(engine, creds)
+	handler := NewHandler(engine, creds, 9000, "us-east-1")
 
 	err = engine.CreateBucket("test-bucket")
 	if err != nil {
@@ -167,5 +167,26 @@ func TestConsoleEndpoints(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &searchResp)
 	if len(searchResp.Items) != 0 {
 		t.Errorf("expected 0 matches, got %d", len(searchResp.Items))
+	}
+
+	// 5. Test Presign Object
+	req = httptest.NewRequest("GET", "/api/buckets/test-bucket/objects/presign?key=large-file.bin&expires=3600", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200 for presign, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	var presignResp struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &presignResp); err != nil {
+		t.Fatalf("failed to parse presign response: %v", err)
+	}
+
+	if presignResp.URL == "" {
+		t.Errorf("expected presigned URL, got empty")
 	}
 }

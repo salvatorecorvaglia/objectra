@@ -12,6 +12,7 @@
     let searchPrefix = '';
     let currentPageIndex = 0;
     let pageTokens = [''];
+    let shareTargetKey = '';
 
     // ---- DOM Refs ----
     const $ = (sel) => document.querySelector(sel);
@@ -51,6 +52,16 @@
     const prevPageBtn = $('#prev-page-btn');
     const nextPageBtn = $('#next-page-btn');
     const pageIndicator = $('#page-indicator');
+
+    const shareModal = $('#share-modal');
+    const shareExpires = $('#share-expires');
+    const shareUrlInput = $('#share-url-input');
+    const copyShareUrlBtn = $('#copy-share-url-btn');
+
+    const previewModal = $('#preview-modal');
+    const previewTitle = $('#preview-title');
+    const previewContentContainer = $('#preview-content-container');
+    const previewFileSize = $('#preview-file-size');
 
     // ---- API Helpers ----
 
@@ -389,13 +400,16 @@
                         <div class="file-icon file">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
                         </div>
-                        <span class="file-name-text">${escapeHtml(displayName)}</span>
+                        <span class="file-name-text preview-link" data-key="${escapeHtml(item.key)}">${escapeHtml(displayName)}</span>
                     </div>
                 </td>
                 <td>${size}</td>
                 <td>${modified}</td>
                 <td>
                     <div class="file-actions">
+                        <button class="btn-icon share-btn" title="Share Link" aria-label="Share ${escapeHtml(displayName)}" data-key="${escapeHtml(item.key)}">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54-.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/><line x1="8" y1="16" x2="16" y2="8"/></svg>
+                        </button>
                         <button class="btn-icon download-btn" title="Download" aria-label="Download ${escapeHtml(displayName)}" data-key="${escapeHtml(item.key)}">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         </button>
@@ -405,6 +419,14 @@
                     </div>
                 </td>
             `;
+
+            tr.querySelector('.preview-link').addEventListener('click', () => {
+                showPreview(item.key, item.size);
+            });
+
+            tr.querySelector('.share-btn').addEventListener('click', () => {
+                showShareModal(item.key);
+            });
 
             tr.querySelector('.download-btn').addEventListener('click', () => {
                 downloadObject(item.key);
@@ -766,6 +788,103 @@
 
     function closeModal(id) {
         document.getElementById(id).style.display = 'none';
+        if (id === 'preview-modal') {
+            previewContentContainer.innerHTML = '';
+        }
+        if (id === 'share-modal') {
+            shareTargetKey = '';
+        }
+    }
+
+    async function showShareModal(key) {
+        shareTargetKey = key;
+        shareExpires.value = '3600';
+        shareUrlInput.value = 'Generating link...';
+        openModal('share-modal');
+        await updateShareLink();
+    }
+
+    async function updateShareLink() {
+        if (!shareTargetKey) return;
+        const expires = shareExpires.value;
+        try {
+            const resp = await api('GET', `/api/buckets/${currentBucket}/objects/presign?key=${encodeURIComponent(shareTargetKey)}&expires=${expires}`);
+            if (resp.ok) {
+                const data = await resp.json();
+                shareUrlInput.value = data.url;
+            } else {
+                shareUrlInput.value = 'Failed to generate link';
+                showToast('Failed to generate pre-signed link', 'error');
+            }
+        } catch (err) {
+            shareUrlInput.value = 'Failed to generate link';
+            showToast('Failed to generate pre-signed link', 'error');
+        }
+    }
+
+    shareExpires.addEventListener('change', updateShareLink);
+
+    copyShareUrlBtn.addEventListener('click', () => {
+        shareUrlInput.select();
+        shareUrlInput.setSelectionRange(0, 99999);
+        navigator.clipboard.writeText(shareUrlInput.value)
+            .then(() => showToast('Link copied to clipboard', 'success'))
+            .catch(() => showToast('Failed to copy link', 'error'));
+    });
+
+    async function showPreview(key, size) {
+        const filename = key.split('/').pop();
+        previewTitle.textContent = `Preview: ${filename}`;
+        previewFileSize.textContent = formatSize(size);
+        previewContentContainer.innerHTML = '<div style="color: var(--text-secondary); padding: 2rem;">Loading preview...</div>';
+        openModal('preview-modal');
+
+        try {
+            const resp = await api('GET', `/api/buckets/${currentBucket}/objects/presign?key=${encodeURIComponent(key)}&expires=300`);
+            if (!resp.ok) {
+                throw new Error('Failed to get presigned URL');
+            }
+            const data = await resp.json();
+            const presignedURL = data.url;
+
+            const ext = '.' + filename.split('.').pop().toLowerCase();
+
+            if (['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico'].includes(ext)) {
+                previewContentContainer.innerHTML = `<img src="${presignedURL}" style="max-width: 100%; max-height: 60vh; object-fit: contain; border-radius: 6px; border: 1px solid var(--border);">`;
+            } else if (['.mp4', '.webm', '.ogg', '.mov'].includes(ext)) {
+                previewContentContainer.innerHTML = `<video src="${presignedURL}" controls autoplay style="max-width: 100%; max-height: 60vh; border-radius: 6px; border: 1px solid var(--border);"></video>`;
+            } else if (['.mp3', '.wav', '.ogg', '.m4a', '.aac'].includes(ext)) {
+                previewContentContainer.innerHTML = `
+                    <div style="padding: 2rem; width: 100%; display: flex; justify-content: center; background: rgba(255, 255, 255, 0.03); border-radius: 6px; border: 1px solid var(--border);">
+                        <audio src="${presignedURL}" controls autoplay style="width: 100%; max-width: 400px;"></audio>
+                    </div>
+                `;
+            } else if (ext === '.pdf') {
+                previewContentContainer.innerHTML = `<iframe src="${presignedURL}" style="width: 100%; height: 60vh; border: none; border-radius: 6px; background: white;"></iframe>`;
+            } else if (['.txt', '.json', '.js', '.ts', '.go', '.html', '.css', '.md', '.log', '.env', '.yml', '.yaml', '.xml', '.ini', '.conf', '.sh', '.py'].includes(ext)) {
+                const text = await fetch(presignedURL).then(r => {
+                    if (!r.ok) throw new Error('Failed to fetch text body');
+                    return r.text();
+                });
+                const escapedText = escapeHtml(text);
+                previewContentContainer.innerHTML = `
+                    <pre style="width: 100%; text-align: left; padding: 1.25rem; background: var(--input-bg); border-radius: 6px; overflow: auto; max-height: 60vh; font-family: monospace; white-space: pre-wrap; font-size: 0.875rem; border: 1px solid var(--border); margin: 0; color: var(--text);">${escapedText}</pre>
+                `;
+            } else {
+                previewContentContainer.innerHTML = `
+                    <div style="padding: 3rem 1.5rem; text-align: center; background: rgba(255, 255, 255, 0.02); border-radius: 6px; border: 1px solid var(--border); width: 100%;">
+                        <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;">📄</div>
+                        <p style="margin-bottom: 1.5rem; color: var(--text-secondary);">No preview available for this file type (${ext}).</p>
+                        <button id="preview-download-btn" class="btn btn-primary">Download File</button>
+                    </div>
+                `;
+                document.getElementById('preview-download-btn').addEventListener('click', () => {
+                    downloadObject(key);
+                });
+            }
+        } catch (err) {
+            previewContentContainer.innerHTML = `<div style="color: var(--danger); padding: 2rem;">Error loading preview: ${escapeHtml(err.message)}</div>`;
+        }
     }
 
     // Close modals via close buttons and overlay click
