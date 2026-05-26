@@ -28,6 +28,7 @@ var errorHTTPStatus = map[string]int{
 	"MalformedXML":            http.StatusBadRequest,
 	"SignatureDoesNotMatch":   http.StatusForbidden,
 	"InvalidAccessKeyId":      http.StatusForbidden,
+	"RequestTimeTooSkewed":    http.StatusForbidden,
 }
 
 // handleStorageError writes the appropriate S3 error response for a storage error.

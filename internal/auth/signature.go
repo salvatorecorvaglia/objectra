@@ -15,6 +15,16 @@ import (
 	"time"
 )
 
+// AuthError represents a specific S3 authentication/signature error.
+type AuthError struct {
+	Code    string
+	Message string
+}
+
+func (e *AuthError) Error() string {
+	return e.Message
+}
+
 // SigV4Verifier verifies AWS Signature Version 4 requests.
 type SigV4Verifier struct {
 	creds *Credentials
@@ -47,16 +57,16 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
-		return fmt.Errorf("missing Authorization header")
+		return &AuthError{Code: "AccessDenied", Message: "missing Authorization header"}
 	}
 
 	parsed, err := parseAuthHeader(authHeader)
 	if err != nil {
-		return err
+		return &AuthError{Code: "AccessDenied", Message: err.Error()}
 	}
 
 	if parsed.AccessKey != v.creds.AccessKey {
-		return fmt.Errorf("invalid access key")
+		return &AuthError{Code: "InvalidAccessKeyId", Message: "The Access Key Id you provided does not exist in our records."}
 	}
 
 	// Get the date for signing
@@ -65,7 +75,7 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 		dateStr = r.Header.Get("Date")
 	}
 	if dateStr == "" {
-		return fmt.Errorf("missing date header")
+		return &AuthError{Code: "AccessDenied", Message: "missing date header"}
 	}
 
 	// Parse the date
@@ -74,13 +84,13 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 		// Try RFC2616 format
 		t, err = time.Parse(time.RFC1123, dateStr)
 		if err != nil {
-			return fmt.Errorf("invalid date format")
+			return &AuthError{Code: "AccessDenied", Message: "invalid date format"}
 		}
 	}
 
 	// Check for date/time skew (standard is 15 minutes)
 	if time.Now().UTC().Sub(t).Abs() > 15*time.Minute {
-		return fmt.Errorf("request time too far in the past or future")
+		return &AuthError{Code: "RequestTimeTooSkewed", Message: "The difference between the request time and the current time is too large."}
 	}
 
 	// Verify request payload matches content SHA256 header (if not unsigned or streaming)
@@ -91,7 +101,10 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 			return fmt.Errorf("failed to hash request payload: %w", err)
 		}
 		if actualHash != payloadHash {
-			return fmt.Errorf("payload hash mismatch: expected %s, got %s", payloadHash, actualHash)
+			return &AuthError{
+				Code:    "SignatureDoesNotMatch",
+				Message: "The request signature we calculated does not match the signature you provided (payload hash mismatch).",
+			}
 		}
 	}
 
@@ -113,7 +126,7 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 	expectedSig := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
 
 	if !hmac.Equal([]byte(expectedSig), []byte(parsed.Signature)) {
-		return fmt.Errorf("signature does not match")
+		return &AuthError{Code: "SignatureDoesNotMatch", Message: "The request signature we calculated does not match the signature you provided."}
 	}
 
 	return nil
@@ -126,7 +139,7 @@ func (v *SigV4Verifier) verifyPresigned(r *http.Request) error {
 	credential := q.Get("X-Amz-Credential")
 	parts := strings.Split(credential, "/")
 	if len(parts) != 5 {
-		return fmt.Errorf("invalid credential format")
+		return &AuthError{Code: "AccessDenied", Message: "invalid credential format"}
 	}
 
 	accessKey := parts[0]
@@ -135,7 +148,7 @@ func (v *SigV4Verifier) verifyPresigned(r *http.Request) error {
 	service := parts[3]
 
 	if accessKey != v.creds.AccessKey {
-		return fmt.Errorf("invalid access key")
+		return &AuthError{Code: "InvalidAccessKeyId", Message: "The Access Key Id you provided does not exist in our records."}
 	}
 
 	dateStr := q.Get("X-Amz-Date")
@@ -147,15 +160,15 @@ func (v *SigV4Verifier) verifyPresigned(r *http.Request) error {
 	if expires != "" {
 		t, err := time.Parse("20060102T150405Z", dateStr)
 		if err != nil {
-			return fmt.Errorf("invalid date format")
+			return &AuthError{Code: "AccessDenied", Message: "invalid date format"}
 		}
 		var dur int
 		_, err = fmt.Sscanf(expires, "%d", &dur)
 		if err != nil {
-			return fmt.Errorf("invalid expires value")
+			return &AuthError{Code: "AccessDenied", Message: "invalid expires value"}
 		}
 		if time.Now().UTC().After(t.Add(time.Duration(dur) * time.Second)) {
-			return fmt.Errorf("presigned URL has expired")
+			return &AuthError{Code: "AccessDenied", Message: "Request has expired"}
 		}
 	}
 
@@ -174,7 +187,7 @@ func (v *SigV4Verifier) verifyPresigned(r *http.Request) error {
 	expectedSig := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
 
 	if !hmac.Equal([]byte(expectedSig), []byte(signature)) {
-		return fmt.Errorf("signature does not match")
+		return &AuthError{Code: "SignatureDoesNotMatch", Message: "The request signature we calculated does not match the signature you provided."}
 	}
 
 	return nil

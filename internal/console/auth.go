@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -14,6 +15,11 @@ import (
 var jwtSecret []byte
 
 func init() {
+	if secret := os.Getenv("OBJECTRA_JWT_SECRET"); secret != "" {
+		jwtSecret = []byte(secret)
+		return
+	}
+
 	jwtSecret = make([]byte, 32)
 	if _, err := rand.Read(jwtSecret); err != nil {
 		panic("failed to generate JWT secret: " + err.Error())

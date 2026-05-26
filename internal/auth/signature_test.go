@@ -100,6 +100,14 @@ func TestVerifyInvalidAccessKey(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for invalid access key")
 	}
+	if err != nil {
+		authErr, ok := err.(*AuthError)
+		if !ok {
+			t.Errorf("expected *AuthError, got %T", err)
+		} else if authErr.Code != "InvalidAccessKeyId" {
+			t.Errorf("expected Code 'InvalidAccessKeyId', got %q", authErr.Code)
+		}
+	}
 }
 
 func TestVerifyWrongSecretKey(t *testing.T) {
@@ -117,8 +125,13 @@ func TestVerifyWrongSecretKey(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for wrong secret key")
 	}
-	if err != nil && !strings.Contains(err.Error(), "signature does not match") {
-		t.Errorf("expected 'signature does not match', got: %v", err)
+	if err != nil {
+		authErr, ok := err.(*AuthError)
+		if !ok {
+			t.Errorf("expected *AuthError, got %T", err)
+		} else if authErr.Code != "SignatureDoesNotMatch" {
+			t.Errorf("expected Code 'SignatureDoesNotMatch', got %q", authErr.Code)
+		}
 	}
 }
 

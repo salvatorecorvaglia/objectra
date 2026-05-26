@@ -93,7 +93,11 @@ func (rt *Router) serveHTTPInternal(w http.ResponseWriter, r *http.Request) {
 	if !bypassAuth {
 		if err := rt.verifier.Verify(r); err != nil {
 			log.Printf("[S3] Auth failed: %s %s - %v", r.Method, r.URL.Path, err)
-			writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path)
+			if authErr, ok := err.(*auth.AuthError); ok {
+				writeS3Error(w, authErr.Code, authErr.Message, r.URL.Path)
+			} else {
+				writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path)
+			}
 			return
 		}
 	}

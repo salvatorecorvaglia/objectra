@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -89,18 +90,27 @@ func New(cfg *config.Config) (*Server, error) {
 
 // Start launches both servers concurrently and starts background workers.
 func (s *Server) Start() error {
-	errCh := make(chan error, 2)
+	s3Listener, err := net.Listen("tcp", s.s3Server.Addr)
+	if err != nil {
+		return fmt.Errorf("failed to bind S3 API port %s: %w", s.s3Server.Addr, err)
+	}
+
+	consoleListener, err := net.Listen("tcp", s.consoleServer.Addr)
+	if err != nil {
+		s3Listener.Close()
+		return fmt.Errorf("failed to bind Console port %s: %w", s.consoleServer.Addr, err)
+	}
 
 	go func() {
 		if s.s3Server.TLSConfig != nil {
 			log.Printf("[S3 API] Listening securely (HTTPS) on %s", s.s3Server.Addr)
-			if err := s.s3Server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-				errCh <- fmt.Errorf("S3 API server (HTTPS): %w", err)
+			if err := s.s3Server.ServeTLS(s3Listener, "", ""); err != nil && err != http.ErrServerClosed {
+				log.Printf("[S3 API] Server error: %v", err)
 			}
 		} else {
 			log.Printf("[S3 API] Listening on %s", s.s3Server.Addr)
-			if err := s.s3Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				errCh <- fmt.Errorf("S3 API server: %w", err)
+			if err := s.s3Server.Serve(s3Listener); err != nil && err != http.ErrServerClosed {
+				log.Printf("[S3 API] Server error: %v", err)
 			}
 		}
 	}()
@@ -108,13 +118,13 @@ func (s *Server) Start() error {
 	go func() {
 		if s.consoleServer.TLSConfig != nil {
 			log.Printf("[Console] Listening securely (HTTPS) on %s", s.consoleServer.Addr)
-			if err := s.consoleServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-				errCh <- fmt.Errorf("Console server (HTTPS): %w", err)
+			if err := s.consoleServer.ServeTLS(consoleListener, "", ""); err != nil && err != http.ErrServerClosed {
+				log.Printf("[Console] Server error: %v", err)
 			}
 		} else {
 			log.Printf("[Console] Listening on %s", s.consoleServer.Addr)
-			if err := s.consoleServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				errCh <- fmt.Errorf("Console server: %w", err)
+			if err := s.consoleServer.Serve(consoleListener); err != nil && err != http.ErrServerClosed {
+				log.Printf("[Console] Server error: %v", err)
 			}
 		}
 	}()
@@ -143,7 +153,7 @@ func (s *Server) Start() error {
 		}
 	}()
 
-	return <-errCh
+	return nil
 }
 
 // Shutdown gracefully shuts down both servers and stops background workers.

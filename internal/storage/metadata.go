@@ -86,9 +86,17 @@ func (m *MetadataStore) Close() error {
 }
 
 func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
+	m.mu.RLock()
+	if db, ok := m.activeBuckets[bucket]; ok {
+		m.mu.RUnlock()
+		return db, nil
+	}
+	m.mu.RUnlock()
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Double-check under write lock
 	if db, ok := m.activeBuckets[bucket]; ok {
 		return db, nil
 	}
