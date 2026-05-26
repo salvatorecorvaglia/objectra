@@ -20,7 +20,7 @@ RUN go mod download
 COPY . .
 
 # Build a statically-linked binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-w -s" \
     -o objectra \
     ./cmd/objectra

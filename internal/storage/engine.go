@@ -88,5 +88,6 @@ type Engine interface {
 	AbortMultipartUpload(bucket, key, uploadID string) error
 
 	// Lifecycle
+	CleanExpiredMultipartUploads(cutoff time.Duration) error
 	Close() error
 }

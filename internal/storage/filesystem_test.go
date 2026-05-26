@@ -2,10 +2,15 @@ package storage
 
 import (
 	"bytes"
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 // setupTestEngine creates a temporary FilesystemEngine for testing.
@@ -601,5 +606,159 @@ func TestOverwriteObject(t *testing.T) {
 	data, _ := io.ReadAll(reader)
 	if string(data) != "version2-longer" {
 		t.Errorf("expected 'version2-longer', got %q", data)
+	}
+}
+
+func TestBucketNameTraversalProtection(t *testing.T) {
+	engine := setupTestEngine(t)
+
+	invalidBuckets := []string{"..", "../etc", "my/bucket", "my bucket", "a"}
+	for _, invalid := range invalidBuckets {
+		if err := engine.CreateBucket(invalid); err == nil {
+			t.Errorf("expected error when creating invalid bucket name %q", invalid)
+		}
+		if _, err := engine.BucketExists(invalid); err == nil {
+			t.Errorf("expected error when checking exists of invalid bucket name %q", invalid)
+		}
+		if _, err := engine.PutObject(invalid, "test.txt", bytes.NewReader([]byte("x")), 1, "text/plain"); err == nil {
+			t.Errorf("expected error when putting object in invalid bucket name %q", invalid)
+		}
+		if _, _, err := engine.GetObject(invalid, "test.txt"); err == nil {
+			t.Errorf("expected error when getting object from invalid bucket name %q", invalid)
+		}
+		if err := engine.DeleteObject(invalid, "test.txt"); err == nil {
+			t.Errorf("expected error when deleting object from invalid bucket name %q", invalid)
+		}
+	}
+}
+
+func TestConcurrentUploadPartLocking(t *testing.T) {
+	engine := setupTestEngine(t)
+	engine.CreateBucket("concurrency-bucket")
+
+	upload, err := engine.CreateMultipartUpload("concurrency-bucket", "concurrent.bin", "application/octet-stream")
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload failed: %v", err)
+	}
+
+	const numParts = 20
+	var wg sync.WaitGroup
+	wg.Add(numParts)
+
+	for i := 1; i <= numParts; i++ {
+		go func(partNum int) {
+			defer wg.Done()
+			partData := []byte(fmt.Sprintf("part data %d", partNum))
+			_, uploadErr := engine.UploadPart("concurrency-bucket", "concurrent.bin", upload.UploadID, partNum, bytes.NewReader(partData), int64(len(partData)))
+			if uploadErr != nil {
+				t.Errorf("UploadPart %d failed: %v", partNum, uploadErr)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Retrieve the multipart metadata and check that all parts are present
+	meta, err := engine.metadata.GetMultipartMeta("concurrency-bucket", "concurrent.bin", upload.UploadID)
+	if err != nil {
+		t.Fatalf("GetMultipartMeta failed: %v", err)
+	}
+
+	if len(meta.Parts) != numParts {
+		t.Errorf("expected %d parts in metadata, got %d (metadata loss occurred!)", numParts, len(meta.Parts))
+	}
+}
+
+func TestMultipartUploadETagFormat(t *testing.T) {
+	engine := setupTestEngine(t)
+	engine.CreateBucket("etag-bucket")
+
+	upload, err := engine.CreateMultipartUpload("etag-bucket", "file.bin", "application/octet-stream")
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload failed: %v", err)
+	}
+
+	p1Data := []byte("part 1 data")
+	p2Data := []byte("part 2 data")
+
+	p1, err := engine.UploadPart("etag-bucket", "file.bin", upload.UploadID, 1, bytes.NewReader(p1Data), int64(len(p1Data)))
+	if err != nil {
+		t.Fatalf("UploadPart 1 failed: %v", err)
+	}
+
+	p2, err := engine.UploadPart("etag-bucket", "file.bin", upload.UploadID, 2, bytes.NewReader(p2Data), int64(len(p2Data)))
+	if err != nil {
+		t.Fatalf("UploadPart 2 failed: %v", err)
+	}
+
+	// Concatenate parts' raw binary MD5s
+	h1, _ := hex.DecodeString(p1.ETag)
+	h2, _ := hex.DecodeString(p2.ETag)
+	concat := append(h1, h2...)
+	hFinal := md5.Sum(concat)
+	expectedETag := fmt.Sprintf("%s-2", hex.EncodeToString(hFinal[:]))
+
+	parts := []CompletePart{
+		{PartNumber: 1, ETag: p1.ETag},
+		{PartNumber: 2, ETag: p2.ETag},
+	}
+
+	info, err := engine.CompleteMultipartUpload("etag-bucket", "file.bin", upload.UploadID, parts)
+	if err != nil {
+		t.Fatalf("CompleteMultipartUpload failed: %v", err)
+	}
+
+	if info.ETag != expectedETag {
+		t.Errorf("expected completed ETag %q, got %q", expectedETag, info.ETag)
+	}
+}
+
+func TestCleanExpiredMultipartUploads(t *testing.T) {
+	engine := setupTestEngine(t)
+	engine.CreateBucket("cleanup-bucket")
+
+	upload, err := engine.CreateMultipartUpload("cleanup-bucket", "file.bin", "application/octet-stream")
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload failed: %v", err)
+	}
+
+	partData := []byte("some part data")
+	_, err = engine.UploadPart("cleanup-bucket", "file.bin", upload.UploadID, 1, bytes.NewReader(partData), int64(len(partData)))
+	if err != nil {
+		t.Fatalf("UploadPart failed: %v", err)
+	}
+
+	// Verify temp directory exists
+	partDir := engine.multipartDir("cleanup-bucket", "file.bin", upload.UploadID)
+	if _, err := os.Stat(partDir); os.IsNotExist(err) {
+		t.Fatal("expected multipart directory to exist")
+	}
+
+	// Manually set creation date in metadata to be 25 hours ago
+	meta, err := engine.metadata.GetMultipartMeta("cleanup-bucket", "file.bin", upload.UploadID)
+	if err != nil {
+		t.Fatalf("GetMultipartMeta failed: %v", err)
+	}
+	meta.Created = time.Now().UTC().Add(-25 * time.Hour)
+	err = engine.metadata.PutMultipartMeta(meta)
+	if err != nil {
+		t.Fatalf("PutMultipartMeta failed: %v", err)
+	}
+
+	// Run cleanup
+	err = engine.CleanExpiredMultipartUploads(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("CleanExpiredMultipartUploads failed: %v", err)
+	}
+
+	// Verify temp directory is deleted
+	if _, err := os.Stat(partDir); !os.IsNotExist(err) {
+		t.Error("expected multipart directory to be deleted")
+	}
+
+	// Verify metadata is deleted
+	_, err = engine.metadata.GetMultipartMeta("cleanup-bucket", "file.bin", upload.UploadID)
+	if err == nil {
+		t.Error("expected metadata to be deleted from database")
 	}
 }

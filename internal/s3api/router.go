@@ -51,6 +51,11 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		key = parts[1]
 	}
 
+	if bucket != "" && !isValidBucketName(bucket) {
+		writeS3Error(w, "InvalidBucketName", "The specified bucket is not valid.", "/"+bucket)
+		return
+	}
+
 	log.Printf("[S3] %s %s (bucket=%q, key=%q)", r.Method, r.URL.Path, bucket, key)
 
 	// Route based on path structure and method

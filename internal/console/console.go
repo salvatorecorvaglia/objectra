@@ -195,6 +195,12 @@ func (h *Handler) handleBucketObjects(w http.ResponseWriter, r *http.Request) {
 	parts := strings.SplitN(path, "/", 2)
 	bucketName := parts[0]
 
+	// Validate bucket name (SEC-7 / Traversal Protection)
+	if !bucketNameRegexp.MatchString(bucketName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid bucket name"})
+		return
+	}
+
 	// Check if this is a bucket delete or object operations
 	if len(parts) == 1 || parts[1] == "" {
 		if r.Method == http.MethodDelete {

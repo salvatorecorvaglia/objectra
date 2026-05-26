@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -73,6 +75,23 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 		t, err = time.Parse(time.RFC1123, dateStr)
 		if err != nil {
 			return fmt.Errorf("invalid date format")
+		}
+	}
+
+	// Check for date/time skew (standard is 15 minutes)
+	if time.Now().UTC().Sub(t).Abs() > 15*time.Minute {
+		return fmt.Errorf("request time too far in the past or future")
+	}
+
+	// Verify request payload matches content SHA256 header (if not unsigned or streaming)
+	payloadHash := r.Header.Get("X-Amz-Content-Sha256")
+	if payloadHash != "" && payloadHash != "UNSIGNED-PAYLOAD" && payloadHash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+		actualHash, err := HashPayload(r)
+		if err != nil {
+			return fmt.Errorf("failed to hash request payload: %w", err)
+		}
+		if actualHash != payloadHash {
+			return fmt.Errorf("payload hash mismatch: expected %s, got %s", payloadHash, actualHash)
 		}
 	}
 
@@ -287,7 +306,7 @@ func (v *SigV4Verifier) buildCanonicalRequestPresigned(r *http.Request, signedHe
 
 // getCanonicalURI returns the URI-encoded path.
 func getCanonicalURI(u *url.URL) string {
-	path := u.Path
+	path := u.EscapedPath()
 	if path == "" {
 		path = "/"
 	}
@@ -342,12 +361,72 @@ func hashSHA256(data []byte) string {
 }
 
 // HashPayload reads the request body, computes its SHA256, and returns the hash.
-// It replaces the body with a new reader so it can be read again.
-func HashPayload(r *http.Request) string {
+// It uses a temporary file to buffer large request bodies to prevent OOM errors.
+func HashPayload(r *http.Request) (string, error) {
 	if r.Body == nil {
-		return hashSHA256([]byte(""))
+		return hashSHA256([]byte("")), nil
 	}
-	body, _ := io.ReadAll(r.Body)
-	r.Body = io.NopCloser(strings.NewReader(string(body)))
-	return hashSHA256(body)
+
+	const maxMemoryBuffer = 2 * 1024 * 1024 // 2MB
+	lr := io.LimitReader(r.Body, maxMemoryBuffer+1)
+	buf, err := io.ReadAll(lr)
+	if err != nil {
+		return "", err
+	}
+
+	if len(buf) <= maxMemoryBuffer {
+		r.Body = io.NopCloser(bytes.NewReader(buf))
+		return hashSHA256(buf), nil
+	}
+
+	tmpFile, err := os.CreateTemp("", "objectra-body-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file for request body: %w", err)
+	}
+	tmpName := tmpFile.Name()
+
+	if _, err := tmpFile.Write(buf); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpName)
+		return "", err
+	}
+
+	shaWriter := sha256.New()
+	shaWriter.Write(buf)
+
+	_, err = io.Copy(io.MultiWriter(tmpFile, shaWriter), r.Body)
+	if err != nil {
+		tmpFile.Close()
+		os.Remove(tmpName)
+		return "", err
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpName)
+		return "", err
+	}
+
+	fileRead, err := os.Open(tmpName)
+	if err != nil {
+		os.Remove(tmpName)
+		return "", err
+	}
+
+	r.Body = &tempFileReadCloser{
+		File: fileRead,
+		path: tmpName,
+	}
+
+	return hex.EncodeToString(shaWriter.Sum(nil)), nil
+}
+
+type tempFileReadCloser struct {
+	*os.File
+	path string
+}
+
+func (t *tempFileReadCloser) Close() error {
+	err := t.File.Close()
+	os.Remove(t.path)
+	return err
 }

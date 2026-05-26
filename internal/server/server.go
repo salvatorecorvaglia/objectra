@@ -15,11 +15,12 @@ import (
 	"github.com/salvatorecorvaglia/objectra/internal/storage"
 )
 
-// Server holds both the S3 API server and the web console server.
+// Server holds both the S3 API server and the web console server, plus background workers.
 type Server struct {
 	s3Server      *http.Server
 	consoleServer *http.Server
 	engine        storage.Engine
+	cleanupStop   chan struct{}
 }
 
 // New creates and configures both servers.
@@ -55,10 +56,11 @@ func New(cfg *config.Config) (*Server, error) {
 		s3Server:      s3Server,
 		consoleServer: consoleServer,
 		engine:        engine,
+		cleanupStop:   make(chan struct{}),
 	}, nil
 }
 
-// Start launches both servers concurrently.
+// Start launches both servers concurrently and starts background workers.
 func (s *Server) Start() error {
 	errCh := make(chan error, 2)
 
@@ -76,12 +78,39 @@ func (s *Server) Start() error {
 		}
 	}()
 
+	// Start background multipart cleanup task
+	go func() {
+		log.Println("[Server] Starting background multipart cleanup worker...")
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+
+		// Run once on startup
+		if err := s.engine.CleanExpiredMultipartUploads(24 * time.Hour); err != nil {
+			log.Printf("[Server] Error in initial multipart cleanup: %v", err)
+		}
+
+		for {
+			select {
+			case <-ticker.C:
+				if err := s.engine.CleanExpiredMultipartUploads(24 * time.Hour); err != nil {
+					log.Printf("[Server] Error cleaning expired multipart uploads: %v", err)
+				}
+			case <-s.cleanupStop:
+				log.Println("[Server] Background multipart cleanup worker stopped.")
+				return
+			}
+		}
+	}()
+
 	return <-errCh
 }
 
-// Shutdown gracefully shuts down both servers.
+// Shutdown gracefully shuts down both servers and stops background workers.
 func (s *Server) Shutdown(ctx context.Context) error {
 	log.Println("[Server] Shutting down...")
+
+	// Stop background workers
+	close(s.cleanupStop)
 
 	var firstErr error
 
