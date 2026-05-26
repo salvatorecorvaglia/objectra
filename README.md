@@ -51,7 +51,23 @@ OBJECTRA_DATA_DIR=./data ./objectra
 
 ## Configuration
 
-All settings are configured via environment variables:
+All settings are configured via environment variables.
+
+### Environment File Template
+
+A template configuration file [env.example](env.example) is provided in the repository. To configure the server using this template, copy it to `.env` in the root directory:
+
+```bash
+cp env.example .env
+```
+
+To run the server locally from source using these variables, you can load them in your shell:
+
+```bash
+export $(grep -v '^#' .env | xargs) && ./objectra
+```
+
+### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|

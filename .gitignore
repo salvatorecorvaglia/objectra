@@ -28,7 +28,10 @@ Thumbs.db
 
 # Environment
 .env
+.env.*
 .env.local
+!env.example
+!.env.example
 
 # Data directory (runtime)
 data/
@@ -36,3 +39,17 @@ data/
 # Temp files
 *.tmp
 *.bak
+
+# AI Tools
+.openai/
+.chatgpt/
+gpt-config.json
+openai.config.json
+.anthropic/
+.claude/
+claude.config.json
+claude-settings.json
+.prompts/
+.prompt-cache/
+.ai/
+CLAUDE.md

@@ -3,12 +3,14 @@ services:
     build: .
     container_name: objectra
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web Console
+      - "${OBJECTRA_S3_PORT:-9000}:${OBJECTRA_S3_PORT:-9000}"   # S3 API
+      - "${OBJECTRA_CONSOLE_PORT:-9001}:${OBJECTRA_CONSOLE_PORT:-9001}"   # Web Console
     volumes:
       - ./data:/data
     environment:
-      - OBJECTRA_ACCESS_KEY=objectra
-      - OBJECTRA_SECRET_KEY=objectra123
-      - OBJECTRA_DATA_DIR=/data
+      - OBJECTRA_ACCESS_KEY=${OBJECTRA_ACCESS_KEY:-objectra}
+      - OBJECTRA_SECRET_KEY=${OBJECTRA_SECRET_KEY:-objectra123}
+      - OBJECTRA_DATA_DIR=${OBJECTRA_DATA_DIR:-/data}
+      - OBJECTRA_REGION=${OBJECTRA_REGION:-us-east-1}
     restart: unless-stopped
+
