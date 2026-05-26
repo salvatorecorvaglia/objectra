@@ -85,6 +85,70 @@ func (m *MetadataStore) DeleteBucket(name string) error {
 	})
 }
 
+// PutBucketCORS sets CORS configuration for a bucket.
+func (m *MetadataStore) PutBucketCORS(bucket string, cors *CORSConfiguration) error {
+	return m.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		data := b.Get([]byte(bucket))
+		if data == nil {
+			return fmt.Errorf("bucket not found: %s", bucket)
+		}
+		var info BucketInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			return err
+		}
+		info.CORS = cors
+		newData, err := json.Marshal(info)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(bucket), newData)
+	})
+}
+
+// GetBucketCORS gets CORS configuration for a bucket.
+func (m *MetadataStore) GetBucketCORS(bucket string) (*CORSConfiguration, error) {
+	var cors *CORSConfiguration
+	err := m.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		data := b.Get([]byte(bucket))
+		if data == nil {
+			return fmt.Errorf("bucket not found: %s", bucket)
+		}
+		var info BucketInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			return err
+		}
+		cors = info.CORS
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return cors, nil
+}
+
+// DeleteBucketCORS deletes CORS configuration for a bucket.
+func (m *MetadataStore) DeleteBucketCORS(bucket string) error {
+	return m.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		data := b.Get([]byte(bucket))
+		if data == nil {
+			return fmt.Errorf("bucket not found: %s", bucket)
+		}
+		var info BucketInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			return err
+		}
+		info.CORS = nil
+		newData, err := json.Marshal(info)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(bucket), newData)
+	})
+}
+
 // ListBuckets returns all stored bucket metadata.
 func (m *MetadataStore) ListBuckets() ([]BucketInfo, error) {
 	var buckets []BucketInfo

@@ -6,10 +6,25 @@ import (
 	"time"
 )
 
+// CORSRule holds a CORS rule specification.
+type CORSRule struct {
+	AllowedHeaders []string `json:"allowedHeaders,omitempty" xml:"AllowedHeader"`
+	AllowedMethods []string `json:"allowedMethods" xml:"AllowedMethod"`
+	AllowedOrigins []string `json:"allowedOrigins" xml:"AllowedOrigin"`
+	ExposeHeaders  []string `json:"exposeHeaders,omitempty" xml:"ExposeHeader"`
+	MaxAgeSeconds  int      `json:"maxAgeSeconds,omitempty" xml:"MaxAgeSeconds"`
+}
+
+// CORSConfiguration holds bucket CORS configuration.
+type CORSConfiguration struct {
+	CORSRules []CORSRule `json:"corsRules" xml:"CORSRule"`
+}
+
 // BucketInfo holds metadata about a storage bucket.
 type BucketInfo struct {
-	Name         string    `json:"name"`
-	CreationDate time.Time `json:"creationDate"`
+	Name         string             `json:"name"`
+	CreationDate time.Time          `json:"creationDate"`
+	CORS         *CORSConfiguration `json:"cors,omitempty"`
 }
 
 // ObjectInfo holds metadata about a stored object.
@@ -69,6 +84,9 @@ type Engine interface {
 	DeleteBucket(name string) error
 	BucketExists(name string) (bool, error)
 	ListBuckets() ([]BucketInfo, error)
+	PutBucketCORS(bucket string, cors *CORSConfiguration) error
+	GetBucketCORS(bucket string) (*CORSConfiguration, error)
+	DeleteBucketCORS(bucket string) error
 
 	// Object operations
 	PutObject(bucket, key string, reader io.Reader, size int64, contentType string) (*ObjectInfo, error)

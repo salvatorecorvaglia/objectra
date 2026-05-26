@@ -149,6 +149,51 @@ func (fs *FilesystemEngine) ListBuckets() ([]BucketInfo, error) {
 	return fs.metadata.ListBuckets()
 }
 
+// PutBucketCORS sets CORS configuration for a bucket.
+func (fs *FilesystemEngine) PutBucketCORS(bucket string, cors *CORSConfiguration) error {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.PutBucketCORS(bucket, cors)
+}
+
+// GetBucketCORS gets CORS configuration for a bucket.
+func (fs *FilesystemEngine) GetBucketCORS(bucket string) (*CORSConfiguration, error) {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return nil, err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.GetBucketCORS(bucket)
+}
+
+// DeleteBucketCORS deletes CORS configuration for a bucket.
+func (fs *FilesystemEngine) DeleteBucketCORS(bucket string) error {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.DeleteBucketCORS(bucket)
+}
+
 // CountObjects returns the number of objects in a bucket without loading metadata.
 func (fs *FilesystemEngine) CountObjects(bucket string) (int, error) {
 	if err := fs.validateBucketName(bucket); err != nil {

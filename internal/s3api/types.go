@@ -132,3 +132,21 @@ type LocationConstraintResult struct {
 	Xmlns    string   `xml:"xmlns,attr"`
 	Location string   `xml:",chardata"`
 }
+
+// --- CORS ---
+
+// CORSConfigurationXML represents S3 CORS XML body.
+type CORSConfigurationXML struct {
+	XMLName   xml.Name      `xml:"CORSConfiguration"`
+	Xmlns     string        `xml:"xmlns,attr,omitempty"`
+	CORSRules []CORSRuleXML `xml:"CORSRule"`
+}
+
+// CORSRuleXML represents a single S3 CORS XML rule.
+type CORSRuleXML struct {
+	AllowedHeader []string `xml:"AllowedHeader,omitempty"`
+	AllowedMethod []string `xml:"AllowedMethod"`
+	AllowedOrigin []string `xml:"AllowedOrigin"`
+	ExposeHeader  []string `xml:"ExposeHeader,omitempty"`
+	MaxAgeSeconds int      `xml:"MaxAgeSeconds,omitempty"`
+}

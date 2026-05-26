@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -35,7 +36,7 @@ func New(cfg *config.Config) (*Server, error) {
 	creds := auth.NewCredentials(cfg.AccessKey, cfg.SecretKey)
 
 	// S3 API server
-	s3Router := s3api.NewRouter(engine, creds, cfg.Region)
+	s3Router := s3api.NewRouter(engine, creds, cfg.Region, cfg.Domain)
 	s3Server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.S3Port),
 		Handler:           s3Router,
@@ -53,6 +54,31 @@ func New(cfg *config.Config) (*Server, error) {
 		IdleTimeout:       120 * time.Second,
 	}
 
+	// Setup TLS if enabled
+	if cfg.TLSEnabled {
+		var cert tls.Certificate
+		if cfg.TLSCert != "" && cfg.TLSKey != "" {
+			cert, err = tls.LoadX509KeyPair(cfg.TLSCert, cfg.TLSKey)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load TLS certificate and key: %w", err)
+			}
+		} else {
+			log.Println("[Server] OBJECTRA_TLS_ENABLED=true but no cert/key files provided. Generating self-signed certificate in memory...")
+			cert, err = GenerateSelfSignedCert()
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate self-signed certificate: %w", err)
+			}
+		}
+
+		tlsCfg := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+
+		s3Server.TLSConfig = tlsCfg
+		consoleServer.TLSConfig = tlsCfg
+	}
+
 	return &Server{
 		s3Server:      s3Server,
 		consoleServer: consoleServer,
@@ -66,16 +92,30 @@ func (s *Server) Start() error {
 	errCh := make(chan error, 2)
 
 	go func() {
-		log.Printf("[S3 API] Listening on %s", s.s3Server.Addr)
-		if err := s.s3Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("S3 API server: %w", err)
+		if s.s3Server.TLSConfig != nil {
+			log.Printf("[S3 API] Listening securely (HTTPS) on %s", s.s3Server.Addr)
+			if err := s.s3Server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("S3 API server (HTTPS): %w", err)
+			}
+		} else {
+			log.Printf("[S3 API] Listening on %s", s.s3Server.Addr)
+			if err := s.s3Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("S3 API server: %w", err)
+			}
 		}
 	}()
 
 	go func() {
-		log.Printf("[Console] Listening on %s", s.consoleServer.Addr)
-		if err := s.consoleServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- fmt.Errorf("Console server: %w", err)
+		if s.consoleServer.TLSConfig != nil {
+			log.Printf("[Console] Listening securely (HTTPS) on %s", s.consoleServer.Addr)
+			if err := s.consoleServer.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("Console server (HTTPS): %w", err)
+			}
+		} else {
+			log.Printf("[Console] Listening on %s", s.consoleServer.Addr)
+			if err := s.consoleServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				errCh <- fmt.Errorf("Console server: %w", err)
+			}
 		}
 	}()
 

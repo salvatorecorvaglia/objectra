@@ -21,6 +21,14 @@ type Config struct {
 	ConsolePort int
 	// Region is the S3 region reported by the server.
 	Region string
+	// Domain is the base domain used for virtual host S3 bucket routing.
+	Domain string
+	// TLSEnabled specifies whether to serve S3 and Console APIs over HTTPS/TLS.
+	TLSEnabled bool
+	// TLSCert is the path to the SSL certificate file.
+	TLSCert string
+	// TLSKey is the path to the SSL private key file.
+	TLSKey string
 }
 
 // Load reads configuration from environment variables, falling back to defaults.
@@ -32,6 +40,10 @@ func Load() *Config {
 		S3Port:      envIntOrDefault("OBJECTRA_S3_PORT", 9000),
 		ConsolePort: envIntOrDefault("OBJECTRA_CONSOLE_PORT", 9001),
 		Region:      envOrDefault("OBJECTRA_REGION", "us-east-1"),
+		Domain:      envOrDefault("OBJECTRA_DOMAIN", ""),
+		TLSEnabled:  os.Getenv("OBJECTRA_TLS_ENABLED") == "true",
+		TLSCert:     envOrDefault("OBJECTRA_TLS_CERT", ""),
+		TLSKey:      envOrDefault("OBJECTRA_TLS_KEY", ""),
 	}
 }
 

@@ -1,7 +1,9 @@
 package s3api
 
 import (
+	"encoding/xml"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 
@@ -14,14 +16,16 @@ type Router struct {
 	engine   storage.Engine
 	verifier *auth.SigV4Verifier
 	region   string
+	domain   string
 }
 
 // NewRouter creates a new S3 API router.
-func NewRouter(engine storage.Engine, creds *auth.Credentials, region string) *Router {
+func NewRouter(engine storage.Engine, creds *auth.Credentials, region string, domain string) *Router {
 	return &Router{
 		engine:   engine,
 		verifier: auth.NewSigV4Verifier(creds),
 		region:   region,
+		domain:   domain,
 	}
 }
 
@@ -31,24 +35,30 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Server", "Objectra")
 	w.Header().Set("x-amz-request-id", "objectra")
 
-	// Authenticate the request
+	bucket, key := rt.resolveBucketAndKey(r)
+
+	// Apply CORS headers on all matching requests (preflight or normal)
+	if bucket != "" {
+		hasCORS := rt.handleCORS(w, r, bucket)
+		if r.Method == http.MethodOptions {
+			if hasCORS {
+				return // Preflight completed successfully
+			}
+			// If preflight failed to match CORS, S3 returns a 403 or 400
+			writeS3Error(w, "AccessDenied", "CORS preflight request failed", r.URL.Path)
+			return
+		}
+	} else if r.Method == http.MethodOptions {
+		// OPTIONS request at service level is not supported
+		writeS3Error(w, "MethodNotAllowed", "Method not allowed", r.URL.Path)
+		return
+	}
+
+	// Authenticate the request (bypass for OPTIONS as handled above)
 	if err := rt.verifier.Verify(r); err != nil {
 		log.Printf("[S3] Auth failed: %s %s - %v", r.Method, r.URL.Path, err)
 		writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path)
 		return
-	}
-
-	// Parse the path to determine bucket and key
-	path := strings.TrimPrefix(r.URL.Path, "/")
-	parts := strings.SplitN(path, "/", 2)
-
-	bucket := ""
-	key := ""
-	if len(parts) > 0 {
-		bucket = parts[0]
-	}
-	if len(parts) > 1 {
-		key = parts[1]
 	}
 
 	if bucket != "" && !isValidBucketName(bucket) {
@@ -75,6 +85,61 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rt.handleObjectOps(w, r, bucket, key)
 }
 
+func (rt *Router) resolveBucketAndKey(r *http.Request) (string, string) {
+	host := r.Host
+	if strings.Contains(host, ":") {
+		h, _, err := net.SplitHostPort(host)
+		if err == nil {
+			host = h
+		}
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/")
+
+	if rt.domain != "" && strings.HasSuffix(host, "."+rt.domain) {
+		bucket := strings.TrimSuffix(host, "."+rt.domain)
+		if bucket != "" && !strings.Contains(bucket, ".") {
+			return bucket, path
+		}
+	}
+
+	// Fallback to path style routing
+	parts := strings.SplitN(path, "/", 2)
+	bucket := ""
+	key := ""
+	if len(parts) > 0 {
+		bucket = parts[0]
+	}
+	if len(parts) > 1 {
+		key = parts[1]
+	}
+	return bucket, key
+}
+
+func (rt *Router) handleCORS(w http.ResponseWriter, r *http.Request, bucket string) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false
+	}
+
+	cors, err := rt.engine.GetBucketCORS(bucket)
+	if err != nil || cors == nil {
+		return false
+	}
+
+	headers, matched := EvaluateCORS(r, cors)
+	if matched {
+		for k, v := range headers {
+			w.Header().Set(k, v)
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+		}
+		return true
+	}
+	return false
+}
+
 // handleServiceOps handles service-level operations (e.g., ListBuckets).
 func (rt *Router) handleServiceOps(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -91,16 +156,26 @@ func (rt *Router) handleBucketOps(w http.ResponseWriter, r *http.Request, bucket
 
 	switch r.Method {
 	case http.MethodGet:
-		if query.Get("location") != "" || query.Has("location") {
+		if query.Has("cors") {
+			rt.handleGetBucketCORS(w, r, bucket)
+		} else if query.Get("location") != "" || query.Has("location") {
 			rt.handleGetBucketLocation(w, r, bucket)
 		} else {
 			// ListObjectsV2
 			rt.handleListObjectsV2(w, r, bucket)
 		}
 	case http.MethodPut:
-		rt.handleCreateBucket(w, r, bucket)
+		if query.Has("cors") {
+			rt.handlePutBucketCORS(w, r, bucket)
+		} else {
+			rt.handleCreateBucket(w, r, bucket)
+		}
 	case http.MethodDelete:
-		rt.handleDeleteBucket(w, r, bucket)
+		if query.Has("cors") {
+			rt.handleDeleteBucketCORS(w, r, bucket)
+		} else {
+			rt.handleDeleteBucket(w, r, bucket)
+		}
 	case http.MethodHead:
 		rt.handleHeadBucket(w, r, bucket)
 	default:
@@ -142,4 +217,75 @@ func (rt *Router) handleObjectOps(w http.ResponseWriter, r *http.Request, bucket
 	default:
 		writeS3Error(w, "MethodNotAllowed", "Method not allowed", "/"+bucket+"/"+key)
 	}
+}
+
+func (rt *Router) handleGetBucketCORS(w http.ResponseWriter, r *http.Request, bucket string) {
+	cors, err := rt.engine.GetBucketCORS(bucket)
+	if handleStorageError(w, err, "/"+bucket) {
+		return
+	}
+
+	if cors == nil {
+		writeS3Error(w, "NoSuchCORSConfiguration", "The CORS configuration does not exist", "/"+bucket)
+		return
+	}
+
+	// Map storage CORS to XML CORS
+	var rulesXML []CORSRuleXML
+	for _, rule := range cors.CORSRules {
+		rulesXML = append(rulesXML, CORSRuleXML{
+			AllowedHeader: rule.AllowedHeaders,
+			AllowedMethod: rule.AllowedMethods,
+			AllowedOrigin: rule.AllowedOrigins,
+			ExposeHeader:  rule.ExposeHeaders,
+			MaxAgeSeconds: rule.MaxAgeSeconds,
+		})
+	}
+
+	result := CORSConfigurationXML{
+		Xmlns:     s3XmlNamespace,
+		CORSRules: rulesXML,
+	}
+
+	writeXML(w, http.StatusOK, result)
+}
+
+func (rt *Router) handlePutBucketCORS(w http.ResponseWriter, r *http.Request, bucket string) {
+	var reqBody CORSConfigurationXML
+	if err := xml.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", "/"+bucket)
+		return
+	}
+
+	// Map XML CORS to storage CORS
+	var rules []storage.CORSRule
+	for _, rule := range reqBody.CORSRules {
+		rules = append(rules, storage.CORSRule{
+			AllowedHeaders: rule.AllowedHeader,
+			AllowedMethods: rule.AllowedMethod,
+			AllowedOrigins: rule.AllowedOrigin,
+			ExposeHeaders:  rule.ExposeHeader,
+			MaxAgeSeconds:  rule.MaxAgeSeconds,
+		})
+	}
+
+	cors := &storage.CORSConfiguration{
+		CORSRules: rules,
+	}
+
+	err := rt.engine.PutBucketCORS(bucket, cors)
+	if handleStorageError(w, err, "/"+bucket) {
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (rt *Router) handleDeleteBucketCORS(w http.ResponseWriter, r *http.Request, bucket string) {
+	err := rt.engine.DeleteBucketCORS(bucket)
+	if handleStorageError(w, err, "/"+bucket) {
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

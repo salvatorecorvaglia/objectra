@@ -22,6 +22,7 @@ var errorHTTPStatus = map[string]int{
 	"NoSuchBucket":            http.StatusNotFound,
 	"NoSuchKey":               http.StatusNotFound,
 	"NoSuchUpload":            http.StatusNotFound,
+	"NoSuchCORSConfiguration": http.StatusNotFound,
 	"InternalError":           http.StatusInternalServerError,
 	"MethodNotAllowed":        http.StatusMethodNotAllowed,
 	"MalformedXML":            http.StatusBadRequest,
