@@ -1,11 +1,12 @@
 package s3api
 
 import (
+	"encoding/xml"
 	"net/http"
 )
 
 // handleListBuckets handles GET / (ListBuckets).
-func (rt *Router) handleListBuckets(w http.ResponseWriter, r *http.Request) {
+func (rt *Router) handleListBuckets(w http.ResponseWriter, _ *http.Request) {
 	buckets, err := rt.engine.ListBuckets()
 	if err != nil {
 		writeS3Error(w, "InternalError", err.Error(), "/")
@@ -35,7 +36,7 @@ func (rt *Router) handleListBuckets(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCreateBucket handles PUT /<bucket> (CreateBucket).
-func (rt *Router) handleCreateBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+func (rt *Router) handleCreateBucket(w http.ResponseWriter, _ *http.Request, bucket string) {
 	if !isValidBucketName(bucket) {
 		writeS3Error(w, "InvalidBucketName", "The specified bucket is not valid.", "/"+bucket)
 		return
@@ -50,7 +51,7 @@ func (rt *Router) handleCreateBucket(w http.ResponseWriter, r *http.Request, buc
 }
 
 // handleDeleteBucket handles DELETE /<bucket> (DeleteBucket).
-func (rt *Router) handleDeleteBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+func (rt *Router) handleDeleteBucket(w http.ResponseWriter, _ *http.Request, bucket string) {
 	if err := rt.engine.DeleteBucket(bucket); handleStorageError(w, err, "/"+bucket) {
 		return
 	}
@@ -59,7 +60,7 @@ func (rt *Router) handleDeleteBucket(w http.ResponseWriter, r *http.Request, buc
 }
 
 // handleHeadBucket handles HEAD /<bucket> (HeadBucket).
-func (rt *Router) handleHeadBucket(w http.ResponseWriter, r *http.Request, bucket string) {
+func (rt *Router) handleHeadBucket(w http.ResponseWriter, _ *http.Request, bucket string) {
 	exists, err := rt.engine.BucketExists(bucket)
 	if err != nil {
 		writeS3Error(w, "InternalError", err.Error(), "/"+bucket)
@@ -74,7 +75,7 @@ func (rt *Router) handleHeadBucket(w http.ResponseWriter, r *http.Request, bucke
 }
 
 // handleGetBucketLocation handles GET /<bucket>?location (GetBucketLocation).
-func (rt *Router) handleGetBucketLocation(w http.ResponseWriter, r *http.Request, bucket string) {
+func (rt *Router) handleGetBucketLocation(w http.ResponseWriter, _ *http.Request, bucket string) {
 	exists, err := rt.engine.BucketExists(bucket)
 	if err != nil {
 		writeS3Error(w, "InternalError", err.Error(), "/"+bucket)
@@ -106,4 +107,43 @@ func isValidBucketName(name string) bool {
 		return false
 	}
 	return true
+}
+
+// handleGetBucketVersioning handles GET /<bucket>?versioning.
+func (rt *Router) handleGetBucketVersioning(w http.ResponseWriter, _ *http.Request, bucket string) {
+	status, err := rt.engine.GetBucketVersioning(bucket)
+	if handleStorageError(w, err, "/"+bucket) {
+		return
+	}
+
+	result := VersioningConfigurationXML{
+		Xmlns: s3XmlNamespace,
+	}
+	if status == "Enabled" || status == "Suspended" {
+		result.Status = status
+	}
+
+	writeXML(w, http.StatusOK, result)
+}
+
+// handlePutBucketVersioning handles PUT /<bucket>?versioning.
+func (rt *Router) handlePutBucketVersioning(w http.ResponseWriter, r *http.Request, bucket string) {
+	var reqBody VersioningConfigurationXML
+	if err := xml.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", "/"+bucket)
+		return
+	}
+
+	status := reqBody.Status
+	// S3 accepts empty status to disable or explicit Suspended/Enabled
+	if status == "" {
+		status = "Disabled"
+	}
+
+	err := rt.engine.SetBucketVersioning(bucket, status)
+	if handleStorageError(w, err, "/"+bucket) {
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }

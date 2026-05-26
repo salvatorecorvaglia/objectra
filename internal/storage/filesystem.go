@@ -1,9 +1,14 @@
 package storage
 
 import (
+	"context"
+	"compress/gzip"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/md5"
-	"encoding/json"
+	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -45,8 +50,7 @@ func NewFilesystemEngine(dataDir string) (*FilesystemEngine, error) {
 		return nil, fmt.Errorf("failed to create multipart directory: %w", err)
 	}
 
-	metaPath := filepath.Join(dataDir, "objectra.db")
-	meta, err := NewMetadataStore(metaPath)
+	meta, err := NewMetadataStore(dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -76,6 +80,30 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 		return "", fmt.Errorf("invalid object key: path traversal detected")
 	}
 	return resolved, nil
+}
+
+func (fs *FilesystemEngine) objectPathWithVersion(bucket, key, versionID string) (string, error) {
+	base, err := fs.objectPath(bucket, key)
+	if err != nil {
+		return "", err
+	}
+	if versionID != "" {
+		return base + "." + versionID, nil
+	}
+	return base, nil
+}
+
+func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
+	dir := filepath.Dir(objPath)
+	bucketDir := fs.bucketPath(bucket)
+	for dir != bucketDir {
+		entries, _ := os.ReadDir(dir)
+		if len(entries) > 0 {
+			break
+		}
+		os.Remove(dir)
+		dir = filepath.Dir(dir)
+	}
 }
 
 func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) string {
@@ -210,7 +238,7 @@ func (fs *FilesystemEngine) CountObjects(bucket string) (int, error) {
 }
 
 // PutObject stores an object, streaming data directly to disk.
-func (fs *FilesystemEngine) PutObject(bucket, key string, reader io.Reader, size int64, contentType string) (*ObjectInfo, error) {
+func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (*ObjectInfo, error) {
 	if err := fs.validateBucketName(bucket); err != nil {
 		return nil, err
 	}
@@ -223,7 +251,20 @@ func (fs *FilesystemEngine) PutObject(bucket, key string, reader io.Reader, size
 		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
 	}
 
-	objPath, err := fs.objectPath(bucket, key)
+	versionStatus, err := fs.metadata.GetBucketVersioning(bucket)
+	if err != nil {
+		versionStatus = ""
+	}
+
+	var versionID string
+	switch versionStatus {
+	case "Enabled":
+		versionID = uuid.New().String()
+	case "Suspended":
+		versionID = "null"
+	}
+
+	objPath, err := fs.objectPathWithVersion(bucket, key, versionID)
 	if err != nil {
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
@@ -244,11 +285,56 @@ func (fs *FilesystemEngine) PutObject(bucket, key string, reader io.Reader, size
 		os.Remove(tmpPath) // Clean up on failure; no-op if already renamed
 	}()
 
+	// Extract SSECParams from context
+	var ssecParams *SSECParams
+	if ctx != nil {
+		if params, ok := ctx.Value(SSECContextKey).(*SSECParams); ok && params != nil {
+			ssecParams = params
+		}
+	}
+
+	var out io.Writer = tmpFile
+	var gzipWriter *gzip.Writer
+
+	if ssecParams != nil {
+		// Generate random IV
+		iv := make([]byte, 16)
+		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+			return nil, fmt.Errorf("failed to generate random IV: %w", err)
+		}
+		if _, err := tmpFile.Write(iv); err != nil {
+			return nil, fmt.Errorf("failed to write IV to file: %w", err)
+		}
+
+		block, err := aes.NewCipher(ssecParams.Key)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+		}
+		stream := cipher.NewCTR(block, iv)
+		out = &cipher.StreamWriter{S: stream, W: out}
+	}
+
+	compressed := false
+	if isCompressibleContentType(contentType) {
+		compressed = true
+	}
+
+	if compressed {
+		gzipWriter = gzip.NewWriter(out)
+		out = gzipWriter
+	}
+
 	// Stream data to disk while computing MD5
 	hash := md5.New()
-	written, err := io.Copy(io.MultiWriter(tmpFile, hash), reader)
+	written, err := io.Copy(io.MultiWriter(out, hash), reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write object data: %w", err)
+	}
+
+	if gzipWriter != nil {
+		if err := gzipWriter.Close(); err != nil {
+			return nil, fmt.Errorf("failed to close gzip writer: %w", err)
+		}
 	}
 
 	// Validate size mismatch (truncated uploads)
@@ -277,27 +363,40 @@ func (fs *FilesystemEngine) PutObject(bucket, key string, reader io.Reader, size
 		ETag:         etag,
 		ContentType:  contentType,
 		LastModified: time.Now().UTC(),
+		VersionID:    versionID,
+		Compressed:   compressed,
+	}
+
+	if ssecParams != nil {
+		info.SSECustomerAlgorithm = ssecParams.Algorithm
+		info.SSECustomerKeyMD5 = ssecParams.KeyMD5
 	}
 
 	if err := fs.metadata.PutObjectMeta(info); err != nil {
 		return nil, err
 	}
 
+	GlobalMetrics.AddUploaded(uint64(written))
+
+	triggerWebhook("ObjectCreated:Put", info)
+
+	MirrorSync(fs, bucket, key, "PUT")
+
 	return info, nil
 }
 
 // GetObject retrieves an object's data and metadata.
-func (fs *FilesystemEngine) GetObject(bucket, key string) (io.ReadCloser, *ObjectInfo, error) {
+func (fs *FilesystemEngine) GetObject(ctx context.Context, bucket, key, versionID string) (io.ReadCloser, *ObjectInfo, error) {
 	if err := fs.validateBucketName(bucket); err != nil {
 		return nil, nil, err
 	}
 
-	info, err := fs.metadata.GetObjectMeta(bucket, key)
+	info, err := fs.HeadObject(ctx, bucket, key, versionID)
 	if err != nil {
-		return nil, nil, &S3Error{Code: "NoSuchKey", Message: "The specified key does not exist."}
+		return nil, info, err
 	}
 
-	objPath, err := fs.objectPath(bucket, key)
+	objPath, err := fs.objectPathWithVersion(bucket, key, info.VersionID)
 	if err != nil {
 		return nil, nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
@@ -307,47 +406,186 @@ func (fs *FilesystemEngine) GetObject(bucket, key string) (io.ReadCloser, *Objec
 		return nil, nil, &S3Error{Code: "NoSuchKey", Message: "The specified key does not exist."}
 	}
 
-	return file, info, nil
+	var closers []io.Closer
+	closers = append(closers, file)
+	var reader io.Reader = file
+
+	var ssecParams *SSECParams
+	if ctx != nil {
+		if params, ok := ctx.Value(SSECContextKey).(*SSECParams); ok && params != nil {
+			ssecParams = params
+		}
+	}
+
+	if info.SSECustomerAlgorithm != "" && ssecParams != nil {
+		iv := make([]byte, 16)
+		if _, err := io.ReadFull(file, iv); err != nil {
+			file.Close()
+			return nil, nil, fmt.Errorf("failed to read IV: %w", err)
+		}
+		block, err := aes.NewCipher(ssecParams.Key)
+		if err != nil {
+			file.Close()
+			return nil, nil, fmt.Errorf("failed to create AES cipher: %w", err)
+		}
+		stream := cipher.NewCTR(block, iv)
+		reader = &cipher.StreamReader{S: stream, R: file}
+	}
+
+	if info.Compressed {
+		gzipReader, err := gzip.NewReader(reader)
+		if err != nil {
+			file.Close()
+			return nil, nil, fmt.Errorf("failed to initialize gzip reader: %w", err)
+		}
+		closers = append(closers, gzipReader)
+		reader = gzipReader
+	}
+
+	rc := &readCloserWrapper{Reader: reader, closers: closers}
+	return &metricsReadCloser{ReadCloser: rc}, info, nil
 }
 
 // HeadObject retrieves object metadata without the data.
-func (fs *FilesystemEngine) HeadObject(bucket, key string) (*ObjectInfo, error) {
+func (fs *FilesystemEngine) HeadObject(ctx context.Context, bucket, key, versionID string) (*ObjectInfo, error) {
 	if err := fs.validateBucketName(bucket); err != nil {
 		return nil, err
 	}
 
-	info, err := fs.metadata.GetObjectMeta(bucket, key)
+	info, err := fs.metadata.GetObjectMeta(bucket, key, versionID)
 	if err != nil {
 		return nil, &S3Error{Code: "NoSuchKey", Message: "The specified key does not exist."}
 	}
+
+	if info.IsDeleteMarker {
+		return info, &S3Error{Code: "NoSuchKey", Message: "The specified key does not exist."}
+	}
+
+	// Extract SSECParams from context
+	var ssecParams *SSECParams
+	if ctx != nil {
+		if params, ok := ctx.Value(SSECContextKey).(*SSECParams); ok && params != nil {
+			ssecParams = params
+		}
+	}
+
+	// 1. If object is encrypted but no SSE-C params provided
+	if info.SSECustomerAlgorithm != "" && ssecParams == nil {
+		return info, &S3Error{
+			Code:    "InvalidArgument",
+			Message: "The object was stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved without it",
+		}
+	}
+
+	// 2. If object is NOT encrypted but SSE-C params ARE provided
+	if info.SSECustomerAlgorithm == "" && ssecParams != nil {
+		return info, &S3Error{
+			Code:    "InvalidArgument",
+			Message: "The object was not stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved with it",
+		}
+	}
+
+	// 3. If object is encrypted and SSE-C params are provided, check MD5 match
+	if info.SSECustomerAlgorithm != "" && ssecParams != nil {
+		if ssecParams.KeyMD5 != info.SSECustomerKeyMD5 {
+			return info, &S3Error{
+				Code:    "InvalidDigest",
+				Message: "The customer-provided encryption key MD5 does not match",
+			}
+		}
+	}
+
 	return info, nil
 }
 
-// DeleteObject removes an object.
-func (fs *FilesystemEngine) DeleteObject(bucket, key string) error {
+// DeleteObject removes an object version or creates a delete marker.
+func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 	if err := fs.validateBucketName(bucket); err != nil {
 		return err
 	}
 
-	objPath, err := fs.objectPath(bucket, key)
+	versionStatus, err := fs.metadata.GetBucketVersioning(bucket)
+	if err != nil {
+		versionStatus = ""
+	}
+
+	if versionID != "" {
+		objPath, err := fs.objectPathWithVersion(bucket, key, versionID)
+		if err != nil {
+			return &S3Error{Code: "InvalidArgument", Message: err.Error()}
+		}
+		os.Remove(objPath)
+		fs.cleanupParentDirs(objPath, bucket)
+
+		err = fs.metadata.DeleteObjectMeta(bucket, key, versionID)
+		if err != nil {
+			return err
+		}
+
+		info := &ObjectInfo{
+			Bucket:    bucket,
+			Key:       key,
+			VersionID: versionID,
+		}
+		triggerWebhook("ObjectRemoved:Delete", info)
+		MirrorSync(fs, bucket, key, "DELETE")
+		return nil
+	}
+
+	if versionStatus == "Enabled" || versionStatus == "Suspended" {
+		var delVersionID string
+		switch versionStatus {
+		case "Enabled":
+			delVersionID = uuid.New().String()
+		case "Suspended":
+			delVersionID = "null"
+			objPath, err := fs.objectPathWithVersion(bucket, key, "null")
+			if err == nil {
+				os.Remove(objPath)
+				fs.cleanupParentDirs(objPath, bucket)
+			}
+		}
+
+		info := &ObjectInfo{
+			Bucket:         bucket,
+			Key:            key,
+			Size:           0,
+			ETag:           "",
+			ContentType:    "",
+			LastModified:   time.Now().UTC(),
+			VersionID:      delVersionID,
+			IsDeleteMarker: true,
+		}
+
+		if err := fs.metadata.PutObjectMeta(info); err != nil {
+			return err
+		}
+
+		triggerWebhook("ObjectRemoved:DeleteMarkerCreated", info)
+		MirrorSync(fs, bucket, key, "DELETE")
+		return nil
+	}
+
+	info, err := fs.metadata.GetObjectMeta(bucket, key, "")
+	if err != nil {
+		return nil
+	}
+
+	objPath, err := fs.objectPathWithVersion(bucket, key, info.VersionID)
 	if err != nil {
 		return &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
-	os.Remove(objPath) // Best-effort file removal
+	os.Remove(objPath)
+	fs.cleanupParentDirs(objPath, bucket)
 
-	// Clean up empty parent directories
-	dir := filepath.Dir(objPath)
-	bucketDir := fs.bucketPath(bucket)
-	for dir != bucketDir {
-		entries, _ := os.ReadDir(dir)
-		if len(entries) > 0 {
-			break
-		}
-		os.Remove(dir)
-		dir = filepath.Dir(dir)
+	err = fs.metadata.DeleteObjectMeta(bucket, key, "")
+	if err != nil {
+		return err
 	}
 
-	return fs.metadata.DeleteObjectMeta(bucket, key)
+	triggerWebhook("ObjectRemoved:Delete", info)
+	MirrorSync(fs, bucket, key, "DELETE")
+	return nil
 }
 
 // CopyObject copies an object from one location to another.
@@ -359,13 +597,82 @@ func (fs *FilesystemEngine) CopyObject(srcBucket, srcKey, dstBucket, dstKey stri
 		return nil, err
 	}
 
-	reader, srcInfo, err := fs.GetObject(srcBucket, srcKey)
+	var srcVersionID string
+	if parts := strings.SplitN(srcKey, "?versionId=", 2); len(parts) == 2 {
+		srcKey = parts[0]
+		srcVersionID = parts[1]
+	}
+
+	reader, srcInfo, err := fs.GetObject(context.Background(), srcBucket, srcKey, srcVersionID)
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
 
-	return fs.PutObject(dstBucket, dstKey, reader, srcInfo.Size, srcInfo.ContentType)
+	return fs.PutObject(context.Background(), dstBucket, dstKey, reader, srcInfo.Size, srcInfo.ContentType)
+}
+
+// GetBucketVersioning gets the versioning status of a bucket.
+func (fs *FilesystemEngine) GetBucketVersioning(bucket string) (string, error) {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return "", err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.GetBucketVersioning(bucket)
+}
+
+// SetBucketVersioning sets the versioning status of a bucket.
+func (fs *FilesystemEngine) SetBucketVersioning(bucket, status string) error {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	if status != "Enabled" && status != "Suspended" && status != "Disabled" {
+		return &S3Error{Code: "InvalidArgument", Message: "Versioning status must be Enabled, Suspended, or Disabled"}
+	}
+	return fs.metadata.PutBucketVersioning(bucket, status)
+}
+
+// SetBucketPublic sets the public status of a bucket.
+func (fs *FilesystemEngine) SetBucketPublic(bucket string, public bool) error {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.SetBucketPublic(bucket, public)
+}
+
+// IsBucketPublic gets the public status of a bucket.
+func (fs *FilesystemEngine) IsBucketPublic(bucket string) (bool, error) {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return false, err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.IsBucketPublic(bucket)
 }
 
 // ListObjects lists objects in a bucket with prefix, delimiter, and pagination support.
@@ -411,7 +718,12 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 	isTruncated := false
 	nextToken := ""
 
-	err = fs.metadata.db.View(func(tx *bolt.Tx) error {
+	db, err := fs.metadata.getBucketDB(input.Bucket)
+	if err != nil {
+		return nil, err
+	}
+
+	err = db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(objectsBucket)
 		c := b.Cursor()
 
@@ -423,6 +735,11 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 
 			objectKey := string(k[len(bucketPrefix):])
 
+			if strings.Contains(objectKey, "\x00") {
+				k, v = c.Next()
+				continue
+			}
+
 			if startAfter != "" && objectKey <= startAfter {
 				k, v = c.Next()
 				continue
@@ -432,6 +749,15 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 				if !strings.HasPrefix(objectKey, input.Prefix) {
 					break
 				}
+			}
+
+			var obj ObjectInfo
+			if err := json.Unmarshal(v, &obj); err != nil {
+				return err
+			}
+			if obj.IsDeleteMarker {
+				k, v = c.Next()
+				continue
 			}
 
 			if input.Delimiter != "" {
@@ -458,10 +784,6 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 				break
 			}
 
-			var obj ObjectInfo
-			if err := json.Unmarshal(v, &obj); err != nil {
-				return err
-			}
 			objects = append(objects, obj)
 			nextToken = obj.Key
 
@@ -521,6 +843,8 @@ func (fs *FilesystemEngine) CreateMultipartUpload(bucket, key, contentType strin
 		return nil, err
 	}
 
+	GlobalMetrics.IncActiveMultiparts()
+
 	return &MultipartUploadInfo{
 		UploadID: uploadID,
 		Bucket:   bucket,
@@ -530,7 +854,7 @@ func (fs *FilesystemEngine) CreateMultipartUpload(bucket, key, contentType strin
 }
 
 // UploadPart stores a single part of a multipart upload.
-func (fs *FilesystemEngine) UploadPart(bucket, key, uploadID string, partNumber int, reader io.Reader, size int64) (*PartInfo, error) {
+func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int, reader io.Reader, size int64) (*PartInfo, error) {
 	if err := fs.validateBucketName(bucket); err != nil {
 		return nil, err
 	}
@@ -543,26 +867,98 @@ func (fs *FilesystemEngine) UploadPart(bucket, key, uploadID string, partNumber 
 		return nil, &S3Error{Code: "NoSuchUpload", Message: "The specified multipart upload does not exist."}
 	}
 
+	// Extract SSECParams from context
+	var ssecParams *SSECParams
+	if ctx != nil {
+		if params, ok := ctx.Value(SSECContextKey).(*SSECParams); ok && params != nil {
+			ssecParams = params
+		}
+	}
+
+	// SSE-C validation
+	if meta.SSECustomerAlgorithm != "" && ssecParams == nil {
+		return nil, &S3Error{Code: "InvalidArgument", Message: "The object was stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved without it"}
+	}
+	if meta.SSECustomerAlgorithm == "" && len(meta.Parts) > 0 && ssecParams != nil {
+		return nil, &S3Error{Code: "InvalidArgument", Message: "The object was not stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved with it"}
+	}
+	if meta.SSECustomerAlgorithm != "" && ssecParams != nil {
+		if ssecParams.KeyMD5 != meta.SSECustomerKeyMD5 {
+			return nil, &S3Error{Code: "InvalidDigest", Message: "The customer-provided encryption key MD5 does not match"}
+		}
+	}
+
+	// First part upload with SSE-C: initialize parameters in metadata
+	if meta.SSECustomerAlgorithm == "" && len(meta.Parts) == 0 && ssecParams != nil {
+		meta.SSECustomerAlgorithm = ssecParams.Algorithm
+		meta.SSECustomerKey = ssecParams.Key
+		meta.SSECustomerKeyMD5 = ssecParams.KeyMD5
+		if err := fs.metadata.PutMultipartMeta(meta); err != nil {
+			return nil, err
+		}
+	}
+
 	partDir := fs.multipartDir(bucket, key, uploadID)
 	partPath := filepath.Join(partDir, fmt.Sprintf("part-%05d", partNumber))
 
-	file, err := os.Create(partPath)
+	tmpFile, err := os.CreateTemp(partDir, ".part-tmp-*")
 	if err != nil {
-		return nil, fmt.Errorf("failed to create part file: %w", err)
+		return nil, fmt.Errorf("failed to create temp part file: %w", err)
 	}
-	defer file.Close()
+	tmpPath := tmpFile.Name()
+	defer func() {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+	}()
 
 	hash := md5.New()
-	written, err := io.Copy(io.MultiWriter(file, hash), reader)
+	var out io.Writer = tmpFile
+	var gzipWriter *gzip.Writer
+
+	if ssecParams != nil {
+		iv := make([]byte, 16)
+		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+			return nil, fmt.Errorf("failed to generate random IV: %w", err)
+		}
+		if _, err := tmpFile.Write(iv); err != nil {
+			return nil, fmt.Errorf("failed to write IV: %w", err)
+		}
+
+		block, err := aes.NewCipher(ssecParams.Key)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+		}
+		stream := cipher.NewCTR(block, iv)
+		out = &cipher.StreamWriter{S: stream, W: out}
+	}
+
+	compressed := isCompressibleContentType(meta.ContentType)
+	if compressed {
+		gzipWriter = gzip.NewWriter(out)
+		out = gzipWriter
+	}
+
+	written, err := io.Copy(io.MultiWriter(out, hash), reader)
 	if err != nil {
-		os.Remove(partPath)
 		return nil, fmt.Errorf("failed to write part data: %w", err)
 	}
 
-	// Validate size mismatch (truncated uploads)
+	if gzipWriter != nil {
+		if err := gzipWriter.Close(); err != nil {
+			return nil, fmt.Errorf("failed to close gzip writer: %w", err)
+		}
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return nil, fmt.Errorf("failed to close temp part file: %w", err)
+	}
+
 	if size >= 0 && written != size {
-		os.Remove(partPath)
 		return nil, &S3Error{Code: "BadRequest", Message: fmt.Sprintf("Size mismatch: expected %d bytes, wrote %d bytes", size, written)}
+	}
+
+	if err := os.Rename(tmpPath, partPath); err != nil {
+		return nil, fmt.Errorf("failed to rename part file: %w", err)
 	}
 
 	etag := hex.EncodeToString(hash.Sum(nil))
@@ -589,6 +985,8 @@ func (fs *FilesystemEngine) UploadPart(bucket, key, uploadID string, partNumber 
 		return nil, err
 	}
 
+	GlobalMetrics.AddUploaded(uint64(written))
+
 	return &partInfo, nil
 }
 
@@ -611,7 +1009,20 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		return parts[i].PartNumber < parts[j].PartNumber
 	})
 
-	objPath, err := fs.objectPath(bucket, key)
+	versionStatus, err := fs.metadata.GetBucketVersioning(bucket)
+	if err != nil {
+		versionStatus = ""
+	}
+
+	var versionID string
+	switch versionStatus {
+	case "Enabled":
+		versionID = uuid.New().String()
+	case "Suspended":
+		versionID = "null"
+	}
+
+	objPath, err := fs.objectPathWithVersion(bucket, key, versionID)
 	if err != nil {
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
@@ -619,7 +1030,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		return nil, fmt.Errorf("failed to create object directory: %w", err)
 	}
 
-	// BUG-12: Use atomic temp-file + rename for crash safety (matching PutObject behavior)
+	// Use atomic temp-file + rename for crash safety
 	tmpFile, err := os.CreateTemp(filepath.Dir(objPath), ".objectra-multipart-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp file: %w", err)
@@ -627,8 +1038,34 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 	tmpPath := tmpFile.Name()
 	defer func() {
 		tmpFile.Close()
-		os.Remove(tmpPath) // Clean up on failure; no-op if already renamed
+		os.Remove(tmpPath)
 	}()
+
+	var out io.Writer = tmpFile
+	var gzipWriter *gzip.Writer
+
+	if meta.SSECustomerAlgorithm != "" {
+		newIV := make([]byte, 16)
+		if _, err := io.ReadFull(rand.Reader, newIV); err != nil {
+			return nil, fmt.Errorf("failed to generate random IV: %w", err)
+		}
+		if _, err := tmpFile.Write(newIV); err != nil {
+			return nil, fmt.Errorf("failed to write IV: %w", err)
+		}
+
+		block, err := aes.NewCipher(meta.SSECustomerKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+		}
+		stream := cipher.NewCTR(block, newIV)
+		out = &cipher.StreamWriter{S: stream, W: out}
+	}
+
+	compressed := isCompressibleContentType(meta.ContentType)
+	if compressed {
+		gzipWriter = gzip.NewWriter(out)
+		out = gzipWriter
+	}
 
 	hash := md5.New()
 	var totalSize int64
@@ -640,12 +1077,56 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		if err != nil {
 			return nil, fmt.Errorf("part %d not found: %w", part.PartNumber, err)
 		}
-		n, err := io.Copy(io.MultiWriter(tmpFile, hash), partFile)
-		partFile.Close()
+
+		var partReader io.Reader = partFile
+		var closers []io.Closer
+		closers = append(closers, partFile)
+
+		if meta.SSECustomerAlgorithm != "" {
+			partIV := make([]byte, 16)
+			if _, err := io.ReadFull(partFile, partIV); err != nil {
+				for _, c := range closers {
+					c.Close()
+				}
+				return nil, fmt.Errorf("failed to read part IV: %w", err)
+			}
+			block, err := aes.NewCipher(meta.SSECustomerKey)
+			if err != nil {
+				for _, c := range closers {
+					c.Close()
+				}
+				return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+			}
+			stream := cipher.NewCTR(block, partIV)
+			partReader = &cipher.StreamReader{S: stream, R: partFile}
+		}
+
+		if compressed {
+			gzReader, err := gzip.NewReader(partReader)
+			if err != nil {
+				for _, c := range closers {
+					c.Close()
+				}
+				return nil, fmt.Errorf("failed to initialize gzip reader: %w", err)
+			}
+			closers = append(closers, gzReader)
+			partReader = gzReader
+		}
+
+		n, err := io.Copy(io.MultiWriter(out, hash), partReader)
+		for _, c := range closers {
+			c.Close()
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to copy part %d: %w", part.PartNumber, err)
 		}
 		totalSize += n
+	}
+
+	if gzipWriter != nil {
+		if err := gzipWriter.Close(); err != nil {
+			return nil, fmt.Errorf("failed to close gzip writer: %w", err)
+		}
 	}
 
 	if err := tmpFile.Close(); err != nil {
@@ -657,7 +1138,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		return nil, fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
-	// Calculate S3-compliant multipart ETag (MD5 of concatenated parts' MD5s)
+	// Calculate S3-compliant multipart ETag
 	var md5s []byte
 	for _, part := range parts {
 		b, err := hex.DecodeString(part.ETag)
@@ -686,6 +1167,13 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		ETag:         etag,
 		ContentType:  contentType,
 		LastModified: time.Now().UTC(),
+		VersionID:    versionID,
+		Compressed:   compressed,
+	}
+
+	if meta.SSECustomerAlgorithm != "" {
+		info.SSECustomerAlgorithm = meta.SSECustomerAlgorithm
+		info.SSECustomerKeyMD5 = meta.SSECustomerKeyMD5
 	}
 
 	if err := fs.metadata.PutObjectMeta(info); err != nil {
@@ -695,6 +1183,12 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 	// Clean up multipart temp files
 	os.RemoveAll(filepath.Join(fs.dataDir, "multipart", bucket, uploadID))
 	fs.metadata.DeleteMultipartMeta(bucket, key, uploadID)
+
+	GlobalMetrics.DecActiveMultiparts()
+
+	triggerWebhook("ObjectCreated:CompleteMultipartUpload", info)
+
+	MirrorSync(fs, bucket, key, "PUT")
 
 	return info, nil
 }
@@ -714,7 +1208,11 @@ func (fs *FilesystemEngine) AbortMultipartUpload(bucket, key, uploadID string) e
 	}
 
 	os.RemoveAll(filepath.Join(fs.dataDir, "multipart", bucket, uploadID))
-	return fs.metadata.DeleteMultipartMeta(bucket, key, uploadID)
+	err = fs.metadata.DeleteMultipartMeta(bucket, key, uploadID)
+	if err == nil {
+		GlobalMetrics.DecActiveMultiparts()
+	}
+	return err
 }
 
 func (fs *FilesystemEngine) validateBucketName(name string) error {
@@ -783,25 +1281,41 @@ func (fs *FilesystemEngine) CleanExpiredMultipartUploads(cutoff time.Duration) e
 	}
 	var aborts []uploadToAbort
 
-	now := time.Now().UTC()
-	err := fs.metadata.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(multipartBucket)
-		return b.ForEach(func(k, v []byte) error {
-			var meta MultipartMeta
-			if err := json.Unmarshal(v, &meta); err == nil {
-				if now.Sub(meta.Created) > cutoff {
-					aborts = append(aborts, uploadToAbort{
-						bucket:   meta.Bucket,
-						key:      meta.Key,
-						uploadID: meta.UploadID,
-					})
-				}
-			}
-			return nil
-		})
-	})
+	buckets, err := fs.metadata.ListBuckets()
 	if err != nil {
 		return err
+	}
+
+	now := time.Now().UTC()
+	for _, bInfo := range buckets {
+		db, err := fs.metadata.getBucketDB(bInfo.Name)
+		if err != nil {
+			log.Printf("[Storage] Failed to open DB for bucket %s during multipart cleanup: %v", bInfo.Name, err)
+			continue
+		}
+
+		err = db.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket(multipartBucket)
+			if b == nil {
+				return nil
+			}
+			return b.ForEach(func(k, v []byte) error {
+				var meta MultipartMeta
+				if err := json.Unmarshal(v, &meta); err == nil {
+					if now.Sub(meta.Created) > cutoff {
+						aborts = append(aborts, uploadToAbort{
+							bucket:   meta.Bucket,
+							key:      meta.Key,
+							uploadID: meta.UploadID,
+						})
+					}
+				}
+				return nil
+			})
+		})
+		if err != nil {
+			log.Printf("[Storage] Failed to scan multipart uploads for bucket %s: %v", bInfo.Name, err)
+		}
 	}
 
 	for _, u := range aborts {
@@ -811,3 +1325,52 @@ func (fs *FilesystemEngine) CleanExpiredMultipartUploads(cutoff time.Duration) e
 
 	return nil
 }
+
+type readCloserWrapper struct {
+	io.Reader
+	closers []io.Closer
+}
+
+func (w *readCloserWrapper) Close() error {
+	var firstErr error
+	for _, c := range w.closers {
+		if err := c.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func isCompressibleContentType(contentType string) bool {
+	contentType = strings.ToLower(strings.TrimSpace(contentType))
+	if idx := strings.Index(contentType, ";"); idx != -1 {
+		contentType = contentType[:idx]
+		contentType = strings.TrimSpace(contentType)
+	}
+	if strings.HasPrefix(contentType, "text/") {
+		return true
+	}
+	switch contentType {
+	case "application/json", "application/xml", "application/javascript", "application/x-javascript", "image/svg+xml":
+		return true
+	}
+	return false
+}
+
+type metricsReadCloser struct {
+	io.ReadCloser
+}
+
+func (m *metricsReadCloser) Read(p []byte) (int, error) {
+	n, err := m.ReadCloser.Read(p)
+	GlobalMetrics.AddDownloaded(uint64(n))
+	return n, err
+}
+
+// DataDir returns the path to the storage data directory.
+func (fs *FilesystemEngine) DataDir() string {
+	return fs.dataDir
+}
+
+
+

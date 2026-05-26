@@ -150,3 +150,12 @@ type CORSRuleXML struct {
 	ExposeHeader  []string `xml:"ExposeHeader,omitempty"`
 	MaxAgeSeconds int      `xml:"MaxAgeSeconds,omitempty"`
 }
+
+// --- Versioning ---
+
+// VersioningConfigurationXML represents S3 bucket versioning configuration XML body/response.
+type VersioningConfigurationXML struct {
+	XMLName xml.Name `xml:"VersioningConfiguration"`
+	Xmlns   string   `xml:"xmlns,attr,omitempty"`
+	Status  string   `xml:"Status,omitempty"`
+}

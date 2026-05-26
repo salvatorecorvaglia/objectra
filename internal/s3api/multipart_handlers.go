@@ -1,6 +1,7 @@
 package s3api
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"net/http"
@@ -45,9 +46,25 @@ func (rt *Router) handleUploadPart(w http.ResponseWriter, r *http.Request, bucke
 		return
 	}
 
-	partInfo, err := rt.engine.UploadPart(bucket, key, uploadID, partNumber, r.Body, r.ContentLength)
+	params, err := extractSSECParams(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+
+	ctx := r.Context()
+	if params != nil {
+		ctx = context.WithValue(ctx, storage.SSECContextKey, params)
+	}
+
+	partInfo, err := rt.engine.UploadPart(ctx, bucket, key, uploadID, partNumber, r.Body, r.ContentLength)
 	if handleStorageError(w, err, resource) {
 		return
+	}
+
+	if params != nil {
+		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", params.Algorithm)
+		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", params.KeyMD5)
 	}
 
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, partInfo.ETag))
@@ -89,6 +106,14 @@ func (rt *Router) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		Bucket:   bucket,
 		Key:      key,
 		ETag:     fmt.Sprintf(`"%s"`, info.ETag),
+	}
+
+	if info.VersionID != "" {
+		w.Header().Set("x-amz-version-id", info.VersionID)
+	}
+	if info.SSECustomerAlgorithm != "" {
+		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", info.SSECustomerAlgorithm)
+		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", info.SSECustomerKeyMD5)
 	}
 
 	writeXML(w, http.StatusOK, result)

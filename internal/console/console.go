@@ -53,6 +53,9 @@ func (h *Handler) setupRoutes() {
 	h.mux.HandleFunc("/api/buckets", h.authMiddleware(h.handleBuckets))
 	h.mux.HandleFunc("/api/buckets/", h.authMiddleware(h.handleBucketObjects))
 
+	// Prometheus metrics endpoint
+	h.mux.HandleFunc("/metrics", h.handleMetrics)
+
 	// Static files (embedded frontend)
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	fileServer := http.FileServer(http.FS(staticFS))
@@ -155,6 +158,7 @@ func (h *Handler) listBuckets(w http.ResponseWriter, _ *http.Request) {
 		Name         string `json:"name"`
 		CreationDate string `json:"creationDate"`
 		ObjectCount  int    `json:"objectCount"`
+		IsPublic     bool   `json:"isPublic"`
 	}
 
 	var result []bucketResp
@@ -164,6 +168,7 @@ func (h *Handler) listBuckets(w http.ResponseWriter, _ *http.Request) {
 			Name:         b.Name,
 			CreationDate: b.CreationDate.UTC().Format("2006-01-02T15:04:05.000Z"),
 			ObjectCount:  count,
+			IsPublic:     b.IsPublic,
 		})
 	}
 
@@ -222,6 +227,10 @@ func (h *Handler) handleBucketObjects(w http.ResponseWriter, r *http.Request) {
 	action := parts[1]
 
 	switch {
+	case action == "public" && r.Method == http.MethodPost:
+		h.handleSetBucketPublic(w, r, bucketName)
+	case action == "public" && r.Method == http.MethodGet:
+		h.handleGetBucketPublic(w, r, bucketName)
 	case action == "objects" && r.Method == http.MethodGet:
 		h.listObjects(w, r, bucketName)
 	case action == "objects/presign" && r.Method == http.MethodGet:
@@ -251,6 +260,26 @@ func (h *Handler) deleteBucket(w http.ResponseWriter, _ *http.Request, name stri
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"deleted": name})
+}
+
+func (h *Handler) handleSetBucketPublic(w http.ResponseWriter, r *http.Request, bucket string) {
+	publicStr := r.URL.Query().Get("public")
+	public := publicStr == "true"
+
+	if err := h.engine.SetBucketPublic(bucket, public); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"bucket": bucket, "public": public})
+}
+
+func (h *Handler) handleGetBucketPublic(w http.ResponseWriter, r *http.Request, bucket string) {
+	public, err := h.engine.IsBucketPublic(bucket)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"public": public})
 }
 
 func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request, bucket string) {
@@ -360,7 +389,7 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request, bucket st
 		contentType = "application/octet-stream"
 	}
 
-	info, err := h.engine.PutObject(bucket, key, file, header.Size, contentType)
+	info, err := h.engine.PutObject(r.Context(), bucket, key, file, header.Size, contentType)
 	if err != nil {
 		log.Printf("[Console] Upload error: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -381,7 +410,7 @@ func (h *Handler) downloadObject(w http.ResponseWriter, r *http.Request, bucket 
 		return
 	}
 
-	reader, info, err := h.engine.GetObject(bucket, key)
+	reader, info, err := h.engine.GetObject(r.Context(), bucket, key, "")
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "object not found"})
 		return
@@ -405,7 +434,7 @@ func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request, bucket st
 		return
 	}
 
-	if err := h.engine.DeleteObject(bucket, key); err != nil {
+	if err := h.engine.DeleteObject(bucket, key, ""); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -481,7 +510,7 @@ func (h *Handler) uploadPart(w http.ResponseWriter, r *http.Request, bucket stri
 		return
 	}
 
-	partInfo, err := h.engine.UploadPart(bucket, key, uploadID, partNumber, file, size)
+	partInfo, err := h.engine.UploadPart(r.Context(), bucket, key, uploadID, partNumber, file, size)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -595,3 +624,16 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 
 	writeJSON(w, http.StatusOK, map[string]string{"url": presignedURL})
 }
+
+func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	dataDir := "."
+	if fsEng, ok := h.engine.(interface{ DataDir() string }); ok {
+		dataDir = fsEng.DataDir()
+	}
+
+	metricsStr := storage.GlobalMetrics.FormatPrometheus(dataDir)
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(metricsStr))
+}
+

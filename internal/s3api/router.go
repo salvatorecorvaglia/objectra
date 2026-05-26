@@ -29,8 +29,36 @@ func NewRouter(engine storage.Engine, creds *auth.Credentials, region string, do
 	}
 }
 
+type metricsResponseWriter struct {
+	http.ResponseWriter
+	statusCode   int
+	bytesWritten int
+}
+
+func (w *metricsResponseWriter) WriteHeader(code int) {
+	w.statusCode = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *metricsResponseWriter) Write(b []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(b)
+	w.bytesWritten += n
+	return n, err
+}
+
 // ServeHTTP implements the http.Handler interface for the S3 API.
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	mrw := &metricsResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	storage.GlobalMetrics.IncRequests()
+
+	rt.serveHTTPInternal(mrw, r)
+
+	if mrw.statusCode >= 400 {
+		storage.GlobalMetrics.IncErrors()
+	}
+}
+
+func (rt *Router) serveHTTPInternal(w http.ResponseWriter, r *http.Request) {
 	// Set common S3 response headers
 	w.Header().Set("Server", "Objectra")
 	w.Header().Set("x-amz-request-id", "objectra")
@@ -54,11 +82,20 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Authenticate the request (bypass for OPTIONS as handled above)
-	if err := rt.verifier.Verify(r); err != nil {
-		log.Printf("[S3] Auth failed: %s %s - %v", r.Method, r.URL.Path, err)
-		writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path)
-		return
+	// Authenticate the request (bypass for OPTIONS or public bucket object reads)
+	bypassAuth := false
+	if bucket != "" && key != "" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		if public, err := rt.engine.IsBucketPublic(bucket); err == nil && public {
+			bypassAuth = true
+		}
+	}
+
+	if !bypassAuth {
+		if err := rt.verifier.Verify(r); err != nil {
+			log.Printf("[S3] Auth failed: %s %s - %v", r.Method, r.URL.Path, err)
+			writeS3Error(w, "AccessDenied", "Access Denied", r.URL.Path)
+			return
+		}
 	}
 
 	if bucket != "" && !isValidBucketName(bucket) {
@@ -158,6 +195,8 @@ func (rt *Router) handleBucketOps(w http.ResponseWriter, r *http.Request, bucket
 	case http.MethodGet:
 		if query.Has("cors") {
 			rt.handleGetBucketCORS(w, r, bucket)
+		} else if query.Has("versioning") {
+			rt.handleGetBucketVersioning(w, r, bucket)
 		} else if query.Get("location") != "" || query.Has("location") {
 			rt.handleGetBucketLocation(w, r, bucket)
 		} else {
@@ -167,6 +206,8 @@ func (rt *Router) handleBucketOps(w http.ResponseWriter, r *http.Request, bucket
 	case http.MethodPut:
 		if query.Has("cors") {
 			rt.handlePutBucketCORS(w, r, bucket)
+		} else if query.Has("versioning") {
+			rt.handlePutBucketVersioning(w, r, bucket)
 		} else {
 			rt.handleCreateBucket(w, r, bucket)
 		}
@@ -219,7 +260,7 @@ func (rt *Router) handleObjectOps(w http.ResponseWriter, r *http.Request, bucket
 	}
 }
 
-func (rt *Router) handleGetBucketCORS(w http.ResponseWriter, r *http.Request, bucket string) {
+func (rt *Router) handleGetBucketCORS(w http.ResponseWriter, _ *http.Request, bucket string) {
 	cors, err := rt.engine.GetBucketCORS(bucket)
 	if handleStorageError(w, err, "/"+bucket) {
 		return
@@ -281,7 +322,7 @@ func (rt *Router) handlePutBucketCORS(w http.ResponseWriter, r *http.Request, bu
 	w.WriteHeader(http.StatusOK)
 }
 
-func (rt *Router) handleDeleteBucketCORS(w http.ResponseWriter, r *http.Request, bucket string) {
+func (rt *Router) handleDeleteBucketCORS(w http.ResponseWriter, _ *http.Request, bucket string) {
 	err := rt.engine.DeleteBucketCORS(bucket)
 	if handleStorageError(w, err, "/"+bucket) {
 		return

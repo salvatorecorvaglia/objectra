@@ -126,10 +126,19 @@
             <div id="objects-view" class="view">
                 <div class="view-header">
                     <div>
-                        <div class="breadcrumb" id="breadcrumb">
-                            <!-- Populated by JS -->
+                        <div class="breadcrumb-container" style="display: flex; align-items: center; gap: 1rem;">
+                            <div class="breadcrumb" id="breadcrumb" style="margin-bottom: 0;">
+                                <!-- Populated by JS -->
+                            </div>
+                            <span id="bucket-public-badge" class="public-badge" style="display: none;">Public</span>
                         </div>
-                        <p class="view-subtitle" id="object-count"></p>
+                        <div style="display: flex; align-items: center; gap: 1.5rem; margin-top: 0.5rem;">
+                            <p class="view-subtitle" id="object-count" style="margin: 0;"></p>
+                            <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer; font-size: 0.8rem; color: var(--text-muted); user-select: none;">
+                                <input type="checkbox" id="bucket-public-toggle" style="cursor: pointer; width: 14px; height: 14px;">
+                                <span>Public Access (GET/HEAD)</span>
+                            </label>
+                        </div>
                     </div>
                     <div class="view-actions">
                         <div class="search-box">

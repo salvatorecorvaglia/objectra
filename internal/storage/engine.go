@@ -2,9 +2,23 @@
 package storage
 
 import (
+	"context"
 	"io"
 	"time"
 )
+
+type ssecKeyType struct{}
+
+// SSECContextKey is the context key for SSE-C parameters.
+var SSECContextKey = ssecKeyType{}
+
+// SSECParams holds the customer key parameters for SSE-C.
+type SSECParams struct {
+	Algorithm string
+	Key       []byte // 32 bytes for AES-256
+	KeyMD5    string // base64-encoded MD5 of the key
+}
+
 
 // CORSRule holds a CORS rule specification.
 type CORSRule struct {
@@ -25,16 +39,24 @@ type BucketInfo struct {
 	Name         string             `json:"name"`
 	CreationDate time.Time          `json:"creationDate"`
 	CORS         *CORSConfiguration `json:"cors,omitempty"`
+	Versioning   string             `json:"versioning,omitempty"`
+	IsPublic     bool               `json:"isPublic,omitempty"`
 }
 
 // ObjectInfo holds metadata about a stored object.
 type ObjectInfo struct {
-	Bucket       string    `json:"bucket"`
-	Key          string    `json:"key"`
-	Size         int64     `json:"size"`
-	ETag         string    `json:"etag"`
-	ContentType  string    `json:"contentType"`
-	LastModified time.Time `json:"lastModified"`
+	Bucket               string    `json:"bucket"`
+	Key                  string    `json:"key"`
+	Size                 int64     `json:"size"`
+	ETag                 string    `json:"etag"`
+	ContentType          string    `json:"contentType"`
+	LastModified         time.Time `json:"lastModified"`
+	VersionID            string    `json:"versionId,omitempty"`
+	IsLatest             bool      `json:"isLatest,omitempty"`
+	IsDeleteMarker       bool      `json:"isDeleteMarker,omitempty"`
+	SSECustomerAlgorithm string    `json:"sseCustomerAlgorithm,omitempty"`
+	SSECustomerKeyMD5    string    `json:"sseCustomerKeyMD5,omitempty"`
+	Compressed           bool      `json:"compressed,omitempty"`
 }
 
 // ListObjectsInput holds parameters for listing objects in a bucket.
@@ -87,12 +109,16 @@ type Engine interface {
 	PutBucketCORS(bucket string, cors *CORSConfiguration) error
 	GetBucketCORS(bucket string) (*CORSConfiguration, error)
 	DeleteBucketCORS(bucket string) error
+	SetBucketVersioning(bucket, status string) error
+	GetBucketVersioning(bucket string) (string, error)
+	SetBucketPublic(bucket string, public bool) error
+	IsBucketPublic(bucket string) (bool, error)
 
 	// Object operations
-	PutObject(bucket, key string, reader io.Reader, size int64, contentType string) (*ObjectInfo, error)
-	GetObject(bucket, key string) (io.ReadCloser, *ObjectInfo, error)
-	HeadObject(bucket, key string) (*ObjectInfo, error)
-	DeleteObject(bucket, key string) error
+	PutObject(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (*ObjectInfo, error)
+	GetObject(ctx context.Context, bucket, key, versionID string) (io.ReadCloser, *ObjectInfo, error)
+	HeadObject(ctx context.Context, bucket, key, versionID string) (*ObjectInfo, error)
+	DeleteObject(bucket, key, versionID string) error
 	CopyObject(srcBucket, srcKey, dstBucket, dstKey string) (*ObjectInfo, error)
 
 	// List operations
@@ -101,7 +127,7 @@ type Engine interface {
 
 	// Multipart upload operations
 	CreateMultipartUpload(bucket, key, contentType string) (*MultipartUploadInfo, error)
-	UploadPart(bucket, key, uploadID string, partNumber int, reader io.Reader, size int64) (*PartInfo, error)
+	UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int, reader io.Reader, size int64) (*PartInfo, error)
 	CompleteMultipartUpload(bucket, key, uploadID string, parts []CompletePart) (*ObjectInfo, error)
 	AbortMultipartUpload(bucket, key, uploadID string) error
 

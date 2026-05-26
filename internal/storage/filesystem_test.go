@@ -1,14 +1,20 @@
 package storage
 
 import (
+	"context"
 	"bytes"
 	"crypto/md5"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -95,7 +101,7 @@ func TestDeleteBucketNotEmpty(t *testing.T) {
 	}
 
 	// Put an object in the bucket
-	_, err := engine.PutObject("notempty", "file.txt", bytes.NewReader([]byte("data")), 4, "text/plain")
+	_, err := engine.PutObject(context.Background(), "notempty", "file.txt", bytes.NewReader([]byte("data")), 4, "text/plain")
 	if err != nil {
 		t.Fatalf("PutObject failed: %v", err)
 	}
@@ -150,7 +156,7 @@ func TestPutAndGetObject(t *testing.T) {
 	engine.CreateBucket("my-bucket")
 
 	content := []byte("Hello, Objectra!")
-	info, err := engine.PutObject("my-bucket", "greeting.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
+	info, err := engine.PutObject(context.Background(), "my-bucket", "greeting.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
 	if err != nil {
 		t.Fatalf("PutObject failed: %v", err)
 	}
@@ -169,7 +175,7 @@ func TestPutAndGetObject(t *testing.T) {
 	}
 
 	// Get it back
-	reader, getInfo, err := engine.GetObject("my-bucket", "greeting.txt")
+	reader, getInfo, err := engine.GetObject(context.Background(), "my-bucket", "greeting.txt", "")
 	if err != nil {
 		t.Fatalf("GetObject failed: %v", err)
 	}
@@ -191,7 +197,7 @@ func TestPutAndGetObject(t *testing.T) {
 func TestPutObjectNoBucket(t *testing.T) {
 	engine := setupTestEngine(t)
 
-	_, err := engine.PutObject("nonexistent", "file.txt", bytes.NewReader([]byte("data")), 4, "text/plain")
+	_, err := engine.PutObject(context.Background(), "nonexistent", "file.txt", bytes.NewReader([]byte("data")), 4, "text/plain")
 	if err == nil {
 		t.Error("expected error when putting object to non-existent bucket")
 	}
@@ -201,7 +207,7 @@ func TestGetObjectNotFound(t *testing.T) {
 	engine := setupTestEngine(t)
 	engine.CreateBucket("my-bucket")
 
-	_, _, err := engine.GetObject("my-bucket", "no-such-key")
+	_, _, err := engine.GetObject(context.Background(), "my-bucket", "no-such-key", "")
 	if err == nil {
 		t.Error("expected error when getting non-existent object")
 	}
@@ -219,9 +225,9 @@ func TestHeadObject(t *testing.T) {
 	engine.CreateBucket("bucket")
 
 	content := []byte("metadata test")
-	engine.PutObject("bucket", "doc.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
+	engine.PutObject(context.Background(), "bucket", "doc.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
 
-	info, err := engine.HeadObject("bucket", "doc.txt")
+	info, err := engine.HeadObject(context.Background(), "bucket", "doc.txt", "")
 	if err != nil {
 		t.Fatalf("HeadObject failed: %v", err)
 	}
@@ -236,14 +242,14 @@ func TestHeadObject(t *testing.T) {
 func TestDeleteObject(t *testing.T) {
 	engine := setupTestEngine(t)
 	engine.CreateBucket("bucket")
-	engine.PutObject("bucket", "deleteme.txt", bytes.NewReader([]byte("bye")), 3, "text/plain")
+	engine.PutObject(context.Background(), "bucket", "deleteme.txt", bytes.NewReader([]byte("bye")), 3, "text/plain")
 
-	err := engine.DeleteObject("bucket", "deleteme.txt")
+	err := engine.DeleteObject("bucket", "deleteme.txt", "")
 	if err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
 
-	_, _, err = engine.GetObject("bucket", "deleteme.txt")
+	_, _, err = engine.GetObject(context.Background(), "bucket", "deleteme.txt", "")
 	if err == nil {
 		t.Error("expected error when getting deleted object")
 	}
@@ -255,7 +261,7 @@ func TestCopyObject(t *testing.T) {
 	engine.CreateBucket("dst-bucket")
 
 	content := []byte("copy this content")
-	engine.PutObject("src-bucket", "original.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
+	engine.PutObject(context.Background(), "src-bucket", "original.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
 
 	info, err := engine.CopyObject("src-bucket", "original.txt", "dst-bucket", "copy.txt")
 	if err != nil {
@@ -266,7 +272,7 @@ func TestCopyObject(t *testing.T) {
 	}
 
 	// Verify the copy
-	reader, _, err := engine.GetObject("dst-bucket", "copy.txt")
+	reader, _, err := engine.GetObject(context.Background(), "dst-bucket", "copy.txt", "")
 	if err != nil {
 		t.Fatalf("GetObject failed: %v", err)
 	}
@@ -282,12 +288,12 @@ func TestNestedKeyPaths(t *testing.T) {
 	engine.CreateBucket("bucket")
 
 	content := []byte("nested file")
-	_, err := engine.PutObject("bucket", "photos/2024/01/img.jpg", bytes.NewReader(content), int64(len(content)), "image/jpeg")
+	_, err := engine.PutObject(context.Background(), "bucket", "photos/2024/01/img.jpg", bytes.NewReader(content), int64(len(content)), "image/jpeg")
 	if err != nil {
 		t.Fatalf("PutObject with nested key failed: %v", err)
 	}
 
-	reader, _, err := engine.GetObject("bucket", "photos/2024/01/img.jpg")
+	reader, _, err := engine.GetObject(context.Background(), "bucket", "photos/2024/01/img.jpg", "")
 	if err != nil {
 		t.Fatalf("GetObject with nested key failed: %v", err)
 	}
@@ -304,7 +310,7 @@ func TestPathTraversalProtection(t *testing.T) {
 	engine := setupTestEngine(t)
 	engine.CreateBucket("bucket")
 
-	_, err := engine.PutObject("bucket", "../../etc/passwd", bytes.NewReader([]byte("malicious")), 9, "text/plain")
+	_, err := engine.PutObject(context.Background(), "bucket", "../../etc/passwd", bytes.NewReader([]byte("malicious")), 9, "text/plain")
 	if err == nil {
 		t.Error("expected error for path traversal key")
 	}
@@ -319,7 +325,7 @@ func TestListObjects(t *testing.T) {
 	// Create several objects
 	objects := []string{"a.txt", "b.txt", "c.txt", "dir/d.txt", "dir/e.txt"}
 	for _, key := range objects {
-		engine.PutObject("list-bucket", key, bytes.NewReader([]byte("x")), 1, "text/plain")
+		engine.PutObject(context.Background(), "list-bucket", key, bytes.NewReader([]byte("x")), 1, "text/plain")
 	}
 
 	// List all
@@ -341,7 +347,7 @@ func TestListObjectsWithDelimiter(t *testing.T) {
 
 	keys := []string{"a.txt", "b.txt", "dir/c.txt", "dir/d.txt", "other/e.txt"}
 	for _, key := range keys {
-		engine.PutObject("delim-bucket", key, bytes.NewReader([]byte("x")), 1, "text/plain")
+		engine.PutObject(context.Background(), "delim-bucket", key, bytes.NewReader([]byte("x")), 1, "text/plain")
 	}
 
 	output, err := engine.ListObjects(&ListObjectsInput{
@@ -369,7 +375,7 @@ func TestListObjectsPagination(t *testing.T) {
 	// Create 5 objects
 	for i := 0; i < 5; i++ {
 		key := string(rune('a'+i)) + ".txt"
-		engine.PutObject("page-bucket", key, bytes.NewReader([]byte("x")), 1, "text/plain")
+		engine.PutObject(context.Background(), "page-bucket", key, bytes.NewReader([]byte("x")), 1, "text/plain")
 	}
 
 	// Paginate with maxKeys=2
@@ -435,7 +441,7 @@ func TestCountObjects(t *testing.T) {
 	// Add objects
 	for i := 0; i < 10; i++ {
 		key := string(rune('a'+i)) + ".txt"
-		engine.PutObject("count-bucket", key, bytes.NewReader([]byte("x")), 1, "text/plain")
+		engine.PutObject(context.Background(), "count-bucket", key, bytes.NewReader([]byte("x")), 1, "text/plain")
 	}
 
 	count, err = engine.CountObjects("count-bucket")
@@ -471,7 +477,7 @@ func TestMultipartUpload(t *testing.T) {
 
 	var completeParts []CompletePart
 	for i, data := range partData {
-		partInfo, err := engine.UploadPart("multi-bucket", "large-file.bin", upload.UploadID, i+1, bytes.NewReader(data), int64(len(data)))
+		partInfo, err := engine.UploadPart(context.Background(), "multi-bucket", "large-file.bin", upload.UploadID, i+1, bytes.NewReader(data), int64(len(data)))
 		if err != nil {
 			t.Fatalf("UploadPart %d failed: %v", i+1, err)
 		}
@@ -493,7 +499,7 @@ func TestMultipartUpload(t *testing.T) {
 	}
 
 	// Verify content
-	reader, _, err := engine.GetObject("multi-bucket", "large-file.bin")
+	reader, _, err := engine.GetObject(context.Background(), "multi-bucket", "large-file.bin", "")
 	if err != nil {
 		t.Fatalf("GetObject failed: %v", err)
 	}
@@ -514,7 +520,7 @@ func TestAbortMultipartUpload(t *testing.T) {
 	}
 
 	// Upload a part
-	engine.UploadPart("abort-bucket", "aborted.txt", upload.UploadID, 1, bytes.NewReader([]byte("data")), 4)
+	engine.UploadPart(context.Background(), "abort-bucket", "aborted.txt", upload.UploadID, 1, bytes.NewReader([]byte("data")), 4)
 
 	// Abort
 	err = engine.AbortMultipartUpload("abort-bucket", "aborted.txt", upload.UploadID)
@@ -523,7 +529,7 @@ func TestAbortMultipartUpload(t *testing.T) {
 	}
 
 	// Verify object doesn't exist
-	_, _, err = engine.GetObject("abort-bucket", "aborted.txt")
+	_, _, err = engine.GetObject(context.Background(), "abort-bucket", "aborted.txt", "")
 	if err == nil {
 		t.Error("expected error: aborted upload should not create an object")
 	}
@@ -542,13 +548,13 @@ func TestUnicodeKeys(t *testing.T) {
 	}
 
 	for _, key := range keys {
-		_, err := engine.PutObject("unicode-bucket", key, bytes.NewReader([]byte("unicode")), 7, "text/plain")
+		_, err := engine.PutObject(context.Background(), "unicode-bucket", key, bytes.NewReader([]byte("unicode")), 7, "text/plain")
 		if err != nil {
 			t.Errorf("PutObject(%q) failed: %v", key, err)
 			continue
 		}
 
-		reader, _, err := engine.GetObject("unicode-bucket", key)
+		reader, _, err := engine.GetObject(context.Background(), "unicode-bucket", key, "")
 		if err != nil {
 			t.Errorf("GetObject(%q) failed: %v", key, err)
 			continue
@@ -563,7 +569,7 @@ func TestEmptyObject(t *testing.T) {
 	engine := setupTestEngine(t)
 	engine.CreateBucket("empty-bucket")
 
-	info, err := engine.PutObject("empty-bucket", "empty.txt", bytes.NewReader([]byte{}), 0, "text/plain")
+	info, err := engine.PutObject(context.Background(), "empty-bucket", "empty.txt", bytes.NewReader([]byte{}), 0, "text/plain")
 	if err != nil {
 		t.Fatalf("PutObject empty failed: %v", err)
 	}
@@ -571,7 +577,7 @@ func TestEmptyObject(t *testing.T) {
 		t.Errorf("expected size 0, got %d", info.Size)
 	}
 
-	reader, _, err := engine.GetObject("empty-bucket", "empty.txt")
+	reader, _, err := engine.GetObject(context.Background(), "empty-bucket", "empty.txt", "")
 	if err != nil {
 		t.Fatalf("GetObject empty failed: %v", err)
 	}
@@ -589,10 +595,10 @@ func TestOverwriteObject(t *testing.T) {
 	engine.CreateBucket("overwrite-bucket")
 
 	// Write v1
-	engine.PutObject("overwrite-bucket", "file.txt", bytes.NewReader([]byte("version1")), 8, "text/plain")
+	engine.PutObject(context.Background(), "overwrite-bucket", "file.txt", bytes.NewReader([]byte("version1")), 8, "text/plain")
 
 	// Overwrite with v2
-	info, err := engine.PutObject("overwrite-bucket", "file.txt", bytes.NewReader([]byte("version2-longer")), 15, "text/plain")
+	info, err := engine.PutObject(context.Background(), "overwrite-bucket", "file.txt", bytes.NewReader([]byte("version2-longer")), 15, "text/plain")
 	if err != nil {
 		t.Fatalf("PutObject overwrite failed: %v", err)
 	}
@@ -601,7 +607,7 @@ func TestOverwriteObject(t *testing.T) {
 	}
 
 	// Verify content is v2
-	reader, _, _ := engine.GetObject("overwrite-bucket", "file.txt")
+	reader, _, _ := engine.GetObject(context.Background(), "overwrite-bucket", "file.txt", "")
 	defer reader.Close()
 	data, _ := io.ReadAll(reader)
 	if string(data) != "version2-longer" {
@@ -620,13 +626,13 @@ func TestBucketNameTraversalProtection(t *testing.T) {
 		if _, err := engine.BucketExists(invalid); err == nil {
 			t.Errorf("expected error when checking exists of invalid bucket name %q", invalid)
 		}
-		if _, err := engine.PutObject(invalid, "test.txt", bytes.NewReader([]byte("x")), 1, "text/plain"); err == nil {
+		if _, err := engine.PutObject(context.Background(), invalid, "test.txt", bytes.NewReader([]byte("x")), 1, "text/plain"); err == nil {
 			t.Errorf("expected error when putting object in invalid bucket name %q", invalid)
 		}
-		if _, _, err := engine.GetObject(invalid, "test.txt"); err == nil {
+		if _, _, err := engine.GetObject(context.Background(), invalid, "test.txt", ""); err == nil {
 			t.Errorf("expected error when getting object from invalid bucket name %q", invalid)
 		}
-		if err := engine.DeleteObject(invalid, "test.txt"); err == nil {
+		if err := engine.DeleteObject(invalid, "test.txt", ""); err == nil {
 			t.Errorf("expected error when deleting object from invalid bucket name %q", invalid)
 		}
 	}
@@ -649,7 +655,7 @@ func TestConcurrentUploadPartLocking(t *testing.T) {
 		go func(partNum int) {
 			defer wg.Done()
 			partData := []byte(fmt.Sprintf("part data %d", partNum))
-			_, uploadErr := engine.UploadPart("concurrency-bucket", "concurrent.bin", upload.UploadID, partNum, bytes.NewReader(partData), int64(len(partData)))
+			_, uploadErr := engine.UploadPart(context.Background(), "concurrency-bucket", "concurrent.bin", upload.UploadID, partNum, bytes.NewReader(partData), int64(len(partData)))
 			if uploadErr != nil {
 				t.Errorf("UploadPart %d failed: %v", partNum, uploadErr)
 			}
@@ -681,12 +687,12 @@ func TestMultipartUploadETagFormat(t *testing.T) {
 	p1Data := []byte("part 1 data")
 	p2Data := []byte("part 2 data")
 
-	p1, err := engine.UploadPart("etag-bucket", "file.bin", upload.UploadID, 1, bytes.NewReader(p1Data), int64(len(p1Data)))
+	p1, err := engine.UploadPart(context.Background(), "etag-bucket", "file.bin", upload.UploadID, 1, bytes.NewReader(p1Data), int64(len(p1Data)))
 	if err != nil {
 		t.Fatalf("UploadPart 1 failed: %v", err)
 	}
 
-	p2, err := engine.UploadPart("etag-bucket", "file.bin", upload.UploadID, 2, bytes.NewReader(p2Data), int64(len(p2Data)))
+	p2, err := engine.UploadPart(context.Background(), "etag-bucket", "file.bin", upload.UploadID, 2, bytes.NewReader(p2Data), int64(len(p2Data)))
 	if err != nil {
 		t.Fatalf("UploadPart 2 failed: %v", err)
 	}
@@ -723,7 +729,7 @@ func TestCleanExpiredMultipartUploads(t *testing.T) {
 	}
 
 	partData := []byte("some part data")
-	_, err = engine.UploadPart("cleanup-bucket", "file.bin", upload.UploadID, 1, bytes.NewReader(partData), int64(len(partData)))
+	_, err = engine.UploadPart(context.Background(), "cleanup-bucket", "file.bin", upload.UploadID, 1, bytes.NewReader(partData), int64(len(partData)))
 	if err != nil {
 		t.Fatalf("UploadPart failed: %v", err)
 	}
@@ -762,3 +768,433 @@ func TestCleanExpiredMultipartUploads(t *testing.T) {
 		t.Error("expected metadata to be deleted from database")
 	}
 }
+
+func TestObjectVersioning(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "version-bucket"
+	engine.CreateBucket(bucket)
+
+	// Default status should be disabled (empty)
+	status, err := engine.GetBucketVersioning(bucket)
+	if err != nil {
+		t.Fatalf("GetBucketVersioning failed: %v", err)
+	}
+	if status != "" {
+		t.Errorf("expected empty default status, got %q", status)
+	}
+
+	// Set versioning to Enabled
+	err = engine.SetBucketVersioning(bucket, "Enabled")
+	if err != nil {
+		t.Fatalf("SetBucketVersioning failed: %v", err)
+	}
+	status, err = engine.GetBucketVersioning(bucket)
+	if err != nil || status != "Enabled" {
+		t.Fatalf("expected status Enabled, got %q (err=%v)", status, err)
+	}
+
+	// Put version 1
+	info1, err := engine.PutObject(context.Background(), bucket, "file.txt", bytes.NewReader([]byte("v1")), 2, "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject v1 failed: %v", err)
+	}
+	if info1.VersionID == "" {
+		t.Error("expected non-empty version ID for v1")
+	}
+
+	// Put version 2
+	info2, err := engine.PutObject(context.Background(), bucket, "file.txt", bytes.NewReader([]byte("version2")), 8, "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject v2 failed: %v", err)
+	}
+	if info2.VersionID == "" {
+		t.Error("expected non-empty version ID for v2")
+	}
+	if info1.VersionID == info2.VersionID {
+		t.Error("expected version IDs to be different")
+	}
+
+	// Get latest version (should be v2)
+	reader, getInfo, err := engine.GetObject(context.Background(), bucket, "file.txt", "")
+	if err != nil {
+		t.Fatalf("GetObject latest failed: %v", err)
+	}
+	data, _ := io.ReadAll(reader)
+	reader.Close()
+	if string(data) != "version2" {
+		t.Errorf("expected 'version2', got %q", data)
+	}
+	if getInfo.VersionID != info2.VersionID {
+		t.Errorf("expected version ID %s, got %s", info2.VersionID, getInfo.VersionID)
+	}
+
+	// Get v1 specifically
+	reader1, getInfo1, err := engine.GetObject(context.Background(), bucket, "file.txt", info1.VersionID)
+	if err != nil {
+		t.Fatalf("GetObject v1 failed: %v", err)
+	}
+	data1, _ := io.ReadAll(reader1)
+	reader1.Close()
+	if string(data1) != "v1" {
+		t.Errorf("expected 'v1', got %q", data1)
+	}
+	if getInfo1.VersionID != info1.VersionID {
+		t.Errorf("expected version ID %s, got %s", info1.VersionID, getInfo1.VersionID)
+	}
+
+	// Head v1 and v2
+	h1, err := engine.HeadObject(context.Background(), bucket, "file.txt", info1.VersionID)
+	if err != nil || h1.Size != 2 {
+		t.Errorf("HeadObject v1 failed: %v", err)
+	}
+	h2, err := engine.HeadObject(context.Background(), bucket, "file.txt", info2.VersionID)
+	if err != nil || h2.Size != 8 {
+		t.Errorf("HeadObject v2 failed: %v", err)
+	}
+
+	// Delete without version ID should create a delete marker
+	err = engine.DeleteObject(bucket, "file.txt", "")
+	if err != nil {
+		t.Fatalf("DeleteObject failed: %v", err)
+	}
+
+	// Head latest version should now return NoSuchKey
+	_, err = engine.HeadObject(context.Background(), bucket, "file.txt", "")
+	if err == nil {
+		t.Error("expected NoSuchKey error for head after deletion")
+	}
+
+	// Get latest version should return NoSuchKey
+	_, _, err = engine.GetObject(context.Background(), bucket, "file.txt", "")
+	if err == nil {
+		t.Error("expected NoSuchKey error for get after deletion")
+	}
+
+	// Retrieve v2 specifically (should still be available)
+	reader2, _, err := engine.GetObject(context.Background(), bucket, "file.txt", info2.VersionID)
+	if err != nil {
+		t.Fatalf("GetObject v2 after deletion failed: %v", err)
+	}
+	reader2.Close()
+
+	// Permanently delete v2
+	err = engine.DeleteObject(bucket, "file.txt", info2.VersionID)
+	if err != nil {
+		t.Fatalf("DeleteObject v2 failed: %v", err)
+	}
+
+	// Retrieve v2 specifically should now fail
+	_, _, err = engine.GetObject(context.Background(), bucket, "file.txt", info2.VersionID)
+	if err == nil {
+		t.Error("expected error retrieving permanently deleted v2")
+	}
+}
+
+func TestPublicBuckets(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "policy-bucket"
+	err := engine.CreateBucket(bucket)
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// Default should not be public
+	pub, err := engine.IsBucketPublic(bucket)
+	if err != nil {
+		t.Fatalf("failed to check public state: %v", err)
+	}
+	if pub {
+		t.Error("expected default public state to be false")
+	}
+
+	// Toggle public state
+	err = engine.SetBucketPublic(bucket, true)
+	if err != nil {
+		t.Fatalf("failed to set public state: %v", err)
+	}
+
+	pub, err = engine.IsBucketPublic(bucket)
+	if err != nil {
+		t.Fatalf("failed to check public state: %v", err)
+	}
+	if !pub {
+		t.Error("expected public state to be true")
+	}
+}
+
+func TestSSEC(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "ssec-bucket"
+	err := engine.CreateBucket(bucket)
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	key := []byte("01234567890123456789012345678901") // 32 bytes
+	// MD5 of key
+	hash := md5.Sum(key)
+	keyMD5 := base64.StdEncoding.EncodeToString(hash[:])
+
+	params := &SSECParams{
+		Algorithm: "AES256",
+		Key:       key,
+		KeyMD5:    keyMD5,
+	}
+
+	ctx := context.WithValue(context.Background(), SSECContextKey, params)
+
+	content := []byte("secret payload")
+	info, err := engine.PutObject(ctx, bucket, "secret.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject with SSE-C failed: %v", err)
+	}
+
+	if info.SSECustomerAlgorithm != "AES256" {
+		t.Errorf("expected SSECustomerAlgorithm AES256, got %q", info.SSECustomerAlgorithm)
+	}
+	if info.SSECustomerKeyMD5 != keyMD5 {
+		t.Errorf("expected SSECustomerKeyMD5 %q, got %q", keyMD5, info.SSECustomerKeyMD5)
+	}
+
+	// Attempt GET without SSE-C headers
+	_, _, err = engine.GetObject(context.Background(), bucket, "secret.txt", "")
+	if err == nil {
+		t.Error("expected error getting SSE-C object without key")
+	}
+
+	// Attempt GET with wrong SSE-C key
+	wrongKey := []byte("wrongwrongwrongwrongwrongwrongwr")
+	wrongHash := md5.Sum(wrongKey)
+	wrongKeyMD5 := base64.StdEncoding.EncodeToString(wrongHash[:])
+	wrongParams := &SSECParams{
+		Algorithm: "AES256",
+		Key:       wrongKey,
+		KeyMD5:    wrongKeyMD5,
+	}
+	wrongCtx := context.WithValue(context.Background(), SSECContextKey, wrongParams)
+	_, _, err = engine.GetObject(wrongCtx, bucket, "secret.txt", "")
+	if err == nil {
+		t.Error("expected error getting SSE-C object with incorrect key")
+	}
+
+	// GET with correct key
+	reader, getInfo, err := engine.GetObject(ctx, bucket, "secret.txt", "")
+	if err != nil {
+		t.Fatalf("GetObject with correct SSE-C key failed: %v", err)
+	}
+	defer reader.Close()
+
+	retrieved, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read object content: %v", err)
+	}
+
+	if !bytes.Equal(retrieved, content) {
+		t.Errorf("expected %q, got %q", content, retrieved)
+	}
+	if getInfo.SSECustomerAlgorithm != "AES256" {
+		t.Errorf("expected SSECustomerAlgorithm AES256, got %q", getInfo.SSECustomerAlgorithm)
+	}
+}
+
+func TestStorageCompression(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "compress-bucket"
+	err := engine.CreateBucket(bucket)
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// Compressible content: large text file
+	content := []byte(strings.Repeat("this is a highly compressible text file containing repeating sentences. ", 100))
+	info, err := engine.PutObject(context.Background(), bucket, "compressed.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	if !info.Compressed {
+		t.Error("expected info.Compressed to be true for text/plain")
+	}
+
+	// Retrieve file
+	reader, getInfo, err := engine.GetObject(context.Background(), bucket, "compressed.txt", "")
+	if err != nil {
+		t.Fatalf("GetObject failed: %v", err)
+	}
+	defer reader.Close()
+
+	if !getInfo.Compressed {
+		t.Error("expected getInfo.Compressed to be true")
+	}
+
+	retrieved, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read decompressed content: %v", err)
+	}
+
+	if !bytes.Equal(retrieved, content) {
+		t.Errorf("retrieved content length mismatch: got %d, expected %d", len(retrieved), len(content))
+	}
+
+	// Verify that the file size on disk is actually smaller than the original size (or at least compressed)
+	path, err := engine.objectPath(bucket, "compressed.txt")
+	if err != nil {
+		t.Fatalf("failed to resolve path: %v", err)
+	}
+	stat, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("failed to stat file: %v", err)
+	}
+	if stat.Size() >= int64(len(content)) {
+		t.Errorf("expected compressed file size on disk (%d) to be smaller than original (%d)", stat.Size(), len(content))
+	}
+}
+
+func TestPrometheusMetrics(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "metrics-bucket"
+	err := engine.CreateBucket(bucket)
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// Reset metrics before test run to isolate counters
+	atomic.StoreUint64(&GlobalMetrics.RequestsTotal, 0)
+	atomic.StoreUint64(&GlobalMetrics.RequestErrors, 0)
+	atomic.StoreUint64(&GlobalMetrics.BytesUploaded, 0)
+	atomic.StoreUint64(&GlobalMetrics.BytesDownloaded, 0)
+	atomic.StoreInt64(&GlobalMetrics.ActiveMultiparts, 0)
+
+	// Upload object to trigger metrics
+	content := []byte("hello metrics")
+	_, err = engine.PutObject(context.Background(), bucket, "hello.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	if atomic.LoadUint64(&GlobalMetrics.BytesUploaded) != uint64(len(content)) {
+		t.Errorf("expected BytesUploaded to be %d, got %d", len(content), atomic.LoadUint64(&GlobalMetrics.BytesUploaded))
+	}
+
+	// Download object to trigger metrics
+	reader, _, err := engine.GetObject(context.Background(), bucket, "hello.txt", "")
+	if err != nil {
+		t.Fatalf("GetObject failed: %v", err)
+	}
+	_, err = io.ReadAll(reader)
+	reader.Close()
+	if err != nil {
+		t.Fatalf("failed to read object: %v", err)
+	}
+
+	if atomic.LoadUint64(&GlobalMetrics.BytesDownloaded) != uint64(len(content)) {
+		t.Errorf("expected BytesDownloaded to be %d, got %d", len(content), atomic.LoadUint64(&GlobalMetrics.BytesDownloaded))
+	}
+
+	// Verify formatting
+	res := GlobalMetrics.FormatPrometheus(engine.DataDir())
+	if !strings.Contains(res, "objectra_bytes_uploaded_total 13") {
+		t.Errorf("expected prometheus payload to contain uploaded bytes 13, got:\n%s", res)
+	}
+	if !strings.Contains(res, "objectra_bytes_downloaded_total 13") {
+		t.Errorf("expected prometheus payload to contain downloaded bytes 13, got:\n%s", res)
+	}
+	if !strings.Contains(res, "objectra_disk_total_bytes") {
+		t.Errorf("expected prometheus payload to contain disk metrics, got:\n%s", res)
+	}
+}
+
+func TestOutboundMirroring(t *testing.T) {
+	// Setup a mock S3 receiver server
+	var receivedPut, receivedDelete bool
+	var receivedPath string
+	var authHeader string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader = r.Header.Get("Authorization")
+		receivedPath = r.URL.Path
+		switch r.Method {
+		case "PUT":
+			receivedPut = true
+			w.WriteHeader(http.StatusOK)
+		case "DELETE":
+			receivedDelete = true
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+
+	// Configure environment variables for replication
+	os.Setenv("OBJECTRA_SYNC_ENDPOINT", server.URL)
+	os.Setenv("OBJECTRA_SYNC_BUCKET", "backup-bucket")
+	os.Setenv("OBJECTRA_SYNC_ACCESS_KEY", "accesskey")
+	os.Setenv("OBJECTRA_SYNC_SECRET_KEY", "secretkey")
+	os.Setenv("OBJECTRA_SYNC_REGION", "us-east-1")
+	defer func() {
+		os.Unsetenv("OBJECTRA_SYNC_ENDPOINT")
+		os.Unsetenv("OBJECTRA_SYNC_BUCKET")
+		os.Unsetenv("OBJECTRA_SYNC_ACCESS_KEY")
+		os.Unsetenv("OBJECTRA_SYNC_SECRET_KEY")
+		os.Unsetenv("OBJECTRA_SYNC_REGION")
+	}()
+
+	engine := setupTestEngine(t)
+	bucket := "sync-bucket"
+	err := engine.CreateBucket(bucket)
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// 1. Perform PutObject and check async mirroring
+	content := []byte("sync data")
+	_, err = engine.PutObject(context.Background(), bucket, "sync.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
+	if err != nil {
+		t.Fatalf("failed to PutObject: %v", err)
+	}
+
+	// Wait up to 2 seconds for async sync execution
+	for i := 0; i < 20; i++ {
+		if receivedPut {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !receivedPut {
+		t.Error("expected mock server to receive PUT request for replication")
+	}
+	if receivedPath != "/backup-bucket/sync.txt" {
+		t.Errorf("expected path /backup-bucket/sync.txt, got %q", receivedPath)
+	}
+	if !strings.Contains(authHeader, "AWS4-HMAC-SHA256") {
+		t.Errorf("expected Authorization header to contain AWS4-HMAC-SHA256, got %q", authHeader)
+	}
+
+	// Reset mock states
+	receivedPath = ""
+	authHeader = ""
+
+	// 2. Perform DeleteObject and check async mirroring
+	err = engine.DeleteObject(bucket, "sync.txt", "")
+	if err != nil {
+		t.Fatalf("failed to DeleteObject: %v", err)
+	}
+
+	// Wait up to 2 seconds for async sync execution
+	for i := 0; i < 20; i++ {
+		if receivedDelete {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !receivedDelete {
+		t.Error("expected mock server to receive DELETE request for replication")
+	}
+	if receivedPath != "/backup-bucket/sync.txt" {
+		t.Errorf("expected path /backup-bucket/sync.txt, got %q", receivedPath)
+	}
+}
+
+
+

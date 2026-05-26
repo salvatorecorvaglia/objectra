@@ -1,12 +1,50 @@
 package s3api
 
 import (
+	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/salvatorecorvaglia/objectra/internal/storage"
 )
+
+// extractSSECParams extracts SSE-C headers from the HTTP request.
+func extractSSECParams(r *http.Request) (*storage.SSECParams, error) {
+	algo := r.Header.Get("x-amz-server-side-encryption-customer-algorithm")
+	if algo == "" {
+		return nil, nil
+	}
+	if algo != "AES256" {
+		return nil, fmt.Errorf("UnsupportedEncryptionAlgorithm: The encryption algorithm specified is not supported")
+	}
+	keyB64 := r.Header.Get("x-amz-server-side-encryption-customer-key")
+	if keyB64 == "" {
+		return nil, fmt.Errorf("MissingEncryptionKey: The encryption key is missing")
+	}
+	key, err := base64.StdEncoding.DecodeString(keyB64)
+	if err != nil || len(key) != 32 {
+		return nil, fmt.Errorf("InvalidEncryptionKey: The encryption key is invalid")
+	}
+	keyMD5B64 := r.Header.Get("x-amz-server-side-encryption-customer-key-MD5")
+	if keyMD5B64 == "" {
+		return nil, fmt.Errorf("MissingEncryptionKeyMD5: The encryption key MD5 is missing")
+	}
+	expectedMD5Raw := md5.Sum(key)
+	expectedMD5 := base64.StdEncoding.EncodeToString(expectedMD5Raw[:])
+	if keyMD5B64 != expectedMD5 {
+		return nil, fmt.Errorf("InvalidEncryptionKeyMD5: The customer-provided encryption key MD5 does not match")
+	}
+	return &storage.SSECParams{
+		Algorithm: algo,
+		Key:       key,
+		KeyMD5:    keyMD5B64,
+	}, nil
+}
 
 // handlePutObject handles PUT /<bucket>/<key> (PutObject).
 func (rt *Router) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
@@ -18,22 +56,60 @@ func (rt *Router) handlePutObject(w http.ResponseWriter, r *http.Request, bucket
 	size := r.ContentLength
 	resource := "/" + bucket + "/" + key
 
-	info, err := rt.engine.PutObject(bucket, key, r.Body, size, contentType)
+	params, err := extractSSECParams(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+
+	ctx := r.Context()
+	if params != nil {
+		ctx = context.WithValue(ctx, storage.SSECContextKey, params)
+	}
+
+	info, err := rt.engine.PutObject(ctx, bucket, key, r.Body, size, contentType)
 	if handleStorageError(w, err, resource) {
 		return
 	}
 
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, info.ETag))
+	if info.VersionID != "" {
+		w.Header().Set("x-amz-version-id", info.VersionID)
+	}
+	if info.SSECustomerAlgorithm != "" {
+		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", info.SSECustomerAlgorithm)
+		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", info.SSECustomerKeyMD5)
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
 // handleGetObject handles GET /<bucket>/<key> (GetObject).
 func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	resource := "/" + bucket + "/" + key
+	versionID := r.URL.Query().Get("versionId")
 
-	reader, info, err := rt.engine.GetObject(bucket, key)
-	if handleStorageError(w, err, resource) {
+	params, err := extractSSECParams(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
 		return
+	}
+
+	ctx := r.Context()
+	if params != nil {
+		ctx = context.WithValue(ctx, storage.SSECContextKey, params)
+	}
+
+	reader, info, err := rt.engine.GetObject(ctx, bucket, key, versionID)
+	if err != nil {
+		if info != nil && info.IsDeleteMarker {
+			w.Header().Set("x-amz-delete-marker", "true")
+			w.Header().Set("x-amz-version-id", info.VersionID)
+			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", resource)
+			return
+		}
+		if handleStorageError(w, err, resource) {
+			return
+		}
 	}
 	defer reader.Close()
 
@@ -42,6 +118,13 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, info.ETag))
 	w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
 	w.Header().Set("Accept-Ranges", "bytes")
+	if info.VersionID != "" {
+		w.Header().Set("x-amz-version-id", info.VersionID)
+	}
+	if info.SSECustomerAlgorithm != "" {
+		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", info.SSECustomerAlgorithm)
+		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", info.SSECustomerKeyMD5)
+	}
 
 	// If the reader supports seeking, use http.ServeContent which handles
 	// Range requests, conditional headers, and status codes automatically.
@@ -58,10 +141,30 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 // handleHeadObject handles HEAD /<bucket>/<key> (HeadObject).
 func (rt *Router) handleHeadObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	resource := "/" + bucket + "/" + key
+	versionID := r.URL.Query().Get("versionId")
 
-	info, err := rt.engine.HeadObject(bucket, key)
-	if handleStorageError(w, err, resource) {
+	params, err := extractSSECParams(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
 		return
+	}
+
+	ctx := r.Context()
+	if params != nil {
+		ctx = context.WithValue(ctx, storage.SSECContextKey, params)
+	}
+
+	info, err := rt.engine.HeadObject(ctx, bucket, key, versionID)
+	if err != nil {
+		if info != nil && info.IsDeleteMarker {
+			w.Header().Set("x-amz-delete-marker", "true")
+			w.Header().Set("x-amz-version-id", info.VersionID)
+			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", resource)
+			return
+		}
+		if handleStorageError(w, err, resource) {
+			return
+		}
 	}
 
 	w.Header().Set("Content-Type", info.ContentType)
@@ -69,12 +172,34 @@ func (rt *Router) handleHeadObject(w http.ResponseWriter, r *http.Request, bucke
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, info.ETag))
 	w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
 	w.Header().Set("Accept-Ranges", "bytes")
+	if info.VersionID != "" {
+		w.Header().Set("x-amz-version-id", info.VersionID)
+	}
+	if info.SSECustomerAlgorithm != "" {
+		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", info.SSECustomerAlgorithm)
+		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", info.SSECustomerKeyMD5)
+	}
 	w.WriteHeader(http.StatusOK)
 }
 
 // handleDeleteObject handles DELETE /<bucket>/<key> (DeleteObject).
 func (rt *Router) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
-	_ = rt.engine.DeleteObject(bucket, key)
+	versionID := r.URL.Query().Get("versionId")
+	err := rt.engine.DeleteObject(bucket, key, versionID)
+
+	// If a delete marker was created, S3 returns 204 with delete marker headers
+	if err == nil {
+		versionStatus, _ := rt.engine.GetBucketVersioning(bucket)
+		if versionID == "" && (versionStatus == "Enabled" || versionStatus == "Suspended") {
+			w.Header().Set("x-amz-delete-marker", "true")
+			if info, err := rt.engine.HeadObject(r.Context(), bucket, key, ""); err == nil && info.IsDeleteMarker {
+				w.Header().Set("x-amz-version-id", info.VersionID)
+			}
+		} else if versionID != "" {
+			w.Header().Set("x-amz-version-id", versionID)
+		}
+	}
+
 	// S3 returns 204 even if the key doesn't exist
 	w.WriteHeader(http.StatusNoContent)
 }

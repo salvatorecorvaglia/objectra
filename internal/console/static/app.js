@@ -36,6 +36,8 @@
     const objectsTableContainer = $('#objects-table-container');
     const objectCount = $('#object-count');
     const breadcrumb = $('#breadcrumb');
+    const bucketPublicToggle = $('#bucket-public-toggle');
+    const bucketPublicBadge = $('#bucket-public-badge');
 
     const createBucketBtn = $('#create-bucket-btn');
     const uploadBtn = $('#upload-btn');
@@ -145,6 +147,29 @@
     });
 
     logoutBtn.addEventListener('click', logout);
+
+    if (bucketPublicToggle) {
+        bucketPublicToggle.addEventListener('change', async () => {
+            if (!currentBucket) return;
+            const publicVal = bucketPublicToggle.checked;
+            try {
+                const resp = await api('POST', `/api/buckets/${currentBucket}/public?public=${publicVal}`);
+                if (resp.ok) {
+                    showToast(`Bucket public access updated`, 'success');
+                    if (bucketPublicBadge) {
+                        bucketPublicBadge.style.display = publicVal ? 'inline-flex' : 'none';
+                    }
+                } else {
+                    const data = await resp.json();
+                    showToast(data.error || 'Failed to update public access', 'error');
+                    bucketPublicToggle.checked = !publicVal;
+                }
+            } catch (err) {
+                showToast('Failed to update public access', 'error');
+                bucketPublicToggle.checked = !publicVal;
+            }
+        });
+    }
 
     function logout() {
         token = '';
@@ -291,6 +316,17 @@
         resetPagination();
         bucketsView.classList.remove('active');
         objectsView.classList.add('active');
+
+        // Fetch and show bucket public status
+        api('GET', `/api/buckets/${name}/public`)
+            .then(r => r.json())
+            .then(data => {
+                const isPublic = !!data.public;
+                if (bucketPublicToggle) bucketPublicToggle.checked = isPublic;
+                if (bucketPublicBadge) bucketPublicBadge.style.display = isPublic ? 'inline-flex' : 'none';
+            })
+            .catch(() => {});
+
         loadObjects();
     }
 

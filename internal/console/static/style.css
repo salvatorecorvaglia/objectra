@@ -1113,3 +1113,16 @@ body {
     border-bottom-right-radius: 0;
 }
 
+.public-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.2rem 0.6rem;
+    background: rgba(234, 179, 8, 0.1);
+    border: 1px solid rgba(234, 179, 8, 0.2);
+    border-radius: 99px;
+    font-size: 0.7rem;
+    color: var(--accent-yellow, #eab308);
+    font-weight: 500;
+}
+
