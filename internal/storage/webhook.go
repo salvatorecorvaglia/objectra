@@ -20,6 +20,10 @@ type WebhookPayload struct {
 	Time      time.Time `json:"time"`
 }
 
+var webhookClient = &http.Client{
+	Timeout: 5 * time.Second,
+}
+
 // triggerWebhook parses the configuration and sends the event asynchronously.
 func triggerWebhook(eventName string, info *ObjectInfo) {
 	url := os.Getenv("OBJECTRA_WEBHOOK_URL")
@@ -47,9 +51,6 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 		return
 	}
 
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
 
 	backoff := 1 * time.Second
 	maxRetries := 3
@@ -63,7 +64,7 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("User-Agent", "Objectra-Webhook-Dispatcher")
 
-		resp, err := client.Do(req)
+		resp, err := webhookClient.Do(req)
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {

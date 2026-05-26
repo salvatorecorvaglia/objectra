@@ -3,6 +3,8 @@ package s3api
 import (
 	"encoding/xml"
 	"net/http"
+
+	"github.com/salvatorecorvaglia/objectra/internal/storage"
 )
 
 // handleListBuckets handles GET / (ListBuckets).
@@ -37,7 +39,7 @@ func (rt *Router) handleListBuckets(w http.ResponseWriter, _ *http.Request) {
 
 // handleCreateBucket handles PUT /<bucket> (CreateBucket).
 func (rt *Router) handleCreateBucket(w http.ResponseWriter, _ *http.Request, bucket string) {
-	if !isValidBucketName(bucket) {
+	if !storage.IsValidBucketName(bucket) {
 		writeS3Error(w, "InvalidBucketName", "The specified bucket is not valid.", "/"+bucket)
 		return
 	}
@@ -93,21 +95,6 @@ func (rt *Router) handleGetBucketLocation(w http.ResponseWriter, _ *http.Request
 	writeXML(w, http.StatusOK, result)
 }
 
-// isValidBucketName validates S3 bucket naming rules.
-func isValidBucketName(name string) bool {
-	if len(name) < 3 || len(name) > 63 {
-		return false
-	}
-	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.') {
-			return false
-		}
-	}
-	if name[0] == '-' || name[len(name)-1] == '-' {
-		return false
-	}
-	return true
-}
 
 // handleGetBucketVersioning handles GET /<bucket>?versioning.
 func (rt *Router) handleGetBucketVersioning(w http.ResponseWriter, _ *http.Request, bucket string) {

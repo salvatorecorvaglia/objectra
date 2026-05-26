@@ -4,8 +4,29 @@ package storage
 import (
 	"context"
 	"io"
+	"net"
+	"regexp"
+	"strings"
 	"time"
 )
+
+var bucketNameRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9.\-]{1,61}[a-z0-9]$`)
+
+// IsValidBucketName validates S3 bucket naming rules: 3-63 chars, lowercase letters, numbers, hyphens, periods.
+// It also ensures it doesn't contain consecutive periods, and isn't formatted as an IP address.
+func IsValidBucketName(name string) bool {
+	if !bucketNameRegexp.MatchString(name) {
+		return false
+	}
+	if strings.Contains(name, "..") {
+		return false
+	}
+	if net.ParseIP(name) != nil {
+		return false
+	}
+	return true
+}
+
 
 type ssecKeyType struct{}
 

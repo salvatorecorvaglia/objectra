@@ -182,10 +182,16 @@ func (rt *Router) handleHeadObject(w http.ResponseWriter, r *http.Request, bucke
 	w.WriteHeader(http.StatusOK)
 }
 
-// handleDeleteObject handles DELETE /<bucket>/<key> (DeleteObject).
 func (rt *Router) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	versionID := r.URL.Query().Get("versionId")
 	err := rt.engine.DeleteObject(bucket, key, versionID)
+	resource := "/" + bucket + "/" + key
+
+	if err != nil {
+		if handleStorageError(w, err, resource) {
+			return
+		}
+	}
 
 	// If a delete marker was created, S3 returns 204 with delete marker headers
 	if err == nil {

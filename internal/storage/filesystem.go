@@ -504,6 +504,14 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 		return err
 	}
 
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+
 	versionStatus, err := fs.metadata.GetBucketVersioning(bucket)
 	if err != nil {
 		versionStatus = ""
@@ -817,6 +825,10 @@ func (fs *FilesystemEngine) CreateMultipartUpload(bucket, key, contentType strin
 		return nil, err
 	}
 
+	if _, err := fs.objectPath(bucket, key); err != nil {
+		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
+	}
+
 	exists, err := fs.metadata.BucketExists(bucket)
 	if err != nil {
 		return nil, err
@@ -853,10 +865,13 @@ func (fs *FilesystemEngine) CreateMultipartUpload(bucket, key, contentType strin
 	}, nil
 }
 
-// UploadPart stores a single part of a multipart upload.
 func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int, reader io.Reader, size int64) (*PartInfo, error) {
 	if err := fs.validateBucketName(bucket); err != nil {
 		return nil, err
+	}
+
+	if _, err := fs.objectPath(bucket, key); err != nil {
+		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
 
 	unlock := fs.lockUpload(uploadID)
@@ -913,7 +928,6 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 
 	hash := md5.New()
 	var out io.Writer = tmpFile
-	var gzipWriter *gzip.Writer
 
 	if ssecParams != nil {
 		iv := make([]byte, 16)
@@ -932,21 +946,9 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		out = &cipher.StreamWriter{S: stream, W: out}
 	}
 
-	compressed := isCompressibleContentType(meta.ContentType)
-	if compressed {
-		gzipWriter = gzip.NewWriter(out)
-		out = gzipWriter
-	}
-
 	written, err := io.Copy(io.MultiWriter(out, hash), reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write part data: %w", err)
-	}
-
-	if gzipWriter != nil {
-		if err := gzipWriter.Close(); err != nil {
-			return nil, fmt.Errorf("failed to close gzip writer: %w", err)
-		}
 	}
 
 	if err := tmpFile.Close(); err != nil {
@@ -1101,18 +1103,6 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 			partReader = &cipher.StreamReader{S: stream, R: partFile}
 		}
 
-		if compressed {
-			gzReader, err := gzip.NewReader(partReader)
-			if err != nil {
-				for _, c := range closers {
-					c.Close()
-				}
-				return nil, fmt.Errorf("failed to initialize gzip reader: %w", err)
-			}
-			closers = append(closers, gzReader)
-			partReader = gzReader
-		}
-
 		n, err := io.Copy(io.MultiWriter(out, hash), partReader)
 		for _, c := range closers {
 			c.Close()
@@ -1199,6 +1189,10 @@ func (fs *FilesystemEngine) AbortMultipartUpload(bucket, key, uploadID string) e
 		return err
 	}
 
+	if _, err := fs.objectPath(bucket, key); err != nil {
+		return &S3Error{Code: "InvalidArgument", Message: err.Error()}
+	}
+
 	unlock := fs.lockUpload(uploadID)
 	defer unlock()
 
@@ -1214,29 +1208,12 @@ func (fs *FilesystemEngine) AbortMultipartUpload(bucket, key, uploadID string) e
 	}
 	return err
 }
-
 func (fs *FilesystemEngine) validateBucketName(name string) error {
-	if !isValidBucketName(name) {
+	if !IsValidBucketName(name) {
 		return &S3Error{Code: "InvalidBucketName", Message: "The specified bucket is not valid."}
 	}
 	return nil
 }
-
-func isValidBucketName(name string) bool {
-	if len(name) < 3 || len(name) > 63 {
-		return false
-	}
-	for _, c := range name {
-		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.') {
-			return false
-		}
-	}
-	if name[0] == '-' || name[len(name)-1] == '-' {
-		return false
-	}
-	return true
-}
-
 func (fs *FilesystemEngine) lockUpload(uploadID string) func() {
 	fs.mu.Lock()
 	if fs.locks == nil {

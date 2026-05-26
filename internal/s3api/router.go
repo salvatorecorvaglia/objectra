@@ -98,7 +98,7 @@ func (rt *Router) serveHTTPInternal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if bucket != "" && !isValidBucketName(bucket) {
+	if bucket != "" && !storage.IsValidBucketName(bucket) {
 		writeS3Error(w, "InvalidBucketName", "The specified bucket is not valid.", "/"+bucket)
 		return
 	}

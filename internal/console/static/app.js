@@ -759,28 +759,24 @@
         }
     }
 
-    // ---- Download ----
+    async function downloadObject(key) {
+        try {
+            const resp = await api('GET', `/api/buckets/${currentBucket}/objects/presign?key=${encodeURIComponent(key)}&expires=300`);
+            if (!resp.ok) {
+                throw new Error('Failed to generate download link');
+            }
+            const data = await resp.json();
+            const presignedURL = data.url;
 
-    function downloadObject(key) {
-        const url = `/api/buckets/${currentBucket}/objects/download?key=${encodeURIComponent(key)}`;
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = key.split('/').pop();
-
-        // Add auth header via fetch
-        fetch(url, {
-            headers: { 'Authorization': `Bearer ${token}` },
-        })
-            .then((resp) => resp.blob())
-            .then((blob) => {
-                const blobUrl = URL.createObjectURL(blob);
-                a.href = blobUrl;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(blobUrl);
-            })
-            .catch(() => showToast('Failed to download', 'error'));
+            const a = document.createElement('a');
+            a.href = presignedURL;
+            a.download = key.split('/').pop();
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        } catch (err) {
+            showToast('Failed to download: ' + err.message, 'error');
+        }
     }
 
     // ---- Create Folder ----
@@ -872,6 +868,23 @@
         const filename = key.split('/').pop();
         previewTitle.textContent = `Preview: ${filename}`;
         previewFileSize.textContent = formatSize(size);
+
+        const maxPreviewSize = 10 * 1024 * 1024; // 10MB
+        if (size > maxPreviewSize) {
+            previewContentContainer.innerHTML = `
+                <div style="padding: 3rem 1.5rem; text-align: center; background: rgba(255, 255, 255, 0.02); border-radius: 6px; border: 1px solid var(--border); width: 100%;">
+                    <div style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;">⚠️</div>
+                    <p style="margin-bottom: 1.5rem; color: var(--text-secondary);">This file is too large to preview (${formatSize(size)}). Preview limit is 10 MB.</p>
+                    <button id="preview-download-btn" class="btn btn-primary">Download File</button>
+                </div>
+            `;
+            openModal('preview-modal');
+            document.getElementById('preview-download-btn').addEventListener('click', () => {
+                downloadObject(key);
+            });
+            return;
+        }
+
         previewContentContainer.innerHTML = '<div style="color: var(--text-secondary); padding: 2rem;">Loading preview...</div>';
         openModal('preview-modal');
 

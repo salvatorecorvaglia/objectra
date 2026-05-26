@@ -3,7 +3,6 @@ package storage
 import (
 	"fmt"
 	"sync/atomic"
-	"syscall"
 )
 
 // MetricsTracker holds thread-safe global statistics about the server operations.
@@ -42,17 +41,6 @@ func (m *MetricsTracker) DecActiveMultiparts() {
 	atomic.AddInt64(&m.ActiveMultiparts, -1)
 }
 
-// GetDiskSpace retrieves total and free space of the filesystem containing path.
-func GetDiskSpace(path string) (total uint64, free uint64, err error) {
-	var stat syscall.Statfs_t
-	err = syscall.Statfs(path, &stat)
-	if err != nil {
-		return 0, 0, err
-	}
-	total = stat.Blocks * uint64(stat.Bsize)
-	free = stat.Bfree * uint64(stat.Bsize)
-	return total, free, nil
-}
 
 // FormatPrometheus generates a plain-text Prometheus-compliant metrics string.
 func (m *MetricsTracker) FormatPrometheus(dataDir string) string {

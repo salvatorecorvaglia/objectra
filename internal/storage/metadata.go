@@ -119,12 +119,13 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 
 func (m *MetadataStore) CloseAndRemoveBucketDB(bucket string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	db, ok := m.activeBuckets[bucket]
 	if ok {
 		_ = db.Close()
 		delete(m.activeBuckets, bucket)
 	}
-	m.mu.Unlock()
 
 	dbPath := filepath.Join(m.dataDir, "metadata", bucket+".db")
 	return os.Remove(dbPath)
