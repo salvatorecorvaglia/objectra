@@ -1,0 +1,14 @@
+services:
+  objectra:
+    build: .
+    container_name: objectra
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web Console
+    volumes:
+      - ./data:/data
+    environment:
+      - OBJECTRA_ACCESS_KEY=objectra
+      - OBJECTRA_SECRET_KEY=objectra123
+      - OBJECTRA_DATA_DIR=/data
+    restart: unless-stopped
