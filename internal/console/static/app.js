@@ -9,6 +9,9 @@
     let token = localStorage.getItem('objectra_token') || '';
     let currentBucket = '';
     let currentPrefix = '';
+    let searchPrefix = '';
+    let currentPageIndex = 0;
+    let pageTokens = [''];
 
     // ---- DOM Refs ----
     const $ = (sel) => document.querySelector(sel);
@@ -42,6 +45,12 @@
     const uploadProgress = $('#upload-progress');
     const uploadProgressFill = $('#upload-progress-fill');
     const uploadPercent = $('#upload-percent');
+
+    const searchInput = $('#search-input');
+    const paginationContainer = $('#pagination-container');
+    const prevPageBtn = $('#prev-page-btn');
+    const nextPageBtn = $('#next-page-btn');
+    const pageIndicator = $('#page-indicator');
 
     // ---- API Helpers ----
 
@@ -266,10 +275,15 @@
     function openBucket(name) {
         currentBucket = name;
         currentPrefix = '';
+        searchPrefix = '';
+        if (searchInput) searchInput.value = '';
+        resetPagination();
         bucketsView.classList.remove('active');
         objectsView.classList.add('active');
         loadObjects();
     }
+
+    const itemsPerPage = 50;
 
     async function loadObjects() {
         updateBreadcrumb();
@@ -278,16 +292,28 @@
             const params = new URLSearchParams({
                 prefix: currentPrefix,
                 delimiter: '/',
+                maxKeys: itemsPerPage,
             });
+
+            if (searchPrefix) {
+                params.set('searchPrefix', searchPrefix);
+            }
+
+            if (currentPageIndex > 0 && pageTokens[currentPageIndex]) {
+                params.set('continuationToken', pageTokens[currentPageIndex]);
+            }
+
             const resp = await api('GET', `/api/buckets/${currentBucket}/objects?${params}`);
-            const items = await resp.json();
+            const data = await resp.json();
+            const items = data.items || [];
 
             objectsTbody.innerHTML = '';
 
             if (items.length === 0) {
                 objectsEmpty.style.display = 'block';
                 objectsTableContainer.style.display = 'none';
-                objectCount.textContent = 'Empty';
+                paginationContainer.style.display = 'none';
+                objectCount.textContent = searchPrefix ? 'No matching items' : 'Empty';
             } else {
                 objectsEmpty.style.display = 'none';
                 objectsTableContainer.style.display = 'block';
@@ -296,6 +322,20 @@
                 items.forEach((item) => {
                     objectsTbody.appendChild(createObjectRow(item));
                 });
+
+                const hasNext = data.isTruncated;
+                if (hasNext) {
+                    pageTokens[currentPageIndex + 1] = data.nextContinuationToken;
+                }
+
+                if (currentPageIndex > 0 || hasNext) {
+                    paginationContainer.style.display = 'flex';
+                    prevPageBtn.disabled = (currentPageIndex === 0);
+                    nextPageBtn.disabled = !hasNext;
+                    pageIndicator.textContent = `Page ${currentPageIndex + 1}`;
+                } else {
+                    paginationContainer.style.display = 'none';
+                }
             }
         } catch (err) {
             showToast('Failed to load objects', 'error');
@@ -324,6 +364,9 @@
 
             tr.querySelector('.folder-link').addEventListener('click', () => {
                 currentPrefix = item.key;
+                searchPrefix = '';
+                if (searchInput) searchInput.value = '';
+                resetPagination();
                 loadObjects();
             });
         } else {
@@ -410,6 +453,9 @@
             bucketBtn.textContent = currentBucket;
             bucketBtn.addEventListener('click', () => {
                 currentPrefix = '';
+                searchPrefix = '';
+                if (searchInput) searchInput.value = '';
+                resetPagination();
                 loadObjects();
             });
             breadcrumb.appendChild(bucketBtn);
@@ -430,6 +476,9 @@
                     btn.textContent = part;
                     btn.addEventListener('click', () => {
                         currentPrefix = prefix;
+                        searchPrefix = '';
+                        if (searchInput) searchInput.value = '';
+                        resetPagination();
                         loadObjects();
                     });
                     breadcrumb.appendChild(btn);
@@ -477,54 +526,179 @@
         }
     });
 
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB
+    const MULTIPART_THRESHOLD = 10 * 1024 * 1024; // 10MB
+
     async function uploadFiles(files) {
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const key = currentPrefix + file.name;
 
             uploadProgress.style.display = 'block';
-            uploadPercent.textContent = `${i + 1}/${files.length}`;
-
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('key', key);
+            uploadPercent.textContent = `0% (1/${files.length})`;
 
             try {
-                // Use XMLHttpRequest for progress tracking
-                await new Promise((resolve, reject) => {
-                    const xhr = new XMLHttpRequest();
-                    xhr.open('POST', `/api/buckets/${currentBucket}/objects/upload`);
-                    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-
-                    xhr.upload.onprogress = (e) => {
-                        if (e.lengthComputable) {
-                            const pct = Math.round((e.loaded / e.total) * 100);
-                            uploadProgressFill.style.width = pct + '%';
-                            uploadPercent.textContent = `${pct}% (${i + 1}/${files.length})`;
-                        }
-                    };
-
-                    xhr.onload = () => {
-                        if (xhr.status >= 200 && xhr.status < 300) {
-                            resolve();
-                        } else {
-                            reject(new Error('Upload failed'));
-                        }
-                    };
-
-                    xhr.onerror = () => reject(new Error('Upload failed'));
-                    xhr.send(formData);
-                });
-
-                showToast(`"${file.name}" uploaded`, 'success');
+                if (file.size >= MULTIPART_THRESHOLD) {
+                    await uploadLargeFile(file, key, i + 1, files.length);
+                } else {
+                    await uploadSmallFile(file, key, i + 1, files.length);
+                }
+                showToast(`"${file.name}" uploaded successfully`, 'success');
             } catch (err) {
-                showToast(`Failed to upload "${file.name}"`, 'error');
+                showToast(`Failed to upload "${file.name}": ${err.message}`, 'error');
             }
         }
 
         uploadProgress.style.display = 'none';
         uploadProgressFill.style.width = '0%';
+        resetPagination();
         loadObjects();
+    }
+
+    async function uploadSmallFile(file, key, index, total) {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('key', key);
+
+        await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `/api/buckets/${currentBucket}/objects/upload`);
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    uploadProgressFill.style.width = pct + '%';
+                    uploadPercent.textContent = `${pct}% (${index}/${total})`;
+                }
+            };
+
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    resolve();
+                } else {
+                    reject(new Error('Upload failed'));
+                }
+            };
+
+            xhr.onerror = () => reject(new Error('Upload failed'));
+            xhr.send(formData);
+        });
+    }
+
+    async function uploadLargeFile(file, key, index, total) {
+        const initResp = await api('POST', `/api/buckets/${currentBucket}/multipart/initiate`, {
+            key,
+            contentType: file.type || 'application/octet-stream'
+        });
+        if (!initResp.ok) {
+            const data = await initResp.json();
+            throw new Error(data.error || 'Failed to initiate multipart upload');
+        }
+        const { uploadId } = await initResp.json();
+
+        const numChunks = Math.ceil(file.size / CHUNK_SIZE);
+        const results = [];
+        const activeUploads = new Map();
+        const chunkProgress = new Array(numChunks + 1).fill(0);
+
+        const updateProgress = () => {
+            const totalUploaded = chunkProgress.reduce((sum, val) => sum + val, 0);
+            const pct = Math.min(Math.round((totalUploaded / file.size) * 100), 99);
+            uploadProgressFill.style.width = pct + '%';
+            uploadPercent.textContent = `${pct}% (${index}/${total})`;
+        };
+
+        const uploadChunk = async (partNum) => {
+            const start = (partNum - 1) * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const blob = file.slice(start, end);
+            const chunkSize = end - start;
+
+            const formData = new FormData();
+            formData.append('uploadId', uploadId);
+            formData.append('key', key);
+            formData.append('partNumber', partNum.toString());
+            formData.append('file', blob);
+
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                activeUploads.set(partNum, xhr);
+
+                xhr.open('POST', `/api/buckets/${currentBucket}/multipart/upload-part`);
+                xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                        chunkProgress[partNum] = e.loaded;
+                        updateProgress();
+                    }
+                };
+
+                xhr.onload = () => {
+                    activeUploads.delete(partNum);
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const res = JSON.parse(xhr.responseText);
+                            chunkProgress[partNum] = chunkSize;
+                            updateProgress();
+                            resolve(res);
+                        } catch (e) {
+                            reject(new Error(`Part ${partNum} response parse error`));
+                        }
+                    } else {
+                        reject(new Error(`Part ${partNum} failed with status ${xhr.status}`));
+                    }
+                };
+
+                xhr.onerror = () => {
+                    activeUploads.delete(partNum);
+                    reject(new Error(`Network error on part ${partNum}`));
+                };
+
+                xhr.send(formData);
+            });
+        };
+
+        const chunkIndices = Array.from({ length: numChunks }, (_, i) => i + 1);
+        
+        try {
+            const uploadQueue = async () => {
+                while (chunkIndices.length > 0) {
+                    const partNum = chunkIndices.shift();
+                    const partResult = await uploadChunk(partNum);
+                    results.push(partResult);
+                }
+            };
+
+            const workers = Array.from({ length: Math.min(3, numChunks) }, () => uploadQueue());
+            await Promise.all(workers);
+
+            results.sort((a, b) => a.partNumber - b.partNumber);
+
+            const completeResp = await api('POST', `/api/buckets/${currentBucket}/multipart/complete`, {
+                uploadId,
+                key,
+                parts: results.map(p => ({ partNumber: p.partNumber, etag: p.etag }))
+            });
+
+            if (!completeResp.ok) {
+                const data = await completeResp.json();
+                throw new Error(data.error || 'Failed to complete multipart upload');
+            }
+
+            uploadProgressFill.style.width = '100%';
+            uploadPercent.textContent = `100% (${index}/${total})`;
+        } catch (err) {
+            activeUploads.forEach(xhr => xhr.abort());
+            
+            await api('POST', `/api/buckets/${currentBucket}/multipart/abort`, {
+                uploadId,
+                key
+            }).catch(() => {});
+            
+            throw err;
+        }
     }
 
     // ---- Download ----
@@ -597,6 +771,33 @@
     // Close modals via close buttons and overlay click
     $$('[data-close]').forEach((btn) => {
         btn.addEventListener('click', () => closeModal(btn.dataset.close));
+    });
+
+    function resetPagination() {
+        currentPageIndex = 0;
+        pageTokens = [''];
+    }
+
+    prevPageBtn.addEventListener('click', () => {
+        if (currentPageIndex > 0) {
+            currentPageIndex--;
+            loadObjects();
+        }
+    });
+
+    nextPageBtn.addEventListener('click', () => {
+        currentPageIndex++;
+        loadObjects();
+    });
+
+    let searchDebounceTimeout = null;
+    searchInput.addEventListener('input', (e) => {
+        clearTimeout(searchDebounceTimeout);
+        searchDebounceTimeout = setTimeout(() => {
+            searchPrefix = e.target.value.trim();
+            resetPagination();
+            loadObjects();
+        }, 300);
     });
 
     $$('.modal-overlay').forEach((overlay) => {

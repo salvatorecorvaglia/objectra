@@ -132,6 +132,9 @@
                         <p class="view-subtitle" id="object-count"></p>
                     </div>
                     <div class="view-actions">
+                        <div class="search-box">
+                            <input type="text" id="search-input" placeholder="Search prefix..." aria-label="Search prefix">
+                        </div>
                         <button id="upload-btn" class="btn btn-primary">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                             Upload
@@ -163,6 +166,16 @@
                             <!-- Populated by JS -->
                         </tbody>
                     </table>
+                </div>
+                
+                <div id="pagination-container" class="pagination-footer" style="display:none;">
+                    <button id="prev-page-btn" class="btn btn-secondary btn-sm" disabled>
+                        &larr; Previous
+                    </button>
+                    <span id="page-indicator" class="page-indicator">Page 1</span>
+                    <button id="next-page-btn" class="btn btn-secondary btn-sm">
+                        Next &rarr;
+                    </button>
                 </div>
 
                 <div id="objects-empty" class="empty-state" style="display:none;">

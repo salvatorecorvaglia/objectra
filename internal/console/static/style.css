@@ -1024,3 +1024,52 @@ body {
     background: rgba(59, 130, 246, 0.3);
     color: white;
 }
+
+/* ================================================================
+   Search Box & Pagination
+   ================================================================ */
+
+.search-box {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.search-box input {
+    padding: 0.5rem 0.9rem;
+    background: var(--bg-input);
+    border: 1px solid var(--border-secondary);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-family);
+    font-size: 0.85rem;
+    transition: all var(--transition-normal);
+    outline: none;
+    width: 180px;
+}
+
+.search-box input:focus {
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+    width: 250px;
+}
+
+.pagination-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1.5rem;
+    padding: 1rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border-secondary);
+    border-radius: var(--radius-md);
+    margin-top: 1rem;
+    box-shadow: var(--shadow-sm);
+}
+
+.page-indicator {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+

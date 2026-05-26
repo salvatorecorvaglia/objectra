@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/salvatorecorvaglia/objectra/internal/auth"
@@ -222,6 +223,14 @@ func (h *Handler) handleBucketObjects(w http.ResponseWriter, r *http.Request) {
 		h.downloadObject(w, r, bucketName)
 	case action == "objects" && r.Method == http.MethodDelete:
 		h.deleteObject(w, r, bucketName)
+	case action == "multipart/initiate" && r.Method == http.MethodPost:
+		h.initiateMultipart(w, r, bucketName)
+	case action == "multipart/upload-part" && r.Method == http.MethodPost:
+		h.uploadPart(w, r, bucketName)
+	case action == "multipart/complete" && r.Method == http.MethodPost:
+		h.completeMultipart(w, r, bucketName)
+	case action == "multipart/abort" && r.Method == http.MethodPost:
+		h.abortMultipart(w, r, bucketName)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -242,11 +251,29 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request, bucket str
 		delimiter = "/"
 	}
 
+	maxKeysStr := r.URL.Query().Get("maxKeys")
+	maxKeys := 1000
+	if maxKeysStr != "" {
+		if mk, err := strconv.Atoi(maxKeysStr); err == nil && mk > 0 {
+			maxKeys = mk
+		}
+	}
+
+	continuationToken := r.URL.Query().Get("continuationToken")
+
+	effectivePrefix := prefix
+	effectiveDelimiter := delimiter
+	if searchPrefix := r.URL.Query().Get("searchPrefix"); searchPrefix != "" {
+		effectivePrefix = prefix + searchPrefix
+		effectiveDelimiter = "" // Recursive search
+	}
+
 	output, err := h.engine.ListObjects(&storage.ListObjectsInput{
-		Bucket:    bucket,
-		Prefix:    prefix,
-		Delimiter: delimiter,
-		MaxKeys:   1000,
+		Bucket:            bucket,
+		Prefix:            effectivePrefix,
+		Delimiter:         effectiveDelimiter,
+		MaxKeys:           maxKeys,
+		ContinuationToken: continuationToken,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -261,11 +288,11 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request, bucket str
 		IsPrefix     bool   `json:"isPrefix"`
 	}
 
-	var result []objectResp
+	var items []objectResp
 
 	// Add common prefixes (folders)
 	for _, p := range output.CommonPrefixes {
-		result = append(result, objectResp{
+		items = append(items, objectResp{
 			Key:      p,
 			IsPrefix: true,
 		})
@@ -273,7 +300,7 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request, bucket str
 
 	// Add objects
 	for _, obj := range output.Objects {
-		result = append(result, objectResp{
+		items = append(items, objectResp{
 			Key:          obj.Key,
 			Size:         obj.Size,
 			LastModified: obj.LastModified.UTC().Format("2006-01-02T15:04:05.000Z"),
@@ -282,11 +309,21 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request, bucket str
 		})
 	}
 
-	if result == nil {
-		result = []objectResp{}
+	if items == nil {
+		items = []objectResp{}
 	}
 
-	writeJSON(w, http.StatusOK, result)
+	type listObjectsResp struct {
+		Items                 []objectResp `json:"items"`
+		IsTruncated           bool         `json:"isTruncated"`
+		NextContinuationToken string       `json:"nextContinuationToken,omitempty"`
+	}
+
+	writeJSON(w, http.StatusOK, listObjectsResp{
+		Items:                 items,
+		IsTruncated:           output.IsTruncated,
+		NextContinuationToken: output.NextContinuationToken,
+	})
 }
 
 func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request, bucket string) {
@@ -371,4 +408,132 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+func (h *Handler) initiateMultipart(w http.ResponseWriter, r *http.Request, bucket string) {
+	var req struct {
+		Key         string `json:"key"`
+		ContentType string `json:"contentType"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if req.Key == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing key"})
+		return
+	}
+	if req.ContentType == "" {
+		req.ContentType = "application/octet-stream"
+	}
+
+	info, err := h.engine.CreateMultipartUpload(bucket, req.Key, req.ContentType)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"uploadId": info.UploadID,
+		"key":      info.Key,
+	})
+}
+
+func (h *Handler) uploadPart(w http.ResponseWriter, r *http.Request, bucket string) {
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse upload"})
+		return
+	}
+
+	uploadID := r.FormValue("uploadId")
+	key := r.FormValue("key")
+	partNumberStr := r.FormValue("partNumber")
+
+	partNumber, err := strconv.Atoi(partNumberStr)
+	if err != nil || partNumber < 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid part number"})
+		return
+	}
+
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no file chunk provided"})
+		return
+	}
+	defer file.Close()
+
+	seeker, ok := file.(io.Seeker)
+	var size int64
+	if ok {
+		size, _ = seeker.Seek(0, io.SeekEnd)
+		seeker.Seek(0, io.SeekStart)
+	} else {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid file stream"})
+		return
+	}
+
+	partInfo, err := h.engine.UploadPart(bucket, key, uploadID, partNumber, file, size)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"etag":       partInfo.ETag,
+		"partNumber": partInfo.PartNumber,
+	})
+}
+
+func (h *Handler) completeMultipart(w http.ResponseWriter, r *http.Request, bucket string) {
+	var req struct {
+		UploadID string `json:"uploadId"`
+		Key      string `json:"key"`
+		Parts    []struct {
+			PartNumber int    `json:"partNumber"`
+			ETag       string `json:"etag"`
+		} `json:"parts"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	var s3Parts []storage.CompletePart
+	for _, p := range req.Parts {
+		s3Parts = append(s3Parts, storage.CompletePart{
+			PartNumber: p.PartNumber,
+			ETag:       p.ETag,
+		})
+	}
+
+	info, err := h.engine.CompleteMultipartUpload(bucket, req.Key, req.UploadID, s3Parts)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"key":  info.Key,
+		"size": info.Size,
+		"etag": info.ETag,
+	})
+}
+
+func (h *Handler) abortMultipart(w http.ResponseWriter, r *http.Request, bucket string) {
+	var req struct {
+		UploadID string `json:"uploadId"`
+		Key      string `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+
+	err := h.engine.AbortMultipartUpload(bucket, req.Key, req.UploadID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "aborted"})
 }
