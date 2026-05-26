@@ -32,7 +32,7 @@ func triggerWebhook(eventName string, info *ObjectInfo) {
 	}
 
 	payload := WebhookPayload{
-		EventName: eventName,
+		EventName: "s3:" + eventName,
 		Bucket:    info.Bucket,
 		Key:       info.Key,
 		Size:      info.Size,
