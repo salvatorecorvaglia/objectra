@@ -77,6 +77,7 @@ export $(grep -v '^#' .env | xargs) && ./objectra
 | `OBJECTRA_S3_PORT` | `9000` | S3 API port |
 | `OBJECTRA_CONSOLE_PORT` | `9001` | Web console port |
 | `OBJECTRA_REGION` | `us-east-1` | Reported S3 region |
+| `OBJECTRA_JWT_SECRET` | *random* | JWT signing key used for persistent console sessions |
 
 > **⚠️ Change the default credentials before using in production!**
 
