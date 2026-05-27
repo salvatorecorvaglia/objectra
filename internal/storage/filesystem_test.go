@@ -735,7 +735,10 @@ func TestCleanExpiredMultipartUploads(t *testing.T) {
 	}
 
 	// Verify temp directory exists
-	partDir := engine.multipartDir("cleanup-bucket", "file.bin", upload.UploadID)
+	partDir, err := engine.multipartDir("cleanup-bucket", "file.bin", upload.UploadID)
+	if err != nil {
+		t.Fatalf("multipartDir failed: %v", err)
+	}
 	if _, err := os.Stat(partDir); os.IsNotExist(err) {
 		t.Fatal("expected multipart directory to exist")
 	}
@@ -1195,6 +1198,62 @@ func TestOutboundMirroring(t *testing.T) {
 		t.Errorf("expected path /backup-bucket/sync.txt, got %q", receivedPath)
 	}
 }
+
+func TestPathTraversalProtectionExtended(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "traversal-bucket"
+	engine.CreateBucket(bucket)
+
+	// Test 1: Path Traversal via Version ID in GetObject/HeadObject/DeleteObject
+	// The path traversal protection should detect and block these attempts.
+	traversalVersions := []string{
+		"../../etc/passwd",
+		"..\\..\\Windows\\System32\\cmd.exe",
+		"sub/../../passwd",
+	}
+
+	for _, badVersion := range traversalVersions {
+		_, _, err := engine.GetObject(context.Background(), bucket, "test.txt", badVersion)
+		if err == nil {
+			t.Errorf("expected path traversal error for version ID %q, got nil", badVersion)
+		}
+
+		_, err = engine.HeadObject(context.Background(), bucket, "test.txt", badVersion)
+		if err == nil {
+			t.Errorf("expected path traversal error for version ID %q, got nil", badVersion)
+		}
+
+		err = engine.DeleteObject(bucket, "test.txt", badVersion)
+		if err == nil {
+			t.Errorf("expected path traversal error for version ID %q, got nil", badVersion)
+		}
+	}
+
+	// Test 2: Path Traversal via Upload ID in multipart helpers
+	traversalUploadIDs := []string{
+		"../../etc/passwd",
+		"..\\..\\Windows\\System32\\cmd.exe",
+		"sub/../../passwd",
+	}
+
+	for _, badUploadID := range traversalUploadIDs {
+		_, err := engine.UploadPart(context.Background(), bucket, "test.txt", badUploadID, 1, bytes.NewReader([]byte("data")), 4)
+		if err == nil {
+			t.Errorf("expected path traversal error for upload ID %q in UploadPart, got nil", badUploadID)
+		}
+
+		_, err = engine.CompleteMultipartUpload(bucket, "test.txt", badUploadID, []CompletePart{{PartNumber: 1, ETag: "some-etag"}})
+		if err == nil {
+			t.Errorf("expected path traversal error for upload ID %q in CompleteMultipartUpload, got nil", badUploadID)
+		}
+
+		err = engine.AbortMultipartUpload(bucket, "test.txt", badUploadID)
+		if err == nil {
+			t.Errorf("expected path traversal error for upload ID %q in AbortMultipartUpload, got nil", badUploadID)
+		}
+	}
+}
+
 
 
 

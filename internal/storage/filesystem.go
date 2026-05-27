@@ -83,19 +83,33 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 }
 
 func (fs *FilesystemEngine) objectPathWithVersion(bucket, key, versionID string) (string, error) {
+	if strings.ContainsAny(versionID, "/\\") || strings.Contains(versionID, "..") {
+		return "", fmt.Errorf("invalid version ID: path traversal detected")
+	}
 	base, err := fs.objectPath(bucket, key)
 	if err != nil {
 		return "", err
 	}
+	resolved := base
 	if versionID != "" {
-		return base + "." + versionID, nil
+		resolved = base + "." + versionID
 	}
-	return base, nil
+	resolved = filepath.Clean(resolved)
+	// Ensure the resolved path stays within the bucket directory
+	bucketBase := fs.bucketPath(bucket)
+	if !strings.HasPrefix(resolved, bucketBase+string(filepath.Separator)) && resolved != bucketBase {
+		return "", fmt.Errorf("invalid object key or version: path traversal detected")
+	}
+	return resolved, nil
 }
 
 func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 	dir := filepath.Dir(objPath)
 	bucketDir := fs.bucketPath(bucket)
+	// Ensure dir is a subdirectory of bucketDir before traversing
+	if !strings.HasPrefix(dir, bucketDir+string(filepath.Separator)) {
+		return
+	}
 	for dir != bucketDir {
 		entries, _ := os.ReadDir(dir)
 		if len(entries) > 0 {
@@ -103,11 +117,36 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 		}
 		os.Remove(dir)
 		dir = filepath.Dir(dir)
+		if !strings.HasPrefix(dir, bucketDir+string(filepath.Separator)) && dir != bucketDir {
+			break
+		}
 	}
 }
 
-func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) string {
-	return filepath.Join(fs.dataDir, "multipart", bucket, uploadID, filepath.FromSlash(key))
+func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string, error) {
+	if strings.ContainsAny(uploadID, "/\\") || strings.Contains(uploadID, "..") {
+		return "", fmt.Errorf("invalid upload ID: path traversal detected")
+	}
+	base := filepath.Join(fs.dataDir, "multipart", bucket)
+	resolved := filepath.Join(base, uploadID)
+	// Ensure the resolved path stays within the bucket's multipart directory
+	if !strings.HasPrefix(resolved, base+string(filepath.Separator)) && resolved != base {
+		return "", fmt.Errorf("invalid upload ID: path traversal detected")
+	}
+	return resolved, nil
+}
+
+func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, error) {
+	uploadPath, err := fs.multipartUploadPath(bucket, uploadID)
+	if err != nil {
+		return "", err
+	}
+	resolved := filepath.Join(uploadPath, filepath.FromSlash(key))
+	// Ensure the resolved path stays within the uploadPath directory
+	if !strings.HasPrefix(resolved, uploadPath+string(filepath.Separator)) && resolved != uploadPath {
+		return "", fmt.Errorf("invalid object key: path traversal detected")
+	}
+	return resolved, nil
 }
 
 // CreateBucket creates a new storage bucket.
@@ -450,6 +489,9 @@ func (fs *FilesystemEngine) GetObject(ctx context.Context, bucket, key, versionI
 func (fs *FilesystemEngine) HeadObject(ctx context.Context, bucket, key, versionID string) (*ObjectInfo, error) {
 	if err := fs.validateBucketName(bucket); err != nil {
 		return nil, err
+	}
+	if _, err := fs.objectPathWithVersion(bucket, key, versionID); err != nil {
+		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
 
 	info, err := fs.metadata.GetObjectMeta(bucket, key, versionID)
@@ -838,7 +880,10 @@ func (fs *FilesystemEngine) CreateMultipartUpload(bucket, key, contentType strin
 	}
 
 	uploadID := uuid.New().String()
-	partDir := fs.multipartDir(bucket, key, uploadID)
+	partDir, err := fs.multipartDir(bucket, key, uploadID)
+	if err != nil {
+		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
+	}
 	if err := os.MkdirAll(partDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create multipart directory: %w", err)
 	}
@@ -913,7 +958,10 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		}
 	}
 
-	partDir := fs.multipartDir(bucket, key, uploadID)
+	partDir, err := fs.multipartDir(bucket, key, uploadID)
+	if err != nil {
+		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
+	}
 	partPath := filepath.Join(partDir, fmt.Sprintf("part-%05d", partNumber))
 
 	tmpFile, err := os.CreateTemp(partDir, ".part-tmp-*")
@@ -1071,7 +1119,10 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 
 	hash := md5.New()
 	var totalSize int64
-	partDir := fs.multipartDir(bucket, key, uploadID)
+	partDir, err := fs.multipartDir(bucket, key, uploadID)
+	if err != nil {
+		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
+	}
 
 	for _, part := range parts {
 		partPath := filepath.Join(partDir, fmt.Sprintf("part-%05d", part.PartNumber))
@@ -1171,7 +1222,9 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 	}
 
 	// Clean up multipart temp files
-	os.RemoveAll(filepath.Join(fs.dataDir, "multipart", bucket, uploadID))
+	if uploadPath, err := fs.multipartUploadPath(bucket, uploadID); err == nil {
+		os.RemoveAll(uploadPath)
+	}
 	fs.metadata.DeleteMultipartMeta(bucket, key, uploadID)
 
 	GlobalMetrics.DecActiveMultiparts()
@@ -1201,7 +1254,11 @@ func (fs *FilesystemEngine) AbortMultipartUpload(bucket, key, uploadID string) e
 		return &S3Error{Code: "NoSuchUpload", Message: "The specified multipart upload does not exist."}
 	}
 
-	os.RemoveAll(filepath.Join(fs.dataDir, "multipart", bucket, uploadID))
+	uploadPath, err := fs.multipartUploadPath(bucket, uploadID)
+	if err != nil {
+		return &S3Error{Code: "InvalidArgument", Message: err.Error()}
+	}
+	os.RemoveAll(uploadPath)
 	err = fs.metadata.DeleteMultipartMeta(bucket, key, uploadID)
 	if err == nil {
 		GlobalMetrics.DecActiveMultiparts()
