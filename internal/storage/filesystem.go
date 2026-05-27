@@ -71,18 +71,33 @@ func (fs *FilesystemEngine) bucketPath(name string) string {
 	return filepath.Join(fs.dataDir, "buckets", name)
 }
 
-// objectPath returns the filesystem path for an object, with path traversal protection.
-func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
+func (fs *FilesystemEngine) validatePathSafety(bucket, key, versionID string) error {
 	if !filepath.IsLocal(bucket) {
-		return "", fmt.Errorf("invalid bucket name: path traversal detected")
+		return fmt.Errorf("invalid bucket name: path traversal detected")
 	}
 	trimmedKey := strings.TrimLeft(key, "/\\")
 	if trimmedKey != "" {
 		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
-			return "", fmt.Errorf("invalid object key: path traversal detected")
+			return fmt.Errorf("invalid object key: path traversal detected")
 		}
 	} else if key != "" {
-		return "", fmt.Errorf("invalid object key: path traversal detected")
+		return fmt.Errorf("invalid object key: path traversal detected")
+	}
+	if versionID != "" {
+		if !filepath.IsLocal(versionID) {
+			return fmt.Errorf("invalid version ID: path traversal detected")
+		}
+		if strings.ContainsAny(versionID, "/\\") || strings.Contains(versionID, "..") {
+			return fmt.Errorf("invalid version ID: path traversal detected")
+		}
+	}
+	return nil
+}
+
+// objectPath returns the filesystem path for an object, with path traversal protection.
+func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
+	if err := fs.validatePathSafety(bucket, key, ""); err != nil {
+		return "", err
 	}
 
 	base := fs.bucketPath(bucket)
@@ -96,24 +111,8 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 }
 
 func (fs *FilesystemEngine) objectPathWithVersion(bucket, key, versionID string) (string, error) {
-	if !filepath.IsLocal(bucket) {
-		return "", fmt.Errorf("invalid bucket name: path traversal detected")
-	}
-	trimmedKey := strings.TrimLeft(key, "/\\")
-	if trimmedKey != "" {
-		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
-			return "", fmt.Errorf("invalid object key: path traversal detected")
-		}
-	} else if key != "" {
-		return "", fmt.Errorf("invalid object key: path traversal detected")
-	}
-	if versionID != "" {
-		if !filepath.IsLocal(versionID) {
-			return "", fmt.Errorf("invalid version ID: path traversal detected")
-		}
-		if strings.ContainsAny(versionID, "/\\") || strings.Contains(versionID, "..") {
-			return "", fmt.Errorf("invalid version ID: path traversal detected")
-		}
+	if err := fs.validatePathSafety(bucket, key, versionID); err != nil {
+		return "", err
 	}
 	base, err := fs.objectPath(bucket, key)
 	if err != nil {
@@ -1545,6 +1544,188 @@ func (m *metricsReadCloser) Read(p []byte) (int, error) {
 // DataDir returns the path to the storage data directory.
 func (fs *FilesystemEngine) DataDir() string {
 	return fs.dataDir
+}
+
+// PutBucketLifecycle sets the lifecycle configuration of a bucket.
+func (fs *FilesystemEngine) PutBucketLifecycle(bucket string, lc *LifecycleConfiguration) error {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.PutBucketLifecycle(bucket, lc)
+}
+
+// GetBucketLifecycle gets the lifecycle configuration of a bucket.
+func (fs *FilesystemEngine) GetBucketLifecycle(bucket string) (*LifecycleConfiguration, error) {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return nil, err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	lc, err := fs.metadata.GetBucketLifecycle(bucket)
+	if err != nil {
+		return nil, err
+	}
+	if lc == nil {
+		return nil, &S3Error{Code: "NoSuchLifecycleConfiguration", Message: "The lifecycle configuration does not exist"}
+	}
+	return lc, nil
+}
+
+// DeleteBucketLifecycle deletes the lifecycle configuration of a bucket.
+func (fs *FilesystemEngine) DeleteBucketLifecycle(bucket string) error {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.DeleteBucketLifecycle(bucket)
+}
+
+// PutBucketLogging sets the logging configuration of a bucket.
+func (fs *FilesystemEngine) PutBucketLogging(bucket string, logging *BucketLoggingStatus) error {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.PutBucketLogging(bucket, logging)
+}
+
+// GetBucketLogging gets the logging configuration of a bucket.
+func (fs *FilesystemEngine) GetBucketLogging(bucket string) (*BucketLoggingStatus, error) {
+	if err := fs.validateBucketName(bucket); err != nil {
+		return nil, err
+	}
+	exists, err := fs.metadata.BucketExists(bucket)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+	}
+	return fs.metadata.GetBucketLogging(bucket)
+}
+
+// CleanExpiredObjects scans all buckets for objects that meet expiration rules and removes them.
+func (fs *FilesystemEngine) CleanExpiredObjects() error {
+	buckets, err := fs.ListBuckets()
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC()
+	for _, bInfo := range buckets {
+		if bInfo.Lifecycle == nil || len(bInfo.Lifecycle.Rules) == 0 {
+			continue
+		}
+
+		metas, err := fs.metadata.ListAllObjectMetas(bInfo.Name)
+		if err != nil {
+			log.Printf("[Storage] Failed to list object metas for bucket %s during cleanup: %v", bInfo.Name, err)
+			continue
+		}
+
+		versions, err := fs.metadata.ListAllObjectVersions(bInfo.Name)
+		if err != nil {
+			log.Printf("[Storage] Failed to list object versions for bucket %s during cleanup: %v", bInfo.Name, err)
+			continue
+		}
+
+		for _, rule := range bInfo.Lifecycle.Rules {
+			if strings.ToLower(rule.Status) != "enabled" {
+				continue
+			}
+
+			// 1. Current Version Expiration
+			if rule.Expiration != nil && rule.Expiration.Days > 0 {
+				cutoff := time.Duration(rule.Expiration.Days) * 24 * time.Hour
+				for _, m := range metas {
+					if !strings.HasPrefix(m.Key, rule.Filter.Prefix) {
+						continue
+					}
+					// Check if expired
+					if now.Sub(m.LastModified) > cutoff {
+						log.Printf("[Storage] Expiring current version of key %s in bucket %s (age %v > threshold %v)", m.Key, bInfo.Name, now.Sub(m.LastModified), cutoff)
+						_ = fs.DeleteObject(bInfo.Name, m.Key, "")
+					}
+				}
+			}
+
+			// 2. Noncurrent Version Expiration
+			if rule.NoncurrentVersionExpiration != nil && rule.NoncurrentVersionExpiration.NoncurrentDays > 0 {
+				cutoff := time.Duration(rule.NoncurrentVersionExpiration.NoncurrentDays) * 24 * time.Hour
+				for _, v := range versions {
+					if v.IsLatest {
+						continue // Only noncurrent versions
+					}
+					if !strings.HasPrefix(v.Key, rule.Filter.Prefix) {
+						continue
+					}
+					if now.Sub(v.LastModified) > cutoff {
+						log.Printf("[Storage] Expiring noncurrent version %s of key %s in bucket %s (age %v > threshold %v)", v.VersionID, v.Key, bInfo.Name, now.Sub(v.LastModified), cutoff)
+						_ = fs.DeleteObject(bInfo.Name, v.Key, v.VersionID)
+					}
+				}
+			}
+
+			// 3. Abort Incomplete Multipart Upload
+			if rule.AbortIncompleteMultipartUpload != nil && rule.AbortIncompleteMultipartUpload.DaysAfterInitiation > 0 {
+				cutoff := time.Duration(rule.AbortIncompleteMultipartUpload.DaysAfterInitiation) * 24 * time.Hour
+				db, err := fs.metadata.getBucketDB(bInfo.Name)
+				if err == nil {
+					var aborts []struct {
+						key      string
+						uploadID string
+					}
+					_ = db.View(func(tx *bolt.Tx) error {
+						b := tx.Bucket(multipartBucket)
+						if b == nil {
+							return nil
+						}
+						return b.ForEach(func(k, v []byte) error {
+							var m MultipartMeta
+							if err := json.Unmarshal(v, &m); err == nil {
+								if strings.HasPrefix(m.Key, rule.Filter.Prefix) && now.Sub(m.Created) > cutoff {
+									aborts = append(aborts, struct {
+										key      string
+										uploadID string
+									}{key: m.Key, uploadID: m.UploadID})
+								}
+							}
+							return nil
+						})
+					})
+					for _, a := range aborts {
+						log.Printf("[Storage] Aborting incomplete multipart upload %s of key %s in bucket %s (initiated %v)", a.uploadID, a.key, bInfo.Name, cutoff)
+						_ = fs.AbortMultipartUpload(bInfo.Name, a.key, a.uploadID)
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 
 

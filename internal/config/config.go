@@ -29,21 +29,27 @@ type Config struct {
 	TLSCert string
 	// TLSKey is the path to the SSL private key file.
 	TLSKey string
+	// LoginRateLimit specifies the maximum requests per minute per IP for the login endpoint.
+	LoginRateLimit int
+	// APIRateLimit specifies the maximum requests per minute per IP for other console endpoints.
+	APIRateLimit int
 }
 
 // Load reads configuration from environment variables, falling back to defaults.
 func Load() *Config {
 	return &Config{
-		AccessKey:   envOrDefault("OBJECTRA_ACCESS_KEY", "objectra"),
-		SecretKey:   envOrDefault("OBJECTRA_SECRET_KEY", "objectra123"),
-		DataDir:     envOrDefault("OBJECTRA_DATA_DIR", "/data"),
-		S3Port:      envIntOrDefault("OBJECTRA_S3_PORT", 9000),
-		ConsolePort: envIntOrDefault("OBJECTRA_CONSOLE_PORT", 9001),
-		Region:      envOrDefault("OBJECTRA_REGION", "us-east-1"),
-		Domain:      envOrDefault("OBJECTRA_DOMAIN", ""),
-		TLSEnabled:  os.Getenv("OBJECTRA_TLS_ENABLED") == "true",
-		TLSCert:     envOrDefault("OBJECTRA_TLS_CERT", ""),
-		TLSKey:      envOrDefault("OBJECTRA_TLS_KEY", ""),
+		AccessKey:      envOrDefault("OBJECTRA_ACCESS_KEY", "objectra"),
+		SecretKey:      envOrDefault("OBJECTRA_SECRET_KEY", "objectra123"),
+		DataDir:        envOrDefault("OBJECTRA_DATA_DIR", "/data"),
+		S3Port:         envIntOrDefault("OBJECTRA_S3_PORT", 9000),
+		ConsolePort:    envIntOrDefault("OBJECTRA_CONSOLE_PORT", 9001),
+		Region:         envOrDefault("OBJECTRA_REGION", "us-east-1"),
+		Domain:         envOrDefault("OBJECTRA_DOMAIN", ""),
+		TLSEnabled:     os.Getenv("OBJECTRA_TLS_ENABLED") == "true",
+		TLSCert:        envOrDefault("OBJECTRA_TLS_CERT", ""),
+		TLSKey:         envOrDefault("OBJECTRA_TLS_KEY", ""),
+		LoginRateLimit: envIntOrDefault("OBJECTRA_LOGIN_RATE_LIMIT", 5),
+		APIRateLimit:   envIntOrDefault("OBJECTRA_API_RATE_LIMIT", 60),
 	}
 }
 

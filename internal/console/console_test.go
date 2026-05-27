@@ -27,7 +27,7 @@ func TestConsoleEndpoints(t *testing.T) {
 	defer engine.Close()
 
 	creds := auth.NewCredentials("access", "secret")
-	handler := NewHandler(engine, creds, 9000, "us-east-1")
+	handler := NewHandler(engine, creds, 9000, "us-east-1", 100, 1000)
 
 	err = engine.CreateBucket("test-bucket")
 	if err != nil {
@@ -188,5 +188,56 @@ func TestConsoleEndpoints(t *testing.T) {
 
 	if presignResp.URL == "" {
 		t.Errorf("expected presigned URL, got empty")
+	}
+}
+
+func TestConsoleRateLimiting(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "console-rl-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	engine, err := storage.NewFilesystemEngine(tempDir)
+	if err != nil {
+		t.Fatalf("failed to initialize storage engine: %v", err)
+	}
+	defer engine.Close()
+
+	creds := auth.NewCredentials("access", "secret")
+	// Set very tight rate limit (burst of 1 for login, burst of 2 for API)
+	handler := NewHandler(engine, creds, 9000, "us-east-1", 1, 2)
+
+	// Test login rate limiting
+	loginBody, _ := json.Marshal(map[string]string{
+		"accessKey": "access",
+		"secretKey": "secret",
+	})
+
+	// Request 1: should pass
+	req := httptest.NewRequest("POST", "/api/login", bytes.NewReader(loginBody))
+	req.RemoteAddr = "1.2.3.4:1234"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	// Request 2 (immediate): should fail with 429
+	req = httptest.NewRequest("POST", "/api/login", bytes.NewReader(loginBody))
+	req.RemoteAddr = "1.2.3.4:1234"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", w.Code)
+	}
+
+	// Request 3 (from different IP): should pass
+	req = httptest.NewRequest("POST", "/api/login", bytes.NewReader(loginBody))
+	req.RemoteAddr = "5.6.7.8:1234"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
 	}
 }

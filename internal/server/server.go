@@ -47,7 +47,7 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// Web console server
-	consoleHandler := console.NewHandler(engine, creds, cfg.S3Port, cfg.Region)
+	consoleHandler := console.NewHandler(engine, creds, cfg.S3Port, cfg.Region, cfg.LoginRateLimit, cfg.APIRateLimit)
 	consoleServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ConsolePort),
 		Handler:           consoleHandler,
@@ -139,6 +139,9 @@ func (s *Server) Start() error {
 		if err := s.engine.CleanExpiredMultipartUploads(24 * time.Hour); err != nil {
 			log.Printf("[Server] Error in initial multipart cleanup: %v", err)
 		}
+		if err := s.engine.CleanExpiredObjects(); err != nil {
+			log.Printf("[Server] Error in initial lifecycle cleanup: %v", err)
+		}
 
 		for {
 			select {
@@ -146,8 +149,11 @@ func (s *Server) Start() error {
 				if err := s.engine.CleanExpiredMultipartUploads(24 * time.Hour); err != nil {
 					log.Printf("[Server] Error cleaning expired multipart uploads: %v", err)
 				}
+				if err := s.engine.CleanExpiredObjects(); err != nil {
+					log.Printf("[Server] Error cleaning expired objects: %v", err)
+				}
 			case <-s.cleanupStop:
-				log.Println("[Server] Background multipart cleanup worker stopped.")
+				log.Println("[Server] Background cleanup worker stopped.")
 				return
 			}
 		}

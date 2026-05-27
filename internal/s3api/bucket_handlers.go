@@ -134,3 +134,67 @@ func (rt *Router) handlePutBucketVersioning(w http.ResponseWriter, r *http.Reque
 
 	w.WriteHeader(http.StatusOK)
 }
+
+// handleGetBucketLifecycle handles GET /<bucket>?lifecycle.
+func (rt *Router) handleGetBucketLifecycle(w http.ResponseWriter, _ *http.Request, bucket string) {
+	lc, err := rt.engine.GetBucketLifecycle(bucket)
+	if err != nil {
+		writeS3Error(w, "NoSuchLifecycleConfiguration", "The lifecycle configuration does not exist", "/"+bucket)
+		return
+	}
+
+	writeXML(w, http.StatusOK, lc)
+}
+
+// handlePutBucketLifecycle handles PUT /<bucket>?lifecycle.
+func (rt *Router) handlePutBucketLifecycle(w http.ResponseWriter, r *http.Request, bucket string) {
+	var req storage.LifecycleConfiguration
+	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", "/"+bucket)
+		return
+	}
+
+	err := rt.engine.PutBucketLifecycle(bucket, &req)
+	if handleStorageError(w, err, "/"+bucket) {
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleDeleteBucketLifecycle handles DELETE /<bucket>?lifecycle.
+func (rt *Router) handleDeleteBucketLifecycle(w http.ResponseWriter, _ *http.Request, bucket string) {
+	_ = rt.engine.DeleteBucketLifecycle(bucket)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetBucketLogging handles GET /<bucket>?logging.
+func (rt *Router) handleGetBucketLogging(w http.ResponseWriter, _ *http.Request, bucket string) {
+	logging, err := rt.engine.GetBucketLogging(bucket)
+	if handleStorageError(w, err, "/"+bucket) {
+		return
+	}
+
+	var res storage.BucketLoggingStatus
+	if logging != nil {
+		res = *logging
+	}
+
+	writeXML(w, http.StatusOK, res)
+}
+
+// handlePutBucketLogging handles PUT /<bucket>?logging.
+func (rt *Router) handlePutBucketLogging(w http.ResponseWriter, r *http.Request, bucket string) {
+	var req storage.BucketLoggingStatus
+	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", "/"+bucket)
+		return
+	}
+
+	err := rt.engine.PutBucketLogging(bucket, &req)
+	if handleStorageError(w, err, "/"+bucket) {
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}

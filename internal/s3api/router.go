@@ -1,12 +1,16 @@
 package s3api
 
 import (
+	"context"
 	"encoding/xml"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/salvatorecorvaglia/objectra/internal/auth"
 	"github.com/salvatorecorvaglia/objectra/internal/storage"
 )
@@ -48,6 +52,7 @@ func (w *metricsResponseWriter) Write(b []byte) (int, error) {
 
 // ServeHTTP implements the http.Handler interface for the S3 API.
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	mrw := &metricsResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	storage.GlobalMetrics.IncRequests()
 
@@ -56,6 +61,94 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if mrw.statusCode >= 400 {
 		storage.GlobalMetrics.IncErrors()
 	}
+
+	duration := time.Since(start)
+	bucket, key := rt.resolveBucketAndKey(r)
+	rt.logAccess(r, bucket, key, mrw.statusCode, mrw.bytesWritten, duration)
+}
+
+func (rt *Router) logAccess(r *http.Request, bucket, key string, statusCode int, bytesSent int, duration time.Duration) {
+	if bucket == "" {
+		return
+	}
+	
+	logging, err := rt.engine.GetBucketLogging(bucket)
+	if err != nil || logging == nil || logging.LoggingEnabled == nil {
+		return
+	}
+
+	targetBucket := logging.LoggingEnabled.TargetBucket
+	targetPrefix := logging.LoggingEnabled.TargetPrefix
+
+	if bucket == targetBucket && strings.HasPrefix(key, targetPrefix) {
+		return // Skip to avoid infinite loop
+	}
+
+	owner := "objectra"
+	timeStr := time.Now().Format("02/Jan/2006:15:04:05 -0700")
+	remoteIP := r.RemoteAddr
+	if ip, _, err := net.SplitHostPort(remoteIP); err == nil {
+		remoteIP = ip
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		remoteIP = xff
+	}
+
+	requester := "-"
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "AWS4-HMAC-SHA256") {
+		parts := strings.Split(authHeader, ",")
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if strings.HasPrefix(part, "Credential=") {
+				cred := strings.TrimPrefix(part, "Credential=")
+				credParts := strings.Split(cred, "/")
+				if len(credParts) > 0 {
+					requester = credParts[0]
+				}
+			}
+		}
+	}
+
+	requestID := "objectra"
+	operation := r.Method + "." + r.URL.Path
+	if key != "" {
+		operation = "REST." + r.Method + ".OBJECT"
+	} else {
+		operation = "REST." + r.Method + ".BUCKET"
+	}
+
+	reqURI := fmt.Sprintf("%s %s %s", r.Method, r.URL.RequestURI(), r.Proto)
+	
+	errCode := "-"
+	if statusCode >= 400 {
+		errCode = http.StatusText(statusCode)
+	}
+
+	referrer := r.Referer()
+	if referrer == "" {
+		referrer = "-"
+	}
+
+	userAgent := r.UserAgent()
+	if userAgent == "" {
+		userAgent = "-"
+	}
+
+	logLine := fmt.Sprintf("%s %s [%s] %s %s %s %s %s \"%s\" %d %s %d - %d %d \"%s\" \"%s\" -\n",
+		owner, bucket, timeStr, remoteIP, requester, requestID, operation, key, reqURI, statusCode, errCode, bytesSent, duration.Milliseconds(), duration.Milliseconds(), referrer, userAgent,
+	)
+
+	// Deliver log asynchronously
+	go func() {
+		logKey := fmt.Sprintf("%s%s_%s.log", targetPrefix, time.Now().UTC().Format("2006-01-02-15-04-05"), uuid.New().String()[:8])
+		reader := strings.NewReader(logLine)
+		ctx := context.Background()
+		_, err := rt.engine.PutObject(ctx, targetBucket, logKey, reader, int64(len(logLine)), "text/plain")
+		if err != nil {
+			log.Printf("[S3 API] Failed to deliver access log to %s/%s: %v", targetBucket, logKey, err)
+		}
+	}()
 }
 
 func (rt *Router) serveHTTPInternal(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +294,10 @@ func (rt *Router) handleBucketOps(w http.ResponseWriter, r *http.Request, bucket
 			rt.handleGetBucketCORS(w, r, bucket)
 		} else if query.Has("versioning") {
 			rt.handleGetBucketVersioning(w, r, bucket)
+		} else if query.Has("lifecycle") {
+			rt.handleGetBucketLifecycle(w, r, bucket)
+		} else if query.Has("logging") {
+			rt.handleGetBucketLogging(w, r, bucket)
 		} else if query.Get("location") != "" || query.Has("location") {
 			rt.handleGetBucketLocation(w, r, bucket)
 		} else {
@@ -212,12 +309,18 @@ func (rt *Router) handleBucketOps(w http.ResponseWriter, r *http.Request, bucket
 			rt.handlePutBucketCORS(w, r, bucket)
 		} else if query.Has("versioning") {
 			rt.handlePutBucketVersioning(w, r, bucket)
+		} else if query.Has("lifecycle") {
+			rt.handlePutBucketLifecycle(w, r, bucket)
+		} else if query.Has("logging") {
+			rt.handlePutBucketLogging(w, r, bucket)
 		} else {
 			rt.handleCreateBucket(w, r, bucket)
 		}
 	case http.MethodDelete:
 		if query.Has("cors") {
 			rt.handleDeleteBucketCORS(w, r, bucket)
+		} else if query.Has("lifecycle") {
+			rt.handleDeleteBucketLifecycle(w, r, bucket)
 		} else {
 			rt.handleDeleteBucket(w, r, bucket)
 		}

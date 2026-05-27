@@ -739,6 +739,40 @@ func (m *MetadataStore) ListAllObjectMetas(bucket string) ([]ObjectInfo, error) 
 	return objects, err
 }
 
+// ListAllObjectVersions returns all object version records (excluding latest pointers) for a given bucket.
+func (m *MetadataStore) ListAllObjectVersions(bucket string) ([]ObjectInfo, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
+	db, err := m.getBucketDB(bucket)
+	if err != nil {
+		return nil, err
+	}
+	var objects []ObjectInfo
+	prefix := []byte(bucket + "\x00")
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(objectsBucket)
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			objectKey := string(k[len(prefix):])
+			// A version record contains a second \x00
+			if !strings.Contains(objectKey, "\x00") {
+				continue
+			}
+
+			var info ObjectInfo
+			if err := json.Unmarshal(v, &info); err != nil {
+				return err
+			}
+			objects = append(objects, info)
+		}
+		return nil
+	})
+	return objects, err
+}
+
 // CountObjectMetas counts latest objects in a bucket.
 func (m *MetadataStore) CountObjectMetas(bucket string) (int, error) {
 	unlock := m.acquireBucketLock(bucket, false)
@@ -861,5 +895,149 @@ func (m *MetadataStore) DeleteMultipartMeta(bucket, key, uploadID string) error 
 	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(multipartBucket)
 		return b.Delete(multipartKey(bucket, key, uploadID))
+	})
+}
+
+// PutBucketLifecycle sets lifecycle configuration for a bucket.
+func (m *MetadataStore) PutBucketLifecycle(bucket string, lc *LifecycleConfiguration) error {
+	unlock := m.acquireBucketLock(bucket, true)
+	defer unlock()
+	return m.globalDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		data := b.Get([]byte(bucket))
+		if data == nil {
+			return fmt.Errorf("bucket not found: %s", bucket)
+		}
+		var info BucketInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			return err
+		}
+		info.Lifecycle = lc
+		newData, err := json.Marshal(info)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(bucket), newData)
+	})
+}
+
+// GetBucketLifecycle gets lifecycle configuration for a bucket.
+func (m *MetadataStore) GetBucketLifecycle(bucket string) (*LifecycleConfiguration, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
+	var lc *LifecycleConfiguration
+	err := m.globalDB.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		data := b.Get([]byte(bucket))
+		if data == nil {
+			return fmt.Errorf("bucket not found: %s", bucket)
+		}
+		var info BucketInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			return err
+		}
+		lc = info.Lifecycle
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return lc, nil
+}
+
+// DeleteBucketLifecycle deletes lifecycle configuration for a bucket.
+func (m *MetadataStore) DeleteBucketLifecycle(bucket string) error {
+	unlock := m.acquireBucketLock(bucket, true)
+	defer unlock()
+	return m.globalDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		data := b.Get([]byte(bucket))
+		if data == nil {
+			return fmt.Errorf("bucket not found: %s", bucket)
+		}
+		var info BucketInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			return err
+		}
+		info.Lifecycle = nil
+		newData, err := json.Marshal(info)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(bucket), newData)
+	})
+}
+
+// PutBucketLogging sets logging configuration for a bucket.
+func (m *MetadataStore) PutBucketLogging(bucket string, logging *BucketLoggingStatus) error {
+	unlock := m.acquireBucketLock(bucket, true)
+	defer unlock()
+	return m.globalDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		data := b.Get([]byte(bucket))
+		if data == nil {
+			return fmt.Errorf("bucket not found: %s", bucket)
+		}
+		var info BucketInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			return err
+		}
+		info.Logging = logging
+		newData, err := json.Marshal(info)
+		if err != nil {
+			return err
+		}
+		return b.Put([]byte(bucket), newData)
+	})
+}
+
+// GetBucketLogging gets logging configuration for a bucket.
+func (m *MetadataStore) GetBucketLogging(bucket string) (*BucketLoggingStatus, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
+	var logging *BucketLoggingStatus
+	err := m.globalDB.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		data := b.Get([]byte(bucket))
+		if data == nil {
+			return fmt.Errorf("bucket not found: %s", bucket)
+		}
+		var info BucketInfo
+		if err := json.Unmarshal(data, &info); err != nil {
+			return err
+		}
+		logging = info.Logging
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return logging, nil
+}
+
+// PutObjectMetaRaw stores object metadata exactly as provided, without overriding fields.
+func (m *MetadataStore) PutObjectMetaRaw(info *ObjectInfo) error {
+	unlock := m.acquireBucketLock(info.Bucket, false)
+	defer unlock()
+	db, err := m.getBucketDB(info.Bucket)
+	if err != nil {
+		return err
+	}
+	return db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(objectsBucket)
+		data, err := json.Marshal(info)
+		if err != nil {
+			return err
+		}
+		if info.VersionID != "" {
+			err = b.Put(objectMetaKeyVersion(info.Bucket, info.Key, info.VersionID), data)
+			if err != nil {
+				return err
+			}
+		}
+		if info.IsLatest {
+			return b.Put(objectMetaKey(info.Bucket, info.Key), data)
+		}
+		return nil
 	})
 }

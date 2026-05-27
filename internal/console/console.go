@@ -10,48 +10,122 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/salvatorecorvaglia/objectra/internal/auth"
 	"github.com/salvatorecorvaglia/objectra/internal/storage"
 )
 
-// bucketNameRegexp validates S3 bucket naming rules: 3-63 chars, lowercase letters, numbers, hyphens, periods.
-var bucketNameRegexp = regexp.MustCompile(`^[a-z0-9][a-z0-9.\-]{1,61}[a-z0-9]$`)
-
 //go:embed static/*
 var staticFiles embed.FS
 
+type clientRateLimit struct {
+	tokens     float64
+	lastAccess time.Time
+}
+
+type rateLimiter struct {
+	mu      sync.Mutex
+	clients map[string]*clientRateLimit
+	rate    float64 // tokens per second
+	burst   float64
+}
+
+func newRateLimiter(limitPerMin int) *rateLimiter {
+	rate := float64(limitPerMin) / 60.0
+	return &rateLimiter{
+		clients: make(map[string]*clientRateLimit),
+		rate:    rate,
+		burst:   float64(limitPerMin),
+	}
+}
+
+func (rl *rateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	client, exists := rl.clients[ip]
+	if !exists {
+		client = &clientRateLimit{
+			tokens:     rl.burst,
+			lastAccess: now,
+		}
+		rl.clients[ip] = client
+	}
+
+	elapsed := now.Sub(client.lastAccess).Seconds()
+	client.tokens += elapsed * rl.rate
+	if client.tokens > rl.burst {
+		client.tokens = rl.burst
+	}
+	client.lastAccess = now
+
+	if client.tokens >= 1 {
+		client.tokens -= 1
+		return true
+	}
+	return false
+}
+
+func getClientIP(r *http.Request) string {
+	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+		if idx := strings.Index(ip, ","); idx != -1 {
+			return strings.TrimSpace(ip[:idx])
+		}
+		return strings.TrimSpace(ip)
+	}
+	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return ip
+	}
+	return r.RemoteAddr
+}
+
 // Handler serves the web console UI and its REST API.
 type Handler struct {
-	engine storage.Engine
-	creds  *auth.Credentials
-	s3Port int
-	region string
-	mux    *http.ServeMux
+	engine       storage.Engine
+	creds        *auth.Credentials
+	s3Port       int
+	region       string
+	mux          *http.ServeMux
+	loginLimiter *rateLimiter
+	apiLimiter   *rateLimiter
 }
 
 // NewHandler creates a new console handler.
-func NewHandler(engine storage.Engine, creds *auth.Credentials, s3Port int, region string) *Handler {
+func NewHandler(engine storage.Engine, creds *auth.Credentials, s3Port int, region string, loginLimit, apiLimit int) *Handler {
 	h := &Handler{
-		engine: engine,
-		creds:  creds,
-		s3Port: s3Port,
-		region: region,
-		mux:    http.NewServeMux(),
+		engine:       engine,
+		creds:        creds,
+		s3Port:       s3Port,
+		region:       region,
+		mux:          http.NewServeMux(),
+		loginLimiter: newRateLimiter(loginLimit),
+		apiLimiter:   newRateLimiter(apiLimit),
 	}
 	h.setupRoutes()
 	return h
 }
 
+func (h *Handler) rateLimitMiddleware(limiter *rateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip := getClientIP(r)
+		if !limiter.allow(ip) {
+			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many requests"})
+			return
+		}
+		next(w, r)
+	}
+}
+
 func (h *Handler) setupRoutes() {
 	// API routes
-	h.mux.HandleFunc("/api/login", h.handleLogin)
-	h.mux.HandleFunc("/api/buckets", h.authMiddleware(h.handleBuckets))
-	h.mux.HandleFunc("/api/buckets/", h.authMiddleware(h.handleBucketObjects))
+	h.mux.HandleFunc("/api/login", h.rateLimitMiddleware(h.loginLimiter, h.handleLogin))
+	h.mux.HandleFunc("/api/buckets", h.rateLimitMiddleware(h.apiLimiter, h.authMiddleware(h.handleBuckets)))
+	h.mux.HandleFunc("/api/buckets/", h.rateLimitMiddleware(h.apiLimiter, h.authMiddleware(h.handleBucketObjects)))
 
 	// Prometheus metrics endpoint
 	h.mux.HandleFunc("/metrics", h.handleMetrics)
@@ -189,7 +263,7 @@ func (h *Handler) createBucket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate bucket name (SEC-7)
-	if !bucketNameRegexp.MatchString(req.Name) {
+	if !storage.IsValidBucketName(req.Name) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid bucket name: must be 3-63 characters, lowercase letters, numbers, hyphens and periods"})
 		return
 	}
@@ -209,7 +283,7 @@ func (h *Handler) handleBucketObjects(w http.ResponseWriter, r *http.Request) {
 	bucketName := parts[0]
 
 	// Validate bucket name (SEC-7 / Traversal Protection)
-	if !bucketNameRegexp.MatchString(bucketName) {
+	if !storage.IsValidBucketName(bucketName) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid bucket name"})
 		return
 	}
@@ -249,6 +323,12 @@ func (h *Handler) handleBucketObjects(w http.ResponseWriter, r *http.Request) {
 		h.completeMultipart(w, r, bucketName)
 	case action == "multipart/abort" && r.Method == http.MethodPost:
 		h.abortMultipart(w, r, bucketName)
+	case action == "lifecycle" && r.Method == http.MethodGet:
+		h.handleGetLifecycle(w, r, bucketName)
+	case action == "lifecycle" && r.Method == http.MethodPost:
+		h.handlePutLifecycle(w, r, bucketName)
+	case action == "lifecycle" && r.Method == http.MethodDelete:
+		h.handleDeleteLifecycle(w, r, bucketName)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -635,5 +715,36 @@ func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(metricsStr))
+}
+
+func (h *Handler) handleGetLifecycle(w http.ResponseWriter, r *http.Request, bucket string) {
+	lc, err := h.engine.GetBucketLifecycle(bucket)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, lc)
+}
+
+func (h *Handler) handlePutLifecycle(w http.ResponseWriter, r *http.Request, bucket string) {
+	var req storage.LifecycleConfiguration
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+
+	if err := h.engine.PutBucketLifecycle(bucket, &req); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "lifecycle configuration updated"})
+}
+
+func (h *Handler) handleDeleteLifecycle(w http.ResponseWriter, r *http.Request, bucket string) {
+	if err := h.engine.DeleteBucketLifecycle(bucket); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "lifecycle configuration deleted"})
 }
 

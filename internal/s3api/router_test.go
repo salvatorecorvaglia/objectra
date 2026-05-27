@@ -2,6 +2,7 @@ package s3api
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -294,4 +295,84 @@ func TestS3API_Integration(t *testing.T) {
 			t.Errorf("expected XML Code 'RequestTimeTooSkewed', got %q", errResp.Code)
 		}
 	})
+}
+
+func TestS3AccessLogging(t *testing.T) {
+	tempDir := t.TempDir()
+	engine, err := storage.NewFilesystemEngine(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create storage engine: %v", err)
+	}
+	defer engine.Close()
+
+	accessKey := "testaccess"
+	secretKey := "testsecret"
+	creds := auth.NewCredentials(accessKey, secretKey)
+	router := NewRouter(engine, creds, "us-east-1", "")
+
+	// Create src-bucket and dest-bucket
+	engine.CreateBucket("src-bucket")
+	engine.CreateBucket("dest-bucket")
+
+	// Put logging status on src-bucket
+	loggingStatus := &storage.BucketLoggingStatus{
+		LoggingEnabled: &storage.LoggingEnabled{
+			TargetBucket: "dest-bucket",
+			TargetPrefix: "access-logs/",
+		},
+	}
+	err = engine.PutBucketLogging("src-bucket", loggingStatus)
+	if err != nil {
+		t.Fatalf("PutBucketLogging failed: %v", err)
+	}
+
+	// Issue a GET request to src-bucket
+	req := httptest.NewRequest("GET", "/src-bucket?list-type=2", nil)
+	req.Host = "localhost:9000"
+	signTestRequest(req, accessKey, secretKey, "us-east-1", "s3", time.Now().UTC(), nil)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Wait for async log delivery
+	time.Sleep(100 * time.Millisecond)
+
+	// List objects in dest-bucket to find the log file
+	output, err := engine.ListObjects(&storage.ListObjectsInput{
+		Bucket: "dest-bucket",
+		Prefix: "access-logs/",
+	})
+	if err != nil {
+		t.Fatalf("failed to list dest-bucket: %v", err)
+	}
+
+	if len(output.Objects) != 1 {
+		t.Fatalf("expected exactly 1 log file in dest-bucket, got %d", len(output.Objects))
+	}
+
+	logObj := output.Objects[0]
+	if !strings.HasPrefix(logObj.Key, "access-logs/") {
+		t.Errorf("unexpected log key: %s", logObj.Key)
+	}
+
+	// Read log content
+	reader, _, err := engine.GetObject(context.Background(), "dest-bucket", logObj.Key, "")
+	if err != nil {
+		t.Fatalf("failed to get log object: %v", err)
+	}
+	defer reader.Close()
+
+	logBytes, _ := io.ReadAll(reader)
+	logStr := string(logBytes)
+
+	if !strings.Contains(logStr, "src-bucket") {
+		t.Errorf("expected log to contain 'src-bucket', got: %s", logStr)
+	}
+	if !strings.Contains(logStr, "REST.GET.BUCKET") {
+		t.Errorf("expected log to contain S3 operation 'REST.GET.BUCKET', got: %s", logStr)
+	}
 }

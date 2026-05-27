@@ -1446,6 +1446,157 @@ func TestMultipartConstraintsValidation(t *testing.T) {
 	engine.AbortMultipartUpload(bucket, "large.bin", upload.UploadID)
 }
 
+func TestBucketLifecycleAndLogging(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "lifecycle-bucket"
+	err := engine.CreateBucket(bucket)
+	if err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	// 1. Test Put/Get/Delete Lifecycle
+	lc := &LifecycleConfiguration{
+		Rules: []LifecycleRule{
+			{
+				ID:     "expire-logs",
+				Status: "Enabled",
+				Filter: LifecycleFilter{Prefix: "logs/"},
+				Expiration: &LifecycleExpiration{Days: 1},
+			},
+			{
+				ID:     "expire-archive-noncurrent",
+				Status: "Enabled",
+				Filter: LifecycleFilter{Prefix: "archive/"},
+				NoncurrentVersionExpiration: &NoncurrentVersionExpiration{NoncurrentDays: 1},
+			},
+		},
+	}
+
+	err = engine.PutBucketLifecycle(bucket, lc)
+	if err != nil {
+		t.Fatalf("PutBucketLifecycle failed: %v", err)
+	}
+
+	fetchedLc, err := engine.GetBucketLifecycle(bucket)
+	if err != nil {
+		t.Fatalf("GetBucketLifecycle failed: %v", err)
+	}
+	if len(fetchedLc.Rules) != 2 || fetchedLc.Rules[0].ID != "expire-logs" {
+		t.Errorf("fetched rules mismatch: %+v", fetchedLc.Rules)
+	}
+
+	err = engine.DeleteBucketLifecycle(bucket)
+	if err != nil {
+		t.Fatalf("DeleteBucketLifecycle failed: %v", err)
+	}
+
+	_, err = engine.GetBucketLifecycle(bucket)
+	if err == nil {
+		t.Error("expected error getting deleted lifecycle, got nil")
+	}
+
+	// 2. Test Expiration Execution
+	expBucket := "expiration-bucket"
+	engine.CreateBucket(expBucket)
+	engine.PutBucketLifecycle(expBucket, lc)
+	engine.SetBucketVersioning(expBucket, "Enabled")
+
+	ctx := context.Background()
+
+	// Put log file that will be expired
+	logInfo, err := engine.PutObject(ctx, expBucket, "logs/test.log", strings.NewReader("log-data"), 8, "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+	// Modify to be 48 hours ago
+	logInfo.LastModified = time.Now().UTC().Add(-48 * time.Hour)
+	err = engine.metadata.PutObjectMetaRaw(logInfo)
+	if err != nil {
+		t.Fatalf("PutObjectMetaRaw failed: %v", err)
+	}
+
+	// Put log file that will NOT be expired
+	_, err = engine.PutObject(ctx, expBucket, "logs/keep.log", strings.NewReader("keep-data"), 9, "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	// Put version 1 (will be expired noncurrent version)
+	v1Info, err := engine.PutObject(ctx, expBucket, "archive/versioned.txt", strings.NewReader("v1"), 2, "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	// Put version 2 (latest current version, will NOT be expired)
+	v2Info, err := engine.PutObject(ctx, expBucket, "archive/versioned.txt", strings.NewReader("v2-latest"), 9, "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	// Modify v1 to be 48 hours ago and noncurrent
+	v1Info.LastModified = time.Now().UTC().Add(-48 * time.Hour)
+	v1Info.IsLatest = false
+	err = engine.metadata.PutObjectMetaRaw(v1Info)
+	if err != nil {
+		t.Fatalf("PutObjectMetaRaw failed: %v", err)
+	}
+
+	// Execute CleanExpiredObjects
+	err = engine.CleanExpiredObjects()
+	if err != nil {
+		t.Fatalf("CleanExpiredObjects failed: %v", err)
+	}
+
+	// Verify logs/test.log current version was expired (since versioning is Enabled, it should create a delete marker)
+	_, _, err = engine.GetObject(ctx, expBucket, "logs/test.log", "")
+	if err == nil {
+		t.Error("expected logs/test.log to be expired and unavailable, but got nil error")
+	} else {
+		s3Err, ok := err.(*S3Error)
+		if !ok || s3Err.Code != "NoSuchKey" {
+			t.Errorf("expected NoSuchKey error, got %v", err)
+		}
+	}
+
+	// Verify logs/keep.log still exists
+	_, _, err = engine.GetObject(ctx, expBucket, "logs/keep.log", "")
+	if err != nil {
+		t.Errorf("expected logs/keep.log to exist, got %v", err)
+	}
+
+	// Verify archive/versioned.txt v1 is deleted (NoSuchKey or similar for that specific version ID)
+	_, _, err = engine.GetObject(ctx, expBucket, "archive/versioned.txt", v1Info.VersionID)
+	if err == nil {
+		t.Error("expected versioned v1 to be permanently deleted, got nil error")
+	}
+
+	// Verify archive/versioned.txt v2 still exists
+	_, _, err = engine.GetObject(ctx, expBucket, "archive/versioned.txt", v2Info.VersionID)
+	if err != nil {
+		t.Errorf("expected latest version to still exist, got %v", err)
+	}
+
+	// 3. Test Logging
+	loggingStatus := &BucketLoggingStatus{
+		LoggingEnabled: &LoggingEnabled{
+			TargetBucket: bucket,
+			TargetPrefix: "s3-access-logs/",
+		},
+	}
+	err = engine.PutBucketLogging(expBucket, loggingStatus)
+	if err != nil {
+		t.Fatalf("PutBucketLogging failed: %v", err)
+	}
+
+	fetchedLogging, err := engine.GetBucketLogging(expBucket)
+	if err != nil {
+		t.Fatalf("GetBucketLogging failed: %v", err)
+	}
+	if fetchedLogging == nil || fetchedLogging.LoggingEnabled == nil || fetchedLogging.LoggingEnabled.TargetBucket != bucket {
+		t.Errorf("fetched logging mismatch: %+v", fetchedLogging)
+	}
+}
+
 
 
 

@@ -3,6 +3,7 @@ package storage
 
 import (
 	"context"
+	"encoding/xml"
 	"io"
 	"net"
 	"regexp"
@@ -57,11 +58,55 @@ type CORSConfiguration struct {
 
 // BucketInfo holds metadata about a storage bucket.
 type BucketInfo struct {
-	Name         string             `json:"name"`
-	CreationDate time.Time          `json:"creationDate"`
-	CORS         *CORSConfiguration `json:"cors,omitempty"`
-	Versioning   string             `json:"versioning,omitempty"`
-	IsPublic     bool               `json:"isPublic,omitempty"`
+	Name         string                  `json:"name"`
+	CreationDate time.Time               `json:"creationDate"`
+	CORS         *CORSConfiguration      `json:"cors,omitempty"`
+	Versioning   string                  `json:"versioning,omitempty"`
+	IsPublic     bool                    `json:"isPublic,omitempty"`
+	Lifecycle    *LifecycleConfiguration `json:"lifecycle,omitempty"`
+	Logging      *BucketLoggingStatus    `json:"logging,omitempty"`
+}
+
+// LifecycleConfiguration holds bucket lifecycle configuration.
+type LifecycleConfiguration struct {
+	XMLName xml.Name        `json:"-" xml:"LifecycleConfiguration"`
+	Rules   []LifecycleRule `json:"rules" xml:"Rule"`
+}
+
+type LifecycleRule struct {
+	ID                             string                          `json:"id" xml:"ID"`
+	Status                         string                          `json:"status" xml:"Status"` // "Enabled" or "Disabled"
+	Filter                         LifecycleFilter                 `json:"filter" xml:"Filter"`
+	Expiration                     *LifecycleExpiration            `json:"expiration,omitempty" xml:"Expiration"`
+	NoncurrentVersionExpiration    *NoncurrentVersionExpiration    `json:"noncurrentVersionExpiration,omitempty" xml:"NoncurrentVersionExpiration"`
+	AbortIncompleteMultipartUpload *AbortIncompleteMultipartUpload `json:"abortIncompleteMultipartUpload,omitempty" xml:"AbortIncompleteMultipartUpload"`
+}
+
+type LifecycleFilter struct {
+	Prefix string `json:"prefix" xml:"Prefix"`
+}
+
+type LifecycleExpiration struct {
+	Days int `json:"days,omitempty" xml:"Days"`
+}
+
+type NoncurrentVersionExpiration struct {
+	NoncurrentDays int `json:"noncurrentDays,omitempty" xml:"NoncurrentDays"`
+}
+
+type AbortIncompleteMultipartUpload struct {
+	DaysAfterInitiation int `json:"daysAfterInitiation,omitempty" xml:"DaysAfterInitiation"`
+}
+
+// BucketLoggingStatus represents the bucket logging configuration.
+type BucketLoggingStatus struct {
+	XMLName        xml.Name        `json:"-" xml:"BucketLoggingStatus"`
+	LoggingEnabled *LoggingEnabled `json:"loggingEnabled,omitempty" xml:"LoggingEnabled"`
+}
+
+type LoggingEnabled struct {
+	TargetBucket string `json:"targetBucket" xml:"TargetBucket"`
+	TargetPrefix string `json:"targetPrefix" xml:"TargetPrefix"`
 }
 
 // ObjectInfo holds metadata about a stored object.
@@ -153,6 +198,12 @@ type Engine interface {
 	AbortMultipartUpload(bucket, key, uploadID string) error
 
 	// Lifecycle
+	PutBucketLifecycle(bucket string, lc *LifecycleConfiguration) error
+	GetBucketLifecycle(bucket string) (*LifecycleConfiguration, error)
+	DeleteBucketLifecycle(bucket string) error
+	PutBucketLogging(bucket string, logging *BucketLoggingStatus) error
+	GetBucketLogging(bucket string) (*BucketLoggingStatus, error)
+	CleanExpiredObjects() error
 	CleanExpiredMultipartUploads(cutoff time.Duration) error
 	Close() error
 }
