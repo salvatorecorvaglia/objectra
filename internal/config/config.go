@@ -33,6 +33,10 @@ type Config struct {
 	LoginRateLimit int
 	// APIRateLimit specifies the maximum requests per minute per IP for other console endpoints.
 	APIRateLimit int
+	// LogLevel is the log level (debug, info, warn, error).
+	LogLevel string
+	// LogFormat is the log format (text, json).
+	LogFormat string
 }
 
 // Load reads configuration from environment variables, falling back to defaults.
@@ -50,6 +54,8 @@ func Load() *Config {
 		TLSKey:         envOrDefault("OBJECTRA_TLS_KEY", ""),
 		LoginRateLimit: envIntOrDefault("OBJECTRA_LOGIN_RATE_LIMIT", 5),
 		APIRateLimit:   envIntOrDefault("OBJECTRA_API_RATE_LIMIT", 60),
+		LogLevel:       envOrDefault("OBJECTRA_LOG_LEVEL", "info"),
+		LogFormat:      envOrDefault("OBJECTRA_LOG_FORMAT", "text"),
 	}
 }
 

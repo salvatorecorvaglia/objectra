@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -146,7 +146,7 @@ func (rt *Router) logAccess(r *http.Request, bucket, key string, statusCode int,
 		ctx := context.Background()
 		_, err := rt.engine.PutObject(ctx, targetBucket, logKey, reader, int64(len(logLine)), "text/plain")
 		if err != nil {
-			log.Printf("[S3 API] Failed to deliver access log to %s/%s: %v", targetBucket, logKey, err)
+			slog.Error("[S3 API] Failed to deliver access log", "bucket", targetBucket, "key", logKey, "error", err)
 		}
 	}()
 }
@@ -185,7 +185,7 @@ func (rt *Router) serveHTTPInternal(w http.ResponseWriter, r *http.Request) {
 
 	if !bypassAuth {
 		if err := rt.verifier.Verify(r); err != nil {
-			log.Printf("[S3] Auth failed: %s %s - %v", r.Method, r.URL.Path, err)
+			slog.Warn("[S3] Auth failed", "method", r.Method, "path", r.URL.Path, "error", err)
 			if authErr, ok := err.(*auth.AuthError); ok {
 				writeS3Error(w, authErr.Code, authErr.Message, r.URL.Path)
 			} else {
@@ -200,7 +200,7 @@ func (rt *Router) serveHTTPInternal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("[S3] %s %s (bucket=%q, key=%q)", r.Method, r.URL.Path, bucket, key)
+	slog.Info("[S3] Request received", "method", r.Method, "path", r.URL.Path, "bucket", bucket, "key", key)
 
 	// Route based on path structure and method
 	if bucket == "" {

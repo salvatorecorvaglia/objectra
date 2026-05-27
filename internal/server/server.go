@@ -6,7 +6,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -64,7 +64,7 @@ func New(cfg *config.Config) (*Server, error) {
 				return nil, fmt.Errorf("failed to load TLS certificate and key: %w", err)
 			}
 		} else {
-			log.Println("[Server] OBJECTRA_TLS_ENABLED=true but no cert/key files provided. Generating self-signed certificate in memory...")
+			slog.Warn("[Server] OBJECTRA_TLS_ENABLED=true but no cert/key files provided. Generating self-signed certificate in memory...")
 			cert, err = GenerateSelfSignedCert()
 			if err != nil {
 				return nil, fmt.Errorf("failed to generate self-signed certificate: %w", err)
@@ -103,57 +103,56 @@ func (s *Server) Start() error {
 
 	go func() {
 		if s.s3Server.TLSConfig != nil {
-			log.Printf("[S3 API] Listening securely (HTTPS) on %s", s.s3Server.Addr)
+			slog.Info("[S3 API] Listening securely (HTTPS)", "addr", s.s3Server.Addr)
 			if err := s.s3Server.ServeTLS(s3Listener, "", ""); err != nil && err != http.ErrServerClosed {
-				log.Printf("[S3 API] Server error: %v", err)
+				slog.Error("[S3 API] Server error", "error", err)
 			}
 		} else {
-			log.Printf("[S3 API] Listening on %s", s.s3Server.Addr)
+			slog.Info("[S3 API] Listening", "addr", s.s3Server.Addr)
 			if err := s.s3Server.Serve(s3Listener); err != nil && err != http.ErrServerClosed {
-				log.Printf("[S3 API] Server error: %v", err)
+				slog.Error("[S3 API] Server error", "error", err)
 			}
 		}
 	}()
 
 	go func() {
 		if s.consoleServer.TLSConfig != nil {
-			log.Printf("[Console] Listening securely (HTTPS) on %s", s.consoleServer.Addr)
+			slog.Info("[Console] Listening securely (HTTPS)", "addr", s.consoleServer.Addr)
 			if err := s.consoleServer.ServeTLS(consoleListener, "", ""); err != nil && err != http.ErrServerClosed {
-				log.Printf("[Console] Server error: %v", err)
+				slog.Error("[Console] Server error", "error", err)
 			}
 		} else {
-			log.Printf("[Console] Listening on %s", s.consoleServer.Addr)
+			slog.Info("[Console] Listening", "addr", s.consoleServer.Addr)
 			if err := s.consoleServer.Serve(consoleListener); err != nil && err != http.ErrServerClosed {
-				log.Printf("[Console] Server error: %v", err)
+				slog.Error("[Console] Server error", "error", err)
 			}
 		}
 	}()
 
 	// Start background multipart cleanup task
 	go func() {
-		log.Println("[Server] Starting background multipart cleanup worker...")
+		slog.Info("[Server] Starting background multipart cleanup worker")
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 
-		// Run once on startup
 		if err := s.engine.CleanExpiredMultipartUploads(24 * time.Hour); err != nil {
-			log.Printf("[Server] Error in initial multipart cleanup: %v", err)
+			slog.Error("[Server] Error in initial multipart cleanup", "error", err)
 		}
 		if err := s.engine.CleanExpiredObjects(); err != nil {
-			log.Printf("[Server] Error in initial lifecycle cleanup: %v", err)
+			slog.Error("[Server] Error in initial lifecycle cleanup", "error", err)
 		}
 
 		for {
 			select {
 			case <-ticker.C:
 				if err := s.engine.CleanExpiredMultipartUploads(24 * time.Hour); err != nil {
-					log.Printf("[Server] Error cleaning expired multipart uploads: %v", err)
+					slog.Error("[Server] Error cleaning expired multipart uploads", "error", err)
 				}
 				if err := s.engine.CleanExpiredObjects(); err != nil {
-					log.Printf("[Server] Error cleaning expired objects: %v", err)
+					slog.Error("[Server] Error cleaning expired objects", "error", err)
 				}
 			case <-s.cleanupStop:
-				log.Println("[Server] Background cleanup worker stopped.")
+				slog.Info("[Server] Background cleanup worker stopped")
 				return
 			}
 		}
@@ -164,7 +163,7 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully shuts down both servers and stops background workers.
 func (s *Server) Shutdown(ctx context.Context) error {
-	log.Println("[Server] Shutting down...")
+	slog.Info("[Server] Shutting down")
 
 	// Stop background workers
 	close(s.cleanupStop)

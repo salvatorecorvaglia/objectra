@@ -12,7 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1481,7 +1481,7 @@ func (fs *FilesystemEngine) CleanExpiredMultipartUploads(cutoff time.Duration) e
 	for _, bInfo := range buckets {
 		db, err := fs.metadata.getBucketDB(bInfo.Name)
 		if err != nil {
-			log.Printf("[Storage] Failed to open DB for bucket %s during multipart cleanup: %v", bInfo.Name, err)
+			slog.Error("[Storage] Failed to open DB for bucket during multipart cleanup", "bucket", bInfo.Name, "error", err)
 			continue
 		}
 
@@ -1505,12 +1505,12 @@ func (fs *FilesystemEngine) CleanExpiredMultipartUploads(cutoff time.Duration) e
 			})
 		})
 		if err != nil {
-			log.Printf("[Storage] Failed to scan multipart uploads for bucket %s: %v", bInfo.Name, err)
+			slog.Error("[Storage] Failed to scan multipart uploads for bucket", "bucket", bInfo.Name, "error", err)
 		}
 	}
 
 	for _, u := range aborts {
-		log.Printf("[Storage] Cleaning up expired multipart upload %s (bucket=%s, key=%s)", u.uploadID, u.bucket, u.key)
+		slog.Info("[Storage] Cleaning up expired multipart upload", "uploadID", u.uploadID, "bucket", u.bucket, "key", u.key)
 		_ = fs.AbortMultipartUpload(u.bucket, u.key, u.uploadID)
 	}
 
@@ -1660,13 +1660,13 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 
 		metas, err := fs.metadata.ListAllObjectMetas(bInfo.Name)
 		if err != nil {
-			log.Printf("[Storage] Failed to list object metas for bucket %s during cleanup: %v", bInfo.Name, err)
+			slog.Error("[Storage] Failed to list object metas for bucket during cleanup", "bucket", bInfo.Name, "error", err)
 			continue
 		}
 
 		versions, err := fs.metadata.ListAllObjectVersions(bInfo.Name)
 		if err != nil {
-			log.Printf("[Storage] Failed to list object versions for bucket %s during cleanup: %v", bInfo.Name, err)
+			slog.Error("[Storage] Failed to list object versions for bucket during cleanup", "bucket", bInfo.Name, "error", err)
 			continue
 		}
 
@@ -1684,7 +1684,7 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 					}
 					// Check if expired
 					if now.Sub(m.LastModified) > cutoff {
-						log.Printf("[Storage] Expiring current version of key %s in bucket %s (age %v > threshold %v)", m.Key, bInfo.Name, now.Sub(m.LastModified), cutoff)
+						slog.Info("[Storage] Expiring current version of key in bucket", "key", m.Key, "bucket", bInfo.Name, "age", now.Sub(m.LastModified), "cutoff", cutoff)
 						_ = fs.DeleteObject(bInfo.Name, m.Key, "")
 					}
 				}
@@ -1701,7 +1701,7 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 						continue
 					}
 					if now.Sub(v.LastModified) > cutoff {
-						log.Printf("[Storage] Expiring noncurrent version %s of key %s in bucket %s (age %v > threshold %v)", v.VersionID, v.Key, bInfo.Name, now.Sub(v.LastModified), cutoff)
+						slog.Info("[Storage] Expiring noncurrent version of key in bucket", "versionID", v.VersionID, "key", v.Key, "bucket", bInfo.Name, "age", now.Sub(v.LastModified), "cutoff", cutoff)
 						_ = fs.DeleteObject(bInfo.Name, v.Key, v.VersionID)
 					}
 				}
@@ -1735,7 +1735,7 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 						})
 					})
 					for _, a := range aborts {
-						log.Printf("[Storage] Aborting incomplete multipart upload %s of key %s in bucket %s (initiated %v)", a.uploadID, a.key, bInfo.Name, cutoff)
+						slog.Info("[Storage] Aborting incomplete multipart upload of key in bucket", "uploadID", a.uploadID, "key", a.key, "bucket", bInfo.Name, "cutoff", cutoff)
 						_ = fs.AbortMultipartUpload(bInfo.Name, a.key, a.uploadID)
 					}
 				}

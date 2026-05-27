@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -224,7 +224,7 @@ func (m *MetadataStore) migrateIfNecessary() error {
 		return nil
 	}
 
-	log.Println("[Migration] Migrating old single-database metadata to per-bucket databases...")
+	slog.Info("[Migration] Migrating old single-database metadata to per-bucket databases")
 
 	if objectsBucketExists {
 		var errs []error
@@ -315,7 +315,7 @@ func (m *MetadataStore) migrateIfNecessary() error {
 		return err
 	}
 
-	log.Println("[Migration] Migration completed successfully.")
+	slog.Info("[Migration] Migration completed successfully")
 	return nil
 }
 

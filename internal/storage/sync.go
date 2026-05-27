@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"sort"
@@ -71,9 +71,9 @@ func initSyncDispatcher() {
 			for task := range syncQueue {
 				err := performSync(task.fs, task.cfg, task.bucket, task.key, task.op)
 				if err != nil {
-					log.Printf("[Sync] Mirroring %s failed for %s/%s: %v", task.op, task.bucket, task.key, err)
+					slog.Error("[Sync] Mirroring failed", "op", task.op, "bucket", task.bucket, "key", task.key, "error", err)
 				} else {
-					log.Printf("[Sync] Mirroring %s succeeded for %s/%s", task.op, task.bucket, task.key)
+					slog.Info("[Sync] Mirroring succeeded", "op", task.op, "bucket", task.bucket, "key", task.key)
 				}
 			}
 		}()
@@ -100,7 +100,7 @@ func MirrorSync(fs *FilesystemEngine, bucket, key, op string) {
 	select {
 	case syncQueue <- task:
 	default:
-		log.Printf("[Sync] Warning: sync queue full, dropping sync task %s for %s/%s", op, bucket, key)
+		slog.Warn("[Sync] Sync queue full, dropping sync task", "op", op, "bucket", bucket, "key", key)
 	}
 }
 

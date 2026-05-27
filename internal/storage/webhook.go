@@ -3,7 +3,7 @@ package storage
 import (
 	"bytes"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
@@ -76,14 +76,14 @@ func triggerWebhook(eventName string, info *ObjectInfo) {
 	select {
 	case webhookQueue <- task:
 	default:
-		log.Printf("[Webhook] Warning: webhook queue full, dropping event %s for %s/%s", eventName, info.Bucket, info.Key)
+		slog.Warn("[Webhook] Webhook queue full, dropping event", "event", eventName, "bucket", info.Bucket, "key", info.Key)
 	}
 }
 
 func sendWebhookEvent(url string, payload WebhookPayload) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("[Webhook] Failed to marshal payload: %v", err)
+		slog.Error("[Webhook] Failed to marshal payload", "error", err)
 		return
 	}
 
@@ -94,7 +94,7 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(data))
 		if err != nil {
-			log.Printf("[Webhook] Failed to create request: %v", err)
+			slog.Error("[Webhook] Failed to create request", "error", err)
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -106,9 +106,9 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				return // Success!
 			}
-			log.Printf("[Webhook] Server returned status %d on attempt %d", resp.StatusCode, attempt+1)
+			slog.Warn("[Webhook] Server returned error status", "status", resp.StatusCode, "attempt", attempt+1)
 		} else {
-			log.Printf("[Webhook] Dispatch failed on attempt %d: %v", attempt+1, err)
+			slog.Warn("[Webhook] Dispatch failed", "attempt", attempt+1, "error", err)
 		}
 
 		if attempt < maxRetries {
@@ -117,5 +117,5 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 		}
 	}
 
-	log.Printf("[Webhook] Failed to deliver event %s after %d retries", payload.EventName, maxRetries)
+	slog.Error("[Webhook] Failed to deliver event after retries", "event", payload.EventName, "retries", maxRetries)
 }

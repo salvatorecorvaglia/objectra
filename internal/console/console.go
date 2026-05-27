@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -471,7 +471,7 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request, bucket st
 
 	info, err := h.engine.PutObject(r.Context(), bucket, key, file, header.Size, contentType)
 	if err != nil {
-		log.Printf("[Console] Upload error: %v", err)
+		slog.Error("[Console] Upload error", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
