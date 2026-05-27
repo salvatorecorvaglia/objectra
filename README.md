@@ -6,12 +6,15 @@ Objectra is a high-performance object storage server written in Go that implemen
 
 ## Features
 
-- **S3-Compatible API** — Works with existing S3 tools (`aws` CLI, Boto3, any S3 SDK)
-- **Built-in Web Console** — Browse buckets and objects, upload/download files, create and delete resources
-- **Multipart Upload** — Upload large files efficiently with chunked multipart uploads
-- **AWS Signature V4** — Standard S3 authentication for secure access
-- **Docker Ready** — Multi-stage build produces a ~15MB image
-- **Streaming I/O** — Objects are streamed directly to/from disk without buffering in memory
+- **S3-Compatible API** — Works with existing S3 tools (`aws` CLI, Boto3, any S3 SDK). Supports bucket logging and lifecycle configurations.
+- **Built-in Web Console** — Browse buckets and objects, upload/download files, create/delete resources. Enhancements include client-side sorting, multi-selection, and batch deletion.
+- **Multipart Upload** — Upload large files efficiently with chunked multipart uploads and part size validation.
+- **AWS Signature V4** — Standard S3 authentication for secure access.
+- **Docker Ready** — Multi-stage build produces a ~15MB image.
+- **Streaming I/O & Dispatcher Queues** — Objects are streamed directly to/from disk. Webhook and replication sync events are handled in non-blocking async task queues.
+- **Thread-safe Bucket Locking** — Employs a granular, bucket-level read/write locking mechanism to prevent race conditions under concurrent operations.
+- **Structured slog Logging** — Fully integrated structured logs with configurable formats (text or JSON) and severity levels.
+
 
 ## Quick Start
 
@@ -79,6 +82,10 @@ export $(grep -v '^#' .env | xargs) && ./objectra
 | `OBJECTRA_CONSOLE_PORT` | `9001`        | Web console port                                     |
 | `OBJECTRA_REGION`       | `us-east-1`   | Reported S3 region                                   |
 | `OBJECTRA_JWT_SECRET`   | _random_      | JWT signing key used for persistent console sessions |
+| `OBJECTRA_LOGIN_RATE_LIMIT` | `5`        | Max console login requests per minute per IP         |
+| `OBJECTRA_API_RATE_LIMIT`   | `60`       | Max console API requests per minute per IP           |
+| `OBJECTRA_LOG_LEVEL`    | `info`        | Log level severity (`debug`, `info`, `warn`, `error`) |
+| `OBJECTRA_LOG_FORMAT`   | `text`        | Structured log format (`text` or `json`)             |
 
 > **⚠️ Change the default credentials before using in production!**
 
@@ -158,6 +165,11 @@ Open `http://localhost:9001` in your browser and log in with your access key and
 | UploadPart              | ✅     |
 | CompleteMultipartUpload | ✅     |
 | AbortMultipartUpload    | ✅     |
+| GetBucketLifecycle      | ✅     |
+| PutBucketLifecycle      | ✅     |
+| DeleteBucketLifecycle   | ✅     |
+| GetBucketLogging        | ✅     |
+| PutBucketLogging        | ✅     |
 
 ## Architecture
 

@@ -129,10 +129,16 @@ go test -race ./...
 - All Go files must be formatted using `gofmt` (or `go fmt ./...`).
 - Avoid adding unnecessary external dependencies to keep the project lightweight.
 - Ensure proper error handling: return errors to callers instead of ignoring them, and wrap errors with context where appropriate (e.g., `fmt.Errorf("error doing x: %w", err)`).
+- **Structured slog Logging**: Always use the structured logger `log/slog` rather than standard `log` or print statements. Include key-value context attributes where appropriate (e.g., `slog.Info("msg", "key", value)` or `slog.Error("msg", "error", err)`).
+
+### Concurrency & Performance
+
+- **Bucket-Level Locking**: When reading or modifying bucket resources, acquire the corresponding bucket-level lock using the metadata store's locking mechanism (`acquireBucketLock`). Never use global package-level variables or raw mutexes for bucket operations.
+- **Asynchronous Execution & Queues**: Performance-critical async side-effects, such as triggering webhooks or replication mirroring tasks, should utilize the buffered dispatcher queues (e.g., `syncQueue` or `webhookQueue`) rather than spawning unmanaged goroutines. This prevents resource exhaustion under heavy loads.
+- **Streaming I/O**: Keep streaming operations memory-efficient. Avoid buffering large S3 objects in memory.
 
 ### Aesthetic & Design Principles
 
-- **Streaming I/O**: Keep streaming operations memory-efficient. Avoid buffering large S3 objects in memory.
 - **Web Console**: The built-in web console should be responsive, modern, and provide a premium user experience. Avoid visual placeholders and implement clean user interaction flows.
 
 ---
