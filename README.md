@@ -24,6 +24,7 @@ docker compose up -d
 ```
 
 The server will start with:
+
 - **S3 API**: `http://localhost:9000`
 - **Web Console**: `http://localhost:9001`
 - **Default credentials**: Access Key `objectra` / Secret Key `objectra123`
@@ -69,15 +70,15 @@ export $(grep -v '^#' .env | xargs) && ./objectra
 
 ### Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `OBJECTRA_ACCESS_KEY` | `objectra` | S3 access key |
-| `OBJECTRA_SECRET_KEY` | `objectra123` | S3 secret key |
-| `OBJECTRA_DATA_DIR` | `/data` | Storage directory |
-| `OBJECTRA_S3_PORT` | `9000` | S3 API port |
-| `OBJECTRA_CONSOLE_PORT` | `9001` | Web console port |
-| `OBJECTRA_REGION` | `us-east-1` | Reported S3 region |
-| `OBJECTRA_JWT_SECRET` | *random* | JWT signing key used for persistent console sessions |
+| Variable                | Default       | Description                                          |
+| ----------------------- | ------------- | ---------------------------------------------------- |
+| `OBJECTRA_ACCESS_KEY`   | `objectra`    | S3 access key                                        |
+| `OBJECTRA_SECRET_KEY`   | `objectra123` | S3 secret key                                        |
+| `OBJECTRA_DATA_DIR`     | `/data`       | Storage directory                                    |
+| `OBJECTRA_S3_PORT`      | `9000`        | S3 API port                                          |
+| `OBJECTRA_CONSOLE_PORT` | `9001`        | Web console port                                     |
+| `OBJECTRA_REGION`       | `us-east-1`   | Reported S3 region                                   |
+| `OBJECTRA_JWT_SECRET`   | _random_      | JWT signing key used for persistent console sessions |
 
 > **⚠️ Change the default credentials before using in production!**
 
@@ -140,23 +141,23 @@ Open `http://localhost:9001` in your browser and log in with your access key and
 
 ## S3 API Coverage
 
-| Operation | Status |
-|-----------|--------|
-| ListBuckets | ✅ |
-| CreateBucket | ✅ |
-| DeleteBucket | ✅ |
-| HeadBucket | ✅ |
-| GetBucketLocation | ✅ |
-| PutObject | ✅ |
-| GetObject | ✅ |
-| HeadObject | ✅ |
-| DeleteObject | ✅ |
-| CopyObject | ✅ |
-| ListObjectsV2 | ✅ |
-| CreateMultipartUpload | ✅ |
-| UploadPart | ✅ |
-| CompleteMultipartUpload | ✅ |
-| AbortMultipartUpload | ✅ |
+| Operation               | Status |
+| ----------------------- | ------ |
+| ListBuckets             | ✅     |
+| CreateBucket            | ✅     |
+| DeleteBucket            | ✅     |
+| HeadBucket              | ✅     |
+| GetBucketLocation       | ✅     |
+| PutObject               | ✅     |
+| GetObject               | ✅     |
+| HeadObject              | ✅     |
+| DeleteObject            | ✅     |
+| CopyObject              | ✅     |
+| ListObjectsV2           | ✅     |
+| CreateMultipartUpload   | ✅     |
+| UploadPart              | ✅     |
+| CompleteMultipartUpload | ✅     |
+| AbortMultipartUpload    | ✅     |
 
 ## Architecture
 
@@ -175,6 +176,20 @@ objectra/
 └── README.md
 ```
 
-## License
+---
 
-MIT
+## 🤝 Contributing
+
+Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## 🔐 Security
+
+If you discover a security vulnerability, please see our [Security Policy](SECURITY.md).
+
+## 📝 License
+
+Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
+
+---
+
+**Author**: [Salvatore Corvaglia](https://github.com/salvatorecorvaglia)
