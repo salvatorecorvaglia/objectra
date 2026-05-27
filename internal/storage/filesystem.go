@@ -73,6 +73,18 @@ func (fs *FilesystemEngine) bucketPath(name string) string {
 
 // objectPath returns the filesystem path for an object, with path traversal protection.
 func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
+	if !filepath.IsLocal(bucket) {
+		return "", fmt.Errorf("invalid bucket name: path traversal detected")
+	}
+	trimmedKey := strings.TrimLeft(key, "/\\")
+	if trimmedKey != "" {
+		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
+			return "", fmt.Errorf("invalid object key: path traversal detected")
+		}
+	} else if key != "" {
+		return "", fmt.Errorf("invalid object key: path traversal detected")
+	}
+
 	base := fs.bucketPath(bucket)
 	resolved := filepath.Join(base, filepath.FromSlash(key))
 	// Ensure the resolved path stays within the bucket directory
@@ -83,8 +95,24 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 }
 
 func (fs *FilesystemEngine) objectPathWithVersion(bucket, key, versionID string) (string, error) {
-	if strings.ContainsAny(versionID, "/\\") || strings.Contains(versionID, "..") {
-		return "", fmt.Errorf("invalid version ID: path traversal detected")
+	if !filepath.IsLocal(bucket) {
+		return "", fmt.Errorf("invalid bucket name: path traversal detected")
+	}
+	trimmedKey := strings.TrimLeft(key, "/\\")
+	if trimmedKey != "" {
+		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
+			return "", fmt.Errorf("invalid object key: path traversal detected")
+		}
+	} else if key != "" {
+		return "", fmt.Errorf("invalid object key: path traversal detected")
+	}
+	if versionID != "" {
+		if !filepath.IsLocal(versionID) {
+			return "", fmt.Errorf("invalid version ID: path traversal detected")
+		}
+		if strings.ContainsAny(versionID, "/\\") || strings.Contains(versionID, "..") {
+			return "", fmt.Errorf("invalid version ID: path traversal detected")
+		}
 	}
 	base, err := fs.objectPath(bucket, key)
 	if err != nil {
@@ -124,6 +152,12 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 }
 
 func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string, error) {
+	if !filepath.IsLocal(bucket) {
+		return "", fmt.Errorf("invalid bucket name: path traversal detected")
+	}
+	if !filepath.IsLocal(uploadID) {
+		return "", fmt.Errorf("invalid upload ID: path traversal detected")
+	}
 	if strings.ContainsAny(uploadID, "/\\") || strings.Contains(uploadID, "..") {
 		return "", fmt.Errorf("invalid upload ID: path traversal detected")
 	}
@@ -137,6 +171,20 @@ func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string
 }
 
 func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, error) {
+	if !filepath.IsLocal(bucket) {
+		return "", fmt.Errorf("invalid bucket name: path traversal detected")
+	}
+	trimmedKey := strings.TrimLeft(key, "/\\")
+	if trimmedKey != "" {
+		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
+			return "", fmt.Errorf("invalid object key: path traversal detected")
+		}
+	} else if key != "" {
+		return "", fmt.Errorf("invalid object key: path traversal detected")
+	}
+	if !filepath.IsLocal(uploadID) {
+		return "", fmt.Errorf("invalid upload ID: path traversal detected")
+	}
 	uploadPath, err := fs.multipartUploadPath(bucket, uploadID)
 	if err != nil {
 		return "", err
