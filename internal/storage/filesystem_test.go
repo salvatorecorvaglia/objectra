@@ -1254,6 +1254,35 @@ func TestPathTraversalProtectionExtended(t *testing.T) {
 	}
 }
 
+func TestDoubleDotPrefixedKeys(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "dotdot-bucket"
+	engine.CreateBucket(bucket)
+
+	// Valid key starting with double dots, but not a path traversal
+	validKey := "..hiddenfile"
+	content := []byte("not-traversal")
+	_, err := engine.PutObject(context.Background(), bucket, validKey, bytes.NewReader(content), int64(len(content)), "text/plain")
+	if err != nil {
+		t.Fatalf("failed to PutObject for valid key %q: %v", validKey, err)
+	}
+
+	reader, _, err := engine.GetObject(context.Background(), bucket, validKey, "")
+	if err != nil {
+		t.Fatalf("failed to GetObject for valid key %q: %v", validKey, err)
+	}
+	defer reader.Close()
+
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("failed to read data: %v", err)
+	}
+	if string(data) != "not-traversal" {
+		t.Errorf("unexpected content: got %q, want 'not-traversal'", string(data))
+	}
+}
+
+
 
 
 

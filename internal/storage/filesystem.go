@@ -88,7 +88,8 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 	base := fs.bucketPath(bucket)
 	resolved := filepath.Join(base, filepath.FromSlash(key))
 	// Ensure the resolved path stays within the bucket directory
-	if !strings.HasPrefix(resolved, base+string(filepath.Separator)) && resolved != base {
+	rel, err := filepath.Rel(base, resolved)
+	if err != nil || !isSafeRelPath(rel) {
 		return "", fmt.Errorf("invalid object key: path traversal detected")
 	}
 	return resolved, nil
@@ -125,29 +126,36 @@ func (fs *FilesystemEngine) objectPathWithVersion(bucket, key, versionID string)
 	resolved = filepath.Clean(resolved)
 	// Ensure the resolved path stays within the bucket directory
 	bucketBase := fs.bucketPath(bucket)
-	if !strings.HasPrefix(resolved, bucketBase+string(filepath.Separator)) && resolved != bucketBase {
+	rel, err := filepath.Rel(bucketBase, resolved)
+	if err != nil || !isSafeRelPath(rel) {
 		return "", fmt.Errorf("invalid object key or version: path traversal detected")
 	}
 	return resolved, nil
 }
 
 func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
-	dir := filepath.Dir(objPath)
-	bucketDir := fs.bucketPath(bucket)
-	// Ensure dir is a subdirectory of bucketDir before traversing
-	if !strings.HasPrefix(dir, bucketDir+string(filepath.Separator)) {
+	if !filepath.IsLocal(bucket) {
 		return
 	}
+	bucketDir := fs.bucketPath(bucket)
+	rel, err := filepath.Rel(bucketDir, objPath)
+	if err != nil || !isSafeRelPath(rel) {
+		return
+	}
+
+	dir := filepath.Dir(objPath)
 	for dir != bucketDir {
+		checkRel, err := filepath.Rel(bucketDir, dir)
+		if err != nil || !isSafeRelPath(checkRel) {
+			break
+		}
+
 		entries, _ := os.ReadDir(dir)
 		if len(entries) > 0 {
 			break
 		}
 		os.Remove(dir)
 		dir = filepath.Dir(dir)
-		if !strings.HasPrefix(dir, bucketDir+string(filepath.Separator)) && dir != bucketDir {
-			break
-		}
 	}
 }
 
@@ -164,7 +172,8 @@ func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string
 	base := filepath.Join(fs.dataDir, "multipart", bucket)
 	resolved := filepath.Join(base, uploadID)
 	// Ensure the resolved path stays within the bucket's multipart directory
-	if !strings.HasPrefix(resolved, base+string(filepath.Separator)) && resolved != base {
+	rel, err := filepath.Rel(base, resolved)
+	if err != nil || !isSafeRelPath(rel) {
 		return "", fmt.Errorf("invalid upload ID: path traversal detected")
 	}
 	return resolved, nil
@@ -191,10 +200,21 @@ func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, 
 	}
 	resolved := filepath.Join(uploadPath, filepath.FromSlash(key))
 	// Ensure the resolved path stays within the uploadPath directory
-	if !strings.HasPrefix(resolved, uploadPath+string(filepath.Separator)) && resolved != uploadPath {
+	rel, err := filepath.Rel(uploadPath, resolved)
+	if err != nil || !isSafeRelPath(rel) {
 		return "", fmt.Errorf("invalid object key: path traversal detected")
 	}
 	return resolved, nil
+}
+
+func isSafeRelPath(rel string) bool {
+	if filepath.IsAbs(rel) {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 // CreateBucket creates a new storage bucket.
