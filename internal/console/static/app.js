@@ -13,6 +13,9 @@
     let currentPageIndex = 0;
     let pageTokens = [''];
     let shareTargetKey = '';
+    let loadedItems = [];
+    let currentSortField = 'name';
+    let currentSortOrder = 'asc';
 
     // ---- DOM Refs ----
     const $ = (sel) => document.querySelector(sel);
@@ -352,40 +355,127 @@
 
             const resp = await api('GET', `/api/buckets/${currentBucket}/objects?${params}`);
             const data = await resp.json();
-            const items = data.items || [];
+            loadedItems = data.items || [];
 
-            objectsTbody.innerHTML = '';
+            renderObjectsTable();
 
-            if (items.length === 0) {
-                objectsEmpty.style.display = 'block';
-                objectsTableContainer.style.display = 'none';
-                paginationContainer.style.display = 'none';
-                objectCount.textContent = searchPrefix ? 'No matching items' : 'Empty';
+            const hasNext = data.isTruncated;
+            if (hasNext) {
+                pageTokens[currentPageIndex + 1] = data.nextContinuationToken;
+            }
+
+            if (currentPageIndex > 0 || hasNext) {
+                paginationContainer.style.display = 'flex';
+                prevPageBtn.disabled = (currentPageIndex === 0);
+                nextPageBtn.disabled = !hasNext;
+                pageIndicator.textContent = `Page ${currentPageIndex + 1}`;
             } else {
-                objectsEmpty.style.display = 'none';
-                objectsTableContainer.style.display = 'block';
-                objectCount.textContent = `${items.length} item${items.length !== 1 ? 's' : ''}`;
-
-                items.forEach((item) => {
-                    objectsTbody.appendChild(createObjectRow(item));
-                });
-
-                const hasNext = data.isTruncated;
-                if (hasNext) {
-                    pageTokens[currentPageIndex + 1] = data.nextContinuationToken;
-                }
-
-                if (currentPageIndex > 0 || hasNext) {
-                    paginationContainer.style.display = 'flex';
-                    prevPageBtn.disabled = (currentPageIndex === 0);
-                    nextPageBtn.disabled = !hasNext;
-                    pageIndicator.textContent = `Page ${currentPageIndex + 1}`;
-                } else {
-                    paginationContainer.style.display = 'none';
-                }
+                paginationContainer.style.display = 'none';
             }
         } catch (err) {
             showToast('Failed to load objects', 'error');
+        }
+    }
+
+    function renderObjectsTable() {
+        objectsTbody.innerHTML = '';
+
+        if (loadedItems.length === 0) {
+            objectsEmpty.style.display = 'block';
+            objectsTableContainer.style.display = 'none';
+            paginationContainer.style.display = 'none';
+            objectCount.textContent = searchPrefix ? 'No matching items' : 'Empty';
+
+            const headers = {
+                name: $('#th-name'),
+                size: $('#th-size'),
+                date: $('#th-date')
+            };
+            for (const th of Object.values(headers)) {
+                if (th) th.classList.remove('sort-asc', 'sort-desc');
+            }
+            const selectAllCheckbox = $('#select-all-objects');
+            if (selectAllCheckbox) {
+                selectAllCheckbox.checked = false;
+                selectAllCheckbox.indeterminate = false;
+            }
+            updateBatchDeleteBtnVisibility();
+            return;
+        }
+
+        objectsEmpty.style.display = 'none';
+        objectsTableContainer.style.display = 'block';
+        objectCount.textContent = `${loadedItems.length} item${loadedItems.length !== 1 ? 's' : ''}`;
+
+        const folders = loadedItems.filter(item => item.isPrefix);
+        const files = loadedItems.filter(item => !item.isPrefix);
+
+        folders.sort((a, b) => a.key.localeCompare(b.key));
+
+        files.sort((a, b) => {
+            let valA, valB;
+            if (currentSortField === 'name') {
+                valA = a.key.toLowerCase();
+                valB = b.key.toLowerCase();
+            } else if (currentSortField === 'size') {
+                valA = a.size || 0;
+                valB = b.size || 0;
+            } else if (currentSortField === 'date') {
+                valA = a.lastModified ? new Date(a.lastModified).getTime() : 0;
+                valB = b.lastModified ? new Date(b.lastModified).getTime() : 0;
+            }
+
+            if (valA < valB) return currentSortOrder === 'asc' ? -1 : 1;
+            if (valA > valB) return currentSortOrder === 'asc' ? 1 : -1;
+            return 0;
+        });
+
+        const sortedItems = [...folders, ...files];
+
+        sortedItems.forEach((item) => {
+            objectsTbody.appendChild(createObjectRow(item));
+        });
+
+        const headers = {
+            name: $('#th-name'),
+            size: $('#th-size'),
+            date: $('#th-date')
+        };
+
+        for (const [field, th] of Object.entries(headers)) {
+            if (!th) continue;
+            th.classList.remove('sort-asc', 'sort-desc');
+            if (field === currentSortField) {
+                th.classList.add(currentSortOrder === 'asc' ? 'sort-asc' : 'sort-desc');
+            }
+        }
+
+        const selectAllCheckbox = $('#select-all-objects');
+        if (selectAllCheckbox) {
+            const allCheckboxes = Array.from(objectsTbody.querySelectorAll('.object-select'));
+            const allChecked = allCheckboxes.length > 0 && allCheckboxes.every(c => c.checked);
+            const anyChecked = allCheckboxes.some(c => c.checked);
+            selectAllCheckbox.checked = allChecked;
+            selectAllCheckbox.indeterminate = anyChecked && !allChecked;
+        }
+        updateBatchDeleteBtnVisibility();
+    }
+
+    function updateBatchDeleteBtnVisibility() {
+        const batchDeleteBtn = $('#batch-delete-btn');
+        if (!batchDeleteBtn) return;
+
+        const checkedBoxes = objectsTbody.querySelectorAll('.object-select:checked');
+        const count = checkedBoxes.length;
+
+        if (count > 0) {
+            batchDeleteBtn.style.display = 'inline-flex';
+            batchDeleteBtn.innerHTML = `
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+                Delete Selected (${count})
+            `;
+        } else {
+            batchDeleteBtn.style.display = 'none';
         }
     }
 
@@ -396,6 +486,7 @@
             // Folder
             const displayName = item.key.replace(currentPrefix, '').replace(/\/$/, '');
             tr.innerHTML = `
+                <td></td>
                 <td>
                     <div class="file-name">
                         <div class="file-icon folder">
@@ -432,6 +523,9 @@
 
             tr.innerHTML = `
                 <td>
+                    <input type="checkbox" class="object-select" data-key="${escapeHtml(item.key)}" aria-label="Select ${escapeHtml(displayName)}">
+                </td>
+                <td>
                     <div class="file-name">
                         <div class="file-icon file">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><polyline points="13 2 13 9 20 9"/></svg>
@@ -455,6 +549,18 @@
                     </div>
                 </td>
             `;
+
+            tr.querySelector('.object-select').addEventListener('change', () => {
+                updateBatchDeleteBtnVisibility();
+                const allCheckboxes = Array.from(objectsTbody.querySelectorAll('.object-select'));
+                const allChecked = allCheckboxes.length > 0 && allCheckboxes.every(c => c.checked);
+                const anyChecked = allCheckboxes.some(c => c.checked);
+                const selectAll = $('#select-all-objects');
+                if (selectAll) {
+                    selectAll.checked = allChecked;
+                    selectAll.indeterminate = anyChecked && !allChecked;
+                }
+            });
 
             tr.querySelector('.preview-link').addEventListener('click', () => {
                 showPreview(item.key, item.size);
@@ -568,17 +674,20 @@
     objectsViewEl.addEventListener('dragover', (e) => {
         e.preventDefault();
         dropZone.style.display = 'block';
+        objectsTableContainer.classList.add('drag-over');
     });
 
     objectsViewEl.addEventListener('dragleave', (e) => {
         if (!objectsViewEl.contains(e.relatedTarget)) {
             dropZone.style.display = 'none';
+            objectsTableContainer.classList.remove('drag-over');
         }
     });
 
     objectsViewEl.addEventListener('drop', (e) => {
         e.preventDefault();
         dropZone.style.display = 'none';
+        objectsTableContainer.classList.remove('drag-over');
         if (e.dataTransfer.files.length > 0) {
             uploadFiles(Array.from(e.dataTransfer.files));
         }
@@ -990,6 +1099,75 @@
             $('#confirm-create-folder').click();
         }
     });
+
+    const thName = $('#th-name');
+    const thSize = $('#th-size');
+    const thDate = $('#th-date');
+
+    function handleSort(field) {
+        if (currentSortField === field) {
+            currentSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+        } else {
+            currentSortField = field;
+            currentSortOrder = 'asc';
+        }
+        renderObjectsTable();
+    }
+
+    if (thName) thName.addEventListener('click', () => handleSort('name'));
+    if (thSize) thSize.addEventListener('click', () => handleSort('size'));
+    if (thDate) thDate.addEventListener('click', () => handleSort('date'));
+
+    const selectAllCheckbox = $('#select-all-objects');
+    if (selectAllCheckbox) {
+        selectAllCheckbox.addEventListener('change', (e) => {
+            const checked = e.target.checked;
+            const rowCheckboxes = objectsTbody.querySelectorAll('.object-select');
+            rowCheckboxes.forEach(cb => {
+                cb.checked = checked;
+            });
+            updateBatchDeleteBtnVisibility();
+        });
+    }
+
+    const batchDeleteBtn = $('#batch-delete-btn');
+    if (batchDeleteBtn) {
+        batchDeleteBtn.addEventListener('click', async () => {
+            const checkedBoxes = objectsTbody.querySelectorAll('.object-select:checked');
+            const keys = Array.from(checkedBoxes).map(cb => cb.dataset.key);
+            if (keys.length === 0) return;
+
+            if (!confirm(`Are you sure you want to delete the ${keys.length} selected object(s)?`)) return;
+
+            batchDeleteBtn.disabled = true;
+            const originalHTML = batchDeleteBtn.innerHTML;
+            batchDeleteBtn.textContent = 'Deleting...';
+
+            const promises = keys.map(key =>
+                api('DELETE', `/api/buckets/${currentBucket}/objects?key=${encodeURIComponent(key)}`)
+            );
+
+            try {
+                const results = await Promise.all(promises);
+                const succeeded = results.filter(r => r.ok).length;
+                const failed = results.length - succeeded;
+
+                if (succeeded > 0) {
+                    showToast(`Successfully deleted ${succeeded} object(s)`, 'success');
+                }
+                if (failed > 0) {
+                    showToast(`Failed to delete ${failed} object(s)`, 'error');
+                }
+                loadObjects();
+            } catch (err) {
+                showToast('An error occurred during batch deletion', 'error');
+                loadObjects();
+            } finally {
+                batchDeleteBtn.disabled = false;
+                batchDeleteBtn.innerHTML = originalHTML;
+            }
+        });
+    }
 
     // ---- Utilities ----
 

@@ -29,6 +29,8 @@ type MetadataStore struct {
 	bucketLocks   map[string]*bucketLock
 	locksMu       sync.Mutex
 	dataDir       string
+	initLocks     map[string]*sync.Mutex
+	initMu        sync.Mutex
 }
 
 type bucketLock struct {
@@ -136,14 +138,30 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 	}
 	m.mu.RUnlock()
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Get or create per-bucket initialization mutex
+	m.initMu.Lock()
+	if m.initLocks == nil {
+		m.initLocks = make(map[string]*sync.Mutex)
+	}
+	bucketMu, exists := m.initLocks[bucket]
+	if !exists {
+		bucketMu = &sync.Mutex{}
+		m.initLocks[bucket] = bucketMu
+	}
+	m.initMu.Unlock()
 
-	// Double-check under write lock
+	bucketMu.Lock()
+	defer bucketMu.Unlock()
+
+	// Double check if already opened by another thread
+	m.mu.RLock()
 	if db, ok := m.activeBuckets[bucket]; ok {
+		m.mu.RUnlock()
 		return db, nil
 	}
+	m.mu.RUnlock()
 
+	// Open the database file (blocking Disk I/O) without holding global locks!
 	dbPath := filepath.Join(m.dataDir, "metadata", bucket+".db")
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
@@ -164,7 +182,16 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 		return nil, fmt.Errorf("failed to initialize metadata db for bucket %s: %w", bucket, err)
 	}
 
+	// Cache the opened database under global write lock
+	m.mu.Lock()
 	m.activeBuckets[bucket] = db
+	m.mu.Unlock()
+
+	// Cleanup the lock from the map
+	m.initMu.Lock()
+	delete(m.initLocks, bucket)
+	m.initMu.Unlock()
+
 	return db, nil
 }
 

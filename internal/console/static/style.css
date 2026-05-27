@@ -1126,3 +1126,33 @@ body {
     font-weight: 500;
 }
 
+.table-container.drag-over {
+    border: 2px dashed var(--accent-blue);
+    background: rgba(59, 130, 246, 0.05);
+    transition: all var(--transition-fast);
+}
+
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+th.sortable:hover {
+    color: var(--accent-blue) !important;
+}
+
+.sort-indicator {
+    display: inline-block;
+    margin-left: 0.25rem;
+    font-size: 0.7rem;
+    color: var(--accent-blue);
+}
+
+th.sort-asc .sort-indicator::before {
+    content: "▲";
+}
+
+th.sort-desc .sort-indicator::before {
+    content: "▼";
+}
+

@@ -1597,6 +1597,127 @@ func TestBucketLifecycleAndLogging(t *testing.T) {
 	}
 }
 
+func TestConcurrentWriteDelete(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "concurrent-bucket"
+	if err := engine.CreateBucket(bucket); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	const numWorkers = 20
+	const numOpsPerWorker = 50
+	var wg sync.WaitGroup
+
+	ctx := context.Background()
+
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for i := 0; i < numOpsPerWorker; i++ {
+				key := fmt.Sprintf("worker-%d/key-%d", workerID, i)
+				content := fmt.Sprintf("content-%d", i)
+
+				_, err := engine.PutObject(ctx, bucket, key, strings.NewReader(content), int64(len(content)), "text/plain")
+				if err != nil {
+					t.Errorf("PutObject failed during concurrent test: %v", err)
+					return
+				}
+
+				if i%2 == 0 {
+					r, _, err := engine.GetObject(ctx, bucket, key, "")
+					if err == nil {
+						r.Close()
+					}
+				}
+
+				err = engine.DeleteObject(bucket, key, "")
+				if err != nil {
+					t.Errorf("DeleteObject failed during concurrent test: %v", err)
+					return
+				}
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	isEmpty, err := engine.metadata.IsBucketEmpty(bucket)
+	if err != nil {
+		t.Fatalf("IsBucketEmpty failed: %v", err)
+	}
+	if !isEmpty {
+		t.Errorf("expected bucket to be empty, but it is not")
+	}
+}
+
+func TestPathTraversalInvalidChars(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "safety-bucket"
+	if err := engine.CreateBucket(bucket); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Test 1: Keys containing null byte
+	nullByteKeys := []string{
+		"test\x00key",
+		"\x00hello",
+		"folder/\x00file",
+	}
+	for _, badKey := range nullByteKeys {
+		_, err := engine.PutObject(ctx, bucket, badKey, strings.NewReader("data"), 4, "text/plain")
+		if err == nil {
+			t.Errorf("expected error or rejection for key with null byte %q, got nil", badKey)
+		}
+	}
+
+	// Test 2: Keys containing control characters (\r, \n, \t)
+	controlCharKeys := []string{
+		"test\rkey",
+		"test\nkey",
+		"test\tkey",
+		"folder\n/file",
+	}
+	for _, badKey := range controlCharKeys {
+		_, err := engine.PutObject(ctx, bucket, badKey, strings.NewReader("data"), 4, "text/plain")
+		if err == nil {
+			r, _, errGet := engine.GetObject(ctx, bucket, badKey, "")
+			if errGet != nil {
+				t.Errorf("failed to read back key with control char %q: %v", badKey, errGet)
+			} else {
+				r.Close()
+			}
+			errDel := engine.DeleteObject(bucket, badKey, "")
+			if errDel != nil {
+				t.Errorf("failed to delete key with control char %q: %v", badKey, errDel)
+			}
+		}
+	}
+
+	// Test 3: Path Traversal with URL-encoded sequences
+	urlEncodedKeys := []string{
+		"%2e%2e%2f%2e%2e%2fetc/passwd",
+		"..%2f..%2fetc/passwd",
+		"sub/%2e%2e/passwd",
+	}
+	for _, badKey := range urlEncodedKeys {
+		_, err := engine.PutObject(ctx, bucket, badKey, strings.NewReader("data"), 4, "text/plain")
+		if err == nil {
+			resolvedPath, errPath := engine.objectPath(bucket, badKey)
+			if errPath != nil {
+				t.Errorf("failed to get object path for %q: %v", badKey, errPath)
+			}
+			expectedPrefix := engine.bucketPath(bucket)
+			if !strings.HasPrefix(resolvedPath, expectedPrefix) {
+				t.Errorf("path %q escaped bucket directory %q", resolvedPath, expectedPrefix)
+			}
+			engine.DeleteObject(bucket, badKey, "")
+		}
+	}
+}
+
 
 
 

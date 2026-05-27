@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bufio"
 	"context"
 	"compress/gzip"
 	"crypto/aes"
@@ -404,19 +405,22 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 		}
 	}
 
-	var out io.Writer = tmpFile
-	var gzipWriter *gzip.Writer
-
+	var iv []byte
 	if ssecParams != nil {
 		// Generate random IV
-		iv := make([]byte, 16)
+		iv = make([]byte, 16)
 		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
 			return nil, fmt.Errorf("failed to generate random IV: %w", err)
 		}
 		if _, err := tmpFile.Write(iv); err != nil {
 			return nil, fmt.Errorf("failed to write IV to file: %w", err)
 		}
+	}
 
+	bufWriter := bufio.NewWriterSize(tmpFile, 64*1024)
+	var out io.Writer = bufWriter
+
+	if ssecParams != nil {
 		block, err := aes.NewCipher(ssecParams.Key)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create AES cipher: %w", err)
@@ -425,6 +429,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 		out = &cipher.StreamWriter{S: stream, W: out}
 	}
 
+	var gzipWriter *gzip.Writer
 	compressed := false
 	if isCompressibleContentType(contentType) {
 		compressed = true
@@ -446,6 +451,10 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 		if err := gzipWriter.Close(); err != nil {
 			return nil, fmt.Errorf("failed to close gzip writer: %w", err)
 		}
+	}
+
+	if err := bufWriter.Flush(); err != nil {
+		return nil, fmt.Errorf("failed to flush buffer: %w", err)
 	}
 
 	// Validate size mismatch (truncated uploads)
@@ -1046,18 +1055,21 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		os.Remove(tmpPath)
 	}()
 
-	hash := md5.New()
-	var out io.Writer = tmpFile
-
+	var iv []byte
 	if ssecParams != nil {
-		iv := make([]byte, 16)
+		iv = make([]byte, 16)
 		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
 			return nil, fmt.Errorf("failed to generate random IV: %w", err)
 		}
 		if _, err := tmpFile.Write(iv); err != nil {
 			return nil, fmt.Errorf("failed to write IV: %w", err)
 		}
+	}
 
+	bufWriter := bufio.NewWriterSize(tmpFile, 64*1024)
+	var out io.Writer = bufWriter
+
+	if ssecParams != nil {
 		block, err := aes.NewCipher(ssecParams.Key)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create AES cipher: %w", err)
@@ -1066,9 +1078,14 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		out = &cipher.StreamWriter{S: stream, W: out}
 	}
 
+	hash := md5.New()
 	written, err := io.Copy(io.MultiWriter(out, hash), reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write part data: %w", err)
+	}
+
+	if err := bufWriter.Flush(); err != nil {
+		return nil, fmt.Errorf("failed to flush part buffer: %w", err)
 	}
 
 	if err := tmpFile.Close(); err != nil {
