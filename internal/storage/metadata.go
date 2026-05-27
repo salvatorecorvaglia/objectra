@@ -26,7 +26,49 @@ type MetadataStore struct {
 	globalDB      *bolt.DB
 	activeBuckets map[string]*bolt.DB
 	mu            sync.RWMutex
+	bucketLocks   map[string]*bucketLock
+	locksMu       sync.Mutex
 	dataDir       string
+}
+
+type bucketLock struct {
+	sync.RWMutex
+	refCount int
+}
+
+func (m *MetadataStore) acquireBucketLock(bucket string, write bool) func() {
+	m.locksMu.Lock()
+	if m.bucketLocks == nil {
+		m.bucketLocks = make(map[string]*bucketLock)
+	}
+	l, exists := m.bucketLocks[bucket]
+	if !exists {
+		l = &bucketLock{}
+		m.bucketLocks[bucket] = l
+	}
+	l.refCount++
+	m.locksMu.Unlock()
+
+	if write {
+		l.Lock()
+	} else {
+		l.RLock()
+	}
+
+	return func() {
+		if write {
+			l.Unlock()
+		} else {
+			l.RUnlock()
+		}
+
+		m.locksMu.Lock()
+		l.refCount--
+		if l.refCount == 0 {
+			delete(m.bucketLocks, bucket)
+		}
+		m.locksMu.Unlock()
+	}
 }
 
 // NewMetadataStore opens or creates the central database and sets up the metadata directory.
@@ -54,6 +96,7 @@ func NewMetadataStore(dataDir string) (*MetadataStore, error) {
 	m := &MetadataStore{
 		globalDB:      globalDB,
 		activeBuckets: make(map[string]*bolt.DB),
+		bucketLocks:   make(map[string]*bucketLock),
 		dataDir:       dataDir,
 	}
 
@@ -251,6 +294,8 @@ func (m *MetadataStore) migrateIfNecessary() error {
 
 // PutBucket stores bucket metadata.
 func (m *MetadataStore) PutBucket(info *BucketInfo) error {
+	unlock := m.acquireBucketLock(info.Name, true)
+	defer unlock()
 	return m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data, err := json.Marshal(info)
@@ -263,6 +308,8 @@ func (m *MetadataStore) PutBucket(info *BucketInfo) error {
 
 // GetBucket retrieves bucket metadata by name.
 func (m *MetadataStore) GetBucket(name string) (*BucketInfo, error) {
+	unlock := m.acquireBucketLock(name, false)
+	defer unlock()
 	var info BucketInfo
 	err := m.globalDB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
@@ -280,6 +327,8 @@ func (m *MetadataStore) GetBucket(name string) (*BucketInfo, error) {
 
 // DeleteBucket removes bucket metadata and deletes its DB file.
 func (m *MetadataStore) DeleteBucket(name string) error {
+	unlock := m.acquireBucketLock(name, true)
+	defer unlock()
 	err := m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		return b.Delete([]byte(name))
@@ -288,6 +337,33 @@ func (m *MetadataStore) DeleteBucket(name string) error {
 		return err
 	}
 	return m.CloseAndRemoveBucketDB(name)
+}
+
+// IsBucketEmpty checks if both objects and multipart uploads are empty.
+func (m *MetadataStore) IsBucketEmpty(bucket string) (bool, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
+
+	db, err := m.getBucketDB(bucket)
+	if err != nil {
+		return false, err
+	}
+
+	isEmpty := true
+	err = db.View(func(tx *bolt.Tx) error {
+		objB := tx.Bucket(objectsBucket)
+		if objB != nil && objB.Stats().KeyN > 0 {
+			isEmpty = false
+			return nil
+		}
+		mpB := tx.Bucket(multipartBucket)
+		if mpB != nil && mpB.Stats().KeyN > 0 {
+			isEmpty = false
+			return nil
+		}
+		return nil
+	})
+	return isEmpty, err
 }
 
 // ListBuckets returns all stored bucket metadata.
@@ -309,6 +385,8 @@ func (m *MetadataStore) ListBuckets() ([]BucketInfo, error) {
 
 // BucketExists checks if a bucket exists in the central metadata store.
 func (m *MetadataStore) BucketExists(name string) (bool, error) {
+	unlock := m.acquireBucketLock(name, false)
+	defer unlock()
 	exists := false
 	err := m.globalDB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
@@ -320,6 +398,8 @@ func (m *MetadataStore) BucketExists(name string) (bool, error) {
 
 // PutBucketCORS sets CORS configuration for a bucket.
 func (m *MetadataStore) PutBucketCORS(bucket string, cors *CORSConfiguration) error {
+	unlock := m.acquireBucketLock(bucket, true)
+	defer unlock()
 	return m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
@@ -341,6 +421,8 @@ func (m *MetadataStore) PutBucketCORS(bucket string, cors *CORSConfiguration) er
 
 // GetBucketCORS gets CORS configuration for a bucket.
 func (m *MetadataStore) GetBucketCORS(bucket string) (*CORSConfiguration, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	var cors *CORSConfiguration
 	err := m.globalDB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
@@ -363,6 +445,8 @@ func (m *MetadataStore) GetBucketCORS(bucket string) (*CORSConfiguration, error)
 
 // DeleteBucketCORS deletes CORS configuration for a bucket.
 func (m *MetadataStore) DeleteBucketCORS(bucket string) error {
+	unlock := m.acquireBucketLock(bucket, true)
+	defer unlock()
 	return m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
@@ -384,6 +468,8 @@ func (m *MetadataStore) DeleteBucketCORS(bucket string) error {
 
 // PutBucketVersioning sets versioning configuration for a bucket.
 func (m *MetadataStore) PutBucketVersioning(bucket string, status string) error {
+	unlock := m.acquireBucketLock(bucket, true)
+	defer unlock()
 	return m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
@@ -405,6 +491,8 @@ func (m *MetadataStore) PutBucketVersioning(bucket string, status string) error 
 
 // GetBucketVersioning gets versioning configuration for a bucket.
 func (m *MetadataStore) GetBucketVersioning(bucket string) (string, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	var status string
 	err := m.globalDB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
@@ -424,6 +512,8 @@ func (m *MetadataStore) GetBucketVersioning(bucket string) (string, error) {
 
 // SetBucketPublic sets the public status of a bucket.
 func (m *MetadataStore) SetBucketPublic(bucket string, public bool) error {
+	unlock := m.acquireBucketLock(bucket, true)
+	defer unlock()
 	return m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
@@ -445,6 +535,8 @@ func (m *MetadataStore) SetBucketPublic(bucket string, public bool) error {
 
 // IsBucketPublic gets the public status of a bucket.
 func (m *MetadataStore) IsBucketPublic(bucket string) (bool, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	var public bool
 	err := m.globalDB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
@@ -472,6 +564,8 @@ func objectMetaKeyVersion(bucket, key, versionID string) []byte {
 
 // PutObjectMeta stores object metadata (both the latest pointer and the historical record).
 func (m *MetadataStore) PutObjectMeta(info *ObjectInfo) error {
+	unlock := m.acquireBucketLock(info.Bucket, false)
+	defer unlock()
 	db, err := m.getBucketDB(info.Bucket)
 	if err != nil {
 		return err
@@ -512,6 +606,8 @@ func (m *MetadataStore) PutObjectMeta(info *ObjectInfo) error {
 
 // GetObjectMeta retrieves object metadata. If versionID is empty, retrieves the latest version.
 func (m *MetadataStore) GetObjectMeta(bucket, key, versionID string) (*ObjectInfo, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	db, err := m.getBucketDB(bucket)
 	if err != nil {
 		return nil, err
@@ -539,6 +635,8 @@ func (m *MetadataStore) GetObjectMeta(bucket, key, versionID string) (*ObjectInf
 // DeleteObjectMeta removes object metadata. If versionID is specified, deletes only that version.
 // If latest is deleted, updates the latest pointer to the next newest version in history.
 func (m *MetadataStore) DeleteObjectMeta(bucket, key, versionID string) error {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	db, err := m.getBucketDB(bucket)
 	if err != nil {
 		return err
@@ -612,6 +710,8 @@ func (m *MetadataStore) findNextNewestVersion(tx *bolt.Tx, bucket, key, deletedV
 
 // ListAllObjectMetas returns all object metadata for a given bucket (latest versions only).
 func (m *MetadataStore) ListAllObjectMetas(bucket string) ([]ObjectInfo, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	db, err := m.getBucketDB(bucket)
 	if err != nil {
 		return nil, err
@@ -641,6 +741,8 @@ func (m *MetadataStore) ListAllObjectMetas(bucket string) ([]ObjectInfo, error) 
 
 // CountObjectMetas counts latest objects in a bucket.
 func (m *MetadataStore) CountObjectMetas(bucket string) (int, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	db, err := m.getBucketDB(bucket)
 	if err != nil {
 		return 0, err
@@ -664,6 +766,8 @@ func (m *MetadataStore) CountObjectMetas(bucket string) (int, error) {
 
 // DeleteAllObjectMetas removes all object metadata for a given bucket.
 func (m *MetadataStore) DeleteAllObjectMetas(bucket string) error {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	db, err := m.getBucketDB(bucket)
 	if err != nil {
 		return err
@@ -707,6 +811,8 @@ type MultipartMeta struct {
 
 // PutMultipartMeta stores multipart upload metadata.
 func (m *MetadataStore) PutMultipartMeta(meta *MultipartMeta) error {
+	unlock := m.acquireBucketLock(meta.Bucket, false)
+	defer unlock()
 	db, err := m.getBucketDB(meta.Bucket)
 	if err != nil {
 		return err
@@ -723,6 +829,8 @@ func (m *MetadataStore) PutMultipartMeta(meta *MultipartMeta) error {
 
 // GetMultipartMeta retrieves multipart upload metadata.
 func (m *MetadataStore) GetMultipartMeta(bucket, key, uploadID string) (*MultipartMeta, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	db, err := m.getBucketDB(bucket)
 	if err != nil {
 		return nil, err
@@ -744,6 +852,8 @@ func (m *MetadataStore) GetMultipartMeta(bucket, key, uploadID string) (*Multipa
 
 // DeleteMultipartMeta removes multipart upload metadata.
 func (m *MetadataStore) DeleteMultipartMeta(bucket, key, uploadID string) error {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
 	db, err := m.getBucketDB(bucket)
 	if err != nil {
 		return err

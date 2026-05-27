@@ -1,11 +1,12 @@
 package storage
 
 import (
-	"context"
 	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,11 +18,14 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 // setupTestEngine creates a temporary FilesystemEngine for testing.
 func setupTestEngine(t *testing.T) *FilesystemEngine {
 	t.Helper()
+	t.Setenv("OBJECTRA_DISABLE_MIN_PART_SIZE", "true")
 	tmpDir := t.TempDir()
 	engine, err := NewFilesystemEngine(tmpDir)
 	if err != nil {
@@ -1280,6 +1284,166 @@ func TestDoubleDotPrefixedKeys(t *testing.T) {
 	if string(data) != "not-traversal" {
 		t.Errorf("unexpected content: got %q, want 'not-traversal'", string(data))
 	}
+}
+
+func TestDeleteBucketVersionedEmptiness(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "version-delete-bucket"
+	
+	if err := engine.CreateBucket(bucket); err != nil {
+		t.Fatalf("CreateBucket failed: %v", err)
+	}
+
+	if err := engine.SetBucketVersioning(bucket, "Enabled"); err != nil {
+		t.Fatalf("SetBucketVersioning failed: %v", err)
+	}
+
+	// Put version 1
+	info, err := engine.PutObject(context.Background(), bucket, "file.txt", bytes.NewReader([]byte("v1")), 2, "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	// Delete it (creates a delete marker)
+	if err := engine.DeleteObject(bucket, "file.txt", ""); err != nil {
+		t.Fatalf("DeleteObject failed: %v", err)
+	}
+
+	// ListAllObjectMetas will return 1 object because the latest pointer is a delete marker
+	objects, err := engine.metadata.ListAllObjectMetas(bucket)
+	if err != nil {
+		t.Fatalf("ListAllObjectMetas failed: %v", err)
+	}
+	if len(objects) != 1 || !objects[0].IsDeleteMarker {
+		t.Errorf("expected 1 delete marker, got %d", len(objects))
+	}
+
+	// DeleteBucket should fail because it has delete markers and historical version
+	err = engine.DeleteBucket(bucket)
+	if err == nil {
+		t.Fatal("expected error when deleting bucket with version history / delete markers")
+	}
+
+	// Permanently delete version 1 and delete marker to empty it
+	if err := engine.DeleteObject(bucket, "file.txt", info.VersionID); err != nil {
+		t.Fatalf("DeleteObject version failed: %v", err)
+	}
+
+	// Get latest delete marker to delete it
+	// Actually, let's delete the delete marker using its version ID
+	// Let's find it in history
+	db, err := engine.metadata.getBucketDB(bucket)
+	if err == nil {
+		var delMarkerID string
+		db.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket([]byte("objects"))
+			c := b.Cursor()
+			prefix := []byte(bucket + "\x00")
+			for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+				var info ObjectInfo
+				if json.Unmarshal(v, &info) == nil && info.IsDeleteMarker {
+					delMarkerID = info.VersionID
+					break
+				}
+			}
+			return nil
+		})
+		if delMarkerID != "" {
+			engine.DeleteObject(bucket, "file.txt", delMarkerID)
+		}
+	}
+
+	// Now it should be empty and deletable
+	if err := engine.DeleteBucket(bucket); err != nil {
+		t.Fatalf("DeleteBucket failed after cleaning history: %v", err)
+	}
+}
+
+func TestFlatNamespacePathConflicts(t *testing.T) {
+	engine := setupTestEngine(t)
+	bucket := "conflict-bucket"
+	engine.CreateBucket(bucket)
+
+	// Put object 'a'
+	_, err := engine.PutObject(context.Background(), bucket, "a", bytes.NewReader([]byte("file-a")), 6, "text/plain")
+	if err != nil {
+		t.Fatalf("failed to PutObject 'a': %v", err)
+	}
+
+	// Attempting to put object 'a/b' should conflict (directory-file conflict)
+	_, err = engine.PutObject(context.Background(), bucket, "a/b", bytes.NewReader([]byte("file-b")), 6, "text/plain")
+	if err == nil {
+		t.Fatal("expected conflict error when uploading 'a/b' because 'a' is a file")
+	}
+	s3Err, ok := err.(*S3Error)
+	if !ok || s3Err.Code != "InvalidRequest" {
+		t.Errorf("expected S3Error with code 'InvalidRequest', got %v", err)
+	}
+
+	// Clean up 'a'
+	engine.DeleteObject(bucket, "a", "")
+
+	// Put object 'a/b' (now should succeed)
+	_, err = engine.PutObject(context.Background(), bucket, "a/b", bytes.NewReader([]byte("file-b")), 6, "text/plain")
+	if err != nil {
+		t.Fatalf("failed to PutObject 'a/b': %v", err)
+	}
+
+	// Attempting to put object 'a' should conflict (file-directory conflict)
+	_, err = engine.PutObject(context.Background(), bucket, "a", bytes.NewReader([]byte("file-a")), 6, "text/plain")
+	if err == nil {
+		t.Fatal("expected conflict error when uploading 'a' because 'a/b' exists as a sub-path")
+	}
+	s3Err, ok = err.(*S3Error)
+	if !ok || s3Err.Code != "InvalidRequest" {
+		t.Errorf("expected S3Error with code 'InvalidRequest', got %v", err)
+	}
+}
+
+func TestMultipartConstraintsValidation(t *testing.T) {
+	engine := setupTestEngine(t)
+	// Clear the disable flag to force enforcement
+	t.Setenv("OBJECTRA_DISABLE_MIN_PART_SIZE", "false")
+
+	bucket := "multipart-validation-bucket"
+	engine.CreateBucket(bucket)
+
+	upload, err := engine.CreateMultipartUpload(bucket, "large.bin", "application/octet-stream")
+	if err != nil {
+		t.Fatalf("CreateMultipartUpload failed: %v", err)
+	}
+
+	// Part 1: upload 1 MB (too small for intermediate part)
+	p1Data := bytes.Repeat([]byte("A"), 1*1024*1024)
+	p1, err := engine.UploadPart(context.Background(), bucket, "large.bin", upload.UploadID, 1, bytes.NewReader(p1Data), int64(len(p1Data)))
+	if err != nil {
+		t.Fatalf("UploadPart 1 failed: %v", err)
+	}
+
+	// Part 2: upload 1 MB (this will be the last part, which can be small)
+	p2Data := bytes.Repeat([]byte("B"), 1*1024*1024)
+	p2, err := engine.UploadPart(context.Background(), bucket, "large.bin", upload.UploadID, 2, bytes.NewReader(p2Data), int64(len(p2Data)))
+	if err != nil {
+		t.Fatalf("UploadPart 2 failed: %v", err)
+	}
+
+	parts := []CompletePart{
+		{PartNumber: 1, ETag: p1.ETag},
+		{PartNumber: 2, ETag: p2.ETag},
+	}
+
+	// Completing should fail because Part 1 is < 5MB and is not the last part
+	_, err = engine.CompleteMultipartUpload(bucket, "large.bin", upload.UploadID, parts)
+	if err == nil {
+		t.Fatal("expected EntityTooSmall error, got nil")
+	}
+	s3Err, ok := err.(*S3Error)
+	if !ok || s3Err.Code != "EntityTooSmall" {
+		t.Errorf("expected EntityTooSmall, got %v", err)
+	}
+
+	// Clean up / abort
+	engine.AbortMultipartUpload(bucket, "large.bin", upload.UploadID)
 }
 
 

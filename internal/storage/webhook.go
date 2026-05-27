@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -24,12 +25,38 @@ var webhookClient = &http.Client{
 	Timeout: 5 * time.Second,
 }
 
+type webhookTask struct {
+	url     string
+	payload WebhookPayload
+}
+
+var (
+	webhookQueue chan webhookTask
+	webhookOnce  sync.Once
+)
+
+const webhookQueueSize = 5000
+const webhookWorkerCount = 10
+
+func initWebhookDispatcher() {
+	webhookQueue = make(chan webhookTask, webhookQueueSize)
+	for i := 0; i < webhookWorkerCount; i++ {
+		go func() {
+			for task := range webhookQueue {
+				sendWebhookEvent(task.url, task.payload)
+			}
+		}()
+	}
+}
+
 // triggerWebhook parses the configuration and sends the event asynchronously.
 func triggerWebhook(eventName string, info *ObjectInfo) {
 	url := os.Getenv("OBJECTRA_WEBHOOK_URL")
 	if url == "" {
 		return
 	}
+
+	webhookOnce.Do(initWebhookDispatcher)
 
 	payload := WebhookPayload{
 		EventName: "s3:" + eventName,
@@ -41,7 +68,16 @@ func triggerWebhook(eventName string, info *ObjectInfo) {
 		Time:      time.Now().UTC(),
 	}
 
-	go sendWebhookEvent(url, payload)
+	task := webhookTask{
+		url:     url,
+		payload: payload,
+	}
+
+	select {
+	case webhookQueue <- task:
+	default:
+		log.Printf("[Webhook] Warning: webhook queue full, dropping event %s for %s/%s", eventName, info.Bucket, info.Key)
+	}
 }
 
 func sendWebhookEvent(url string, payload WebhookPayload) {

@@ -255,12 +255,12 @@ func (fs *FilesystemEngine) DeleteBucket(name string) error {
 		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
 	}
 
-	// Check if bucket has objects
-	objects, err := fs.metadata.ListAllObjectMetas(name)
+	// Check if bucket has objects, delete markers, or active multipart uploads
+	empty, err := fs.metadata.IsBucketEmpty(name)
 	if err != nil {
 		return err
 	}
-	if len(objects) > 0 {
+	if !empty {
 		return &S3Error{Code: "BucketNotEmpty", Message: "The bucket you tried to delete is not empty"}
 	}
 
@@ -374,6 +374,11 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	objPath, err := fs.objectPathWithVersion(bucket, key, versionID)
 	if err != nil {
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
+	}
+
+	// Check for flat namespace directory/file path conflicts
+	if err := fs.checkPathConflict(objPath, bucket); err != nil {
+		return nil, err
 	}
 
 	// Ensure parent directory exists (for nested keys like "photos/2024/img.jpg")
@@ -1127,6 +1132,37 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		return parts[i].PartNumber < parts[j].PartNumber
 	})
 
+	// Create a map for quick lookup of uploaded parts
+	uploadedParts := make(map[int]PartInfo)
+	for _, p := range meta.Parts {
+		uploadedParts[p.PartNumber] = p
+	}
+
+	disableMinSize := os.Getenv("OBJECTRA_DISABLE_MIN_PART_SIZE") == "true"
+
+	for i, part := range parts {
+		uPart, exists := uploadedParts[part.PartNumber]
+		if !exists {
+			return nil, &S3Error{Code: "InvalidPart", Message: fmt.Sprintf("One or more of the specified parts could not be found. Part %d was not uploaded.", part.PartNumber)}
+		}
+
+		uETag := strings.Trim(uPart.ETag, `"`)
+		reqETag := strings.Trim(part.ETag, `"`)
+		if uETag != reqETag {
+			return nil, &S3Error{Code: "InvalidPart", Message: fmt.Sprintf("ETag mismatch for part %d. Expected %s, got %s.", part.PartNumber, uETag, reqETag)}
+		}
+
+		// Enforce minimum part size of 5MB for all parts except the last one
+		if !disableMinSize && i < len(parts)-1 {
+			if uPart.Size < 5*1024*1024 {
+				return nil, &S3Error{
+					Code:    "EntityTooSmall",
+					Message: fmt.Sprintf("Your proposed upload is smaller than the minimum allowed size. Each part must be at least 5 MB in size, except the last part. Part %d is %d bytes.", part.PartNumber, uPart.Size),
+				}
+			}
+		}
+	}
+
 	versionStatus, err := fs.metadata.GetBucketVersioning(bucket)
 	if err != nil {
 		versionStatus = ""
@@ -1144,6 +1180,12 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 	if err != nil {
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
+
+	// Check for flat namespace directory/file path conflicts
+	if err := fs.checkPathConflict(objPath, bucket); err != nil {
+		return nil, err
+	}
+
 	if err := os.MkdirAll(filepath.Dir(objPath), 0755); err != nil {
 		return nil, fmt.Errorf("failed to create object directory: %w", err)
 	}
@@ -1333,6 +1375,37 @@ func (fs *FilesystemEngine) AbortMultipartUpload(bucket, key, uploadID string) e
 	}
 	return err
 }
+
+func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) error {
+	// Check if the proposed object path is already a directory (file-directory conflict)
+	fi, err := os.Stat(objPath)
+	if err == nil && fi.IsDir() {
+		return &S3Error{Code: "InvalidRequest", Message: "Object key name conflicts with an existing directory path."}
+	}
+
+	// Check if any parent path is a regular file (directory-file conflict)
+	bucketDir := fs.bucketPath(bucket)
+	dir := filepath.Dir(objPath)
+	for dir != bucketDir {
+		checkRel, err := filepath.Rel(bucketDir, dir)
+		if err != nil || !isSafeRelPath(checkRel) {
+			break
+		}
+
+		s, err := os.Stat(dir)
+		if err == nil && !s.IsDir() {
+			return &S3Error{Code: "InvalidRequest", Message: "Parent path conflicts with an existing object."}
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return nil
+}
+
 func (fs *FilesystemEngine) validateBucketName(name string) error {
 	if !IsValidBucketName(name) {
 		return &S3Error{Code: "InvalidBucketName", Message: "The specified bucket is not valid."}

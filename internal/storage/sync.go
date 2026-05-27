@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -47,6 +48,38 @@ func LoadSyncConfig() *SyncConfig {
 	}
 }
 
+type syncTask struct {
+	fs     *FilesystemEngine
+	cfg    *SyncConfig
+	bucket string
+	key    string
+	op     string
+}
+
+var (
+	syncQueue chan syncTask
+	syncOnce  sync.Once
+)
+
+const syncQueueSize = 5000
+const syncWorkerCount = 10
+
+func initSyncDispatcher() {
+	syncQueue = make(chan syncTask, syncQueueSize)
+	for i := 0; i < syncWorkerCount; i++ {
+		go func() {
+			for task := range syncQueue {
+				err := performSync(task.fs, task.cfg, task.bucket, task.key, task.op)
+				if err != nil {
+					log.Printf("[Sync] Mirroring %s failed for %s/%s: %v", task.op, task.bucket, task.key, err)
+				} else {
+					log.Printf("[Sync] Mirroring %s succeeded for %s/%s", task.op, task.bucket, task.key)
+				}
+			}
+		}()
+	}
+}
+
 // MirrorSync schedules an async mirroring operation to the backup S3 bucket.
 func MirrorSync(fs *FilesystemEngine, bucket, key, op string) {
 	cfg := LoadSyncConfig()
@@ -54,14 +87,21 @@ func MirrorSync(fs *FilesystemEngine, bucket, key, op string) {
 		return
 	}
 
-	go func() {
-		err := performSync(fs, cfg, bucket, key, op)
-		if err != nil {
-			log.Printf("[Sync] Mirroring %s failed for %s/%s: %v", op, bucket, key, err)
-		} else {
-			log.Printf("[Sync] Mirroring %s succeeded for %s/%s", op, bucket, key)
-		}
-	}()
+	syncOnce.Do(initSyncDispatcher)
+
+	task := syncTask{
+		fs:     fs,
+		cfg:    cfg,
+		bucket: bucket,
+		key:    key,
+		op:     op,
+	}
+
+	select {
+	case syncQueue <- task:
+	default:
+		log.Printf("[Sync] Warning: sync queue full, dropping sync task %s for %s/%s", op, bucket, key)
+	}
 }
 
 func performSync(fs *FilesystemEngine, cfg *SyncConfig, bucket, key, op string) error {
