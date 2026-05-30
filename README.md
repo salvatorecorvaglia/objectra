@@ -4,6 +4,8 @@
 
 Objectra is a high-performance object storage server written in Go that implements the Amazon S3 API. It's designed for self-hosted environments where you need S3 compatibility without the complexity of a full distributed system.
 
+---
+
 ## Features
 
 - **S3-Compatible API** — Works with existing S3 tools (`aws` CLI, Boto3, any S3 SDK). Supports bucket logging and lifecycle configurations.
@@ -17,6 +19,8 @@ Objectra is a high-performance object storage server written in Go that implemen
 - **Thread-safe Bucket Locking** — Employs a granular, bucket-level read/write locking mechanism to prevent race conditions under concurrent operations.
 - **Structured slog Logging** — Fully integrated structured logs with configurable formats (text or JSON) and severity levels.
 - **Cross-platform Binaries** — Pre-built binaries for Linux, macOS, and Windows via GoReleaser.
+
+---
 
 ## Quick Start
 
@@ -74,6 +78,8 @@ go build -o objectra ./cmd/objectra
 OBJECTRA_DATA_DIR=./data ./objectra
 ```
 
+---
+
 ## Configuration
 
 All settings are configured via environment variables.
@@ -113,6 +119,8 @@ export $(grep -v '^#' .env | xargs) && ./objectra
 | `OBJECTRA_LOG_FORMAT`       | `text`        | Structured log format (`text` or `json`)              |
 
 > **⚠️ Change the default credentials before using in production!**
+
+---
 
 ## Usage
 
@@ -170,6 +178,8 @@ for obj in response.get('Contents', []):
 ### Web Console
 
 Open `http://localhost:9001` in your browser and log in with your access key and secret key.
+
+---
 
 ## S3 API Coverage
 
