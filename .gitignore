@@ -6,25 +6,42 @@ objectra
 *.so
 *.dylib
 
-# Test binary
+# Test binary & output
 *.test
+*.out
+coverage.html
+coverage.txt
 
 # Go build output
 /bin/
 /dist/
+
+# Go workspace
+go.work
+go.work.sum
+
+# Vendor (if not committed)
+# vendor/
 
 # OS files
 .DS_Store
 .DS_Store?
 ._*
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-# IDE files
+# IDE / Editor files
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
+*.sublime-project
+*.sublime-workspace
+.project
+.classpath
+.settings/
 
 # Environment
 .env
@@ -39,6 +56,16 @@ data/
 # Temp files
 *.tmp
 *.bak
+*.log
+
+# GoReleaser
+/dist/
+
+# Docker
+*.pid
+
+# GitHub Actions local runner
+.act
 
 # AI Tools
 .openai/
@@ -53,3 +80,5 @@ claude-settings.json
 .prompt-cache/
 .ai/
 CLAUDE.md
+.gemini/
+GEMINI.md

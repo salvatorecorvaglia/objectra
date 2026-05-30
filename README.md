@@ -10,11 +10,13 @@ Objectra is a high-performance object storage server written in Go that implemen
 - **Built-in Web Console** — Browse buckets and objects, upload/download files, create/delete resources. Enhancements include client-side sorting, multi-selection, and batch deletion.
 - **Multipart Upload** — Upload large files efficiently with chunked multipart uploads and part size validation.
 - **AWS Signature V4** — Standard S3 authentication for secure access.
-- **Docker Ready** — Multi-stage build produces a ~15MB image.
+- **TLS Support** — Optional HTTPS for both the S3 API and web console.
+- **Webhooks & Replication Sync** — Asynchronous event-driven webhooks and replication mirroring via non-blocking dispatcher queues.
+- **Docker Ready** — Multi-stage build produces a ~15MB image. Published to GitHub Container Registry (GHCR).
 - **Streaming I/O & Dispatcher Queues** — Objects are streamed directly to/from disk. Webhook and replication sync events are handled in non-blocking async task queues.
 - **Thread-safe Bucket Locking** — Employs a granular, bucket-level read/write locking mechanism to prevent race conditions under concurrent operations.
 - **Structured slog Logging** — Fully integrated structured logs with configurable formats (text or JSON) and severity levels.
-
+- **Cross-platform Binaries** — Pre-built binaries for Linux, macOS, and Windows via GoReleaser.
 
 ## Quick Start
 
@@ -32,6 +34,21 @@ The server will start with:
 - **Web Console**: `http://localhost:9001`
 - **Default credentials**: Access Key `objectra` / Secret Key `objectra123`
 
+### Docker Pull (GHCR)
+
+Pre-built multi-architecture images are published to the GitHub Container Registry on every release:
+
+```bash
+docker pull ghcr.io/salvatorecorvaglia/objectra:latest
+
+docker run -d \
+  --name objectra \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  -v $(pwd)/data:/data \
+  ghcr.io/salvatorecorvaglia/objectra:latest
+```
+
 ### Docker Build
 
 ```bash
@@ -43,6 +60,10 @@ docker run -d \
   -v $(pwd)/data:/data \
   objectra:latest
 ```
+
+### Download Pre-built Binaries
+
+Pre-built binaries for Linux, macOS, and Windows are available on the [Releases](https://github.com/salvatorecorvaglia/objectra/releases) page. Download the appropriate archive for your platform and extract the `objectra` binary.
 
 ### Build from Source
 
@@ -59,10 +80,10 @@ All settings are configured via environment variables.
 
 ### Environment File Template
 
-A template configuration file [env.example](env.example) is provided in the repository. To configure the server using this template, copy it to `.env` in the root directory:
+A template configuration file [.env.example](.env.example) is provided in the repository. To configure the server using this template, copy it to `.env` in the root directory:
 
 ```bash
-cp env.example .env
+cp .env.example .env
 ```
 
 To run the server locally from source using these variables, you can load them in your shell:
@@ -73,19 +94,23 @@ export $(grep -v '^#' .env | xargs) && ./objectra
 
 ### Environment Variables
 
-| Variable                | Default       | Description                                          |
-| ----------------------- | ------------- | ---------------------------------------------------- |
-| `OBJECTRA_ACCESS_KEY`   | `objectra`    | S3 access key                                        |
-| `OBJECTRA_SECRET_KEY`   | `objectra123` | S3 secret key                                        |
-| `OBJECTRA_DATA_DIR`     | `/data`       | Storage directory                                    |
-| `OBJECTRA_S3_PORT`      | `9000`        | S3 API port                                          |
-| `OBJECTRA_CONSOLE_PORT` | `9001`        | Web console port                                     |
-| `OBJECTRA_REGION`       | `us-east-1`   | Reported S3 region                                   |
-| `OBJECTRA_JWT_SECRET`   | _random_      | JWT signing key used for persistent console sessions |
-| `OBJECTRA_LOGIN_RATE_LIMIT` | `5`        | Max console login requests per minute per IP         |
-| `OBJECTRA_API_RATE_LIMIT`   | `60`       | Max console API requests per minute per IP           |
-| `OBJECTRA_LOG_LEVEL`    | `info`        | Log level severity (`debug`, `info`, `warn`, `error`) |
-| `OBJECTRA_LOG_FORMAT`   | `text`        | Structured log format (`text` or `json`)             |
+| Variable                    | Default       | Description                                           |
+| --------------------------- | ------------- | ----------------------------------------------------- |
+| `OBJECTRA_ACCESS_KEY`       | `objectra`    | S3 access key                                         |
+| `OBJECTRA_SECRET_KEY`       | `objectra123` | S3 secret key                                         |
+| `OBJECTRA_DATA_DIR`         | `/data`       | Storage directory                                     |
+| `OBJECTRA_S3_PORT`          | `9000`        | S3 API port                                           |
+| `OBJECTRA_CONSOLE_PORT`     | `9001`        | Web console port                                      |
+| `OBJECTRA_REGION`           | `us-east-1`   | Reported S3 region                                    |
+| `OBJECTRA_DOMAIN`           | _(empty)_     | Base domain for virtual-host S3 bucket routing        |
+| `OBJECTRA_TLS_ENABLED`      | `false`       | Enable HTTPS/TLS for S3 API and web console           |
+| `OBJECTRA_TLS_CERT`         | _(empty)_     | Path to TLS certificate file                          |
+| `OBJECTRA_TLS_KEY`          | _(empty)_     | Path to TLS private key file                          |
+| `OBJECTRA_JWT_SECRET`       | _random_      | JWT signing key used for persistent console sessions  |
+| `OBJECTRA_LOGIN_RATE_LIMIT` | `5`           | Max console login requests per minute per IP          |
+| `OBJECTRA_API_RATE_LIMIT`   | `60`          | Max console API requests per minute per IP            |
+| `OBJECTRA_LOG_LEVEL`        | `info`        | Log level severity (`debug`, `info`, `warn`, `error`) |
+| `OBJECTRA_LOG_FORMAT`       | `text`        | Structured log format (`text` or `json`)              |
 
 > **⚠️ Change the default credentials before using in production!**
 
@@ -175,16 +200,27 @@ Open `http://localhost:9001` in your browser and log in with your access key and
 
 ```
 objectra/
-├── cmd/objectra/         # Entry point
+├── cmd/objectra/             # Entry point (main.go)
 ├── internal/
-│   ├── auth/             # AWS Signature V4 verification
-│   ├── config/           # Environment-based configuration
-│   ├── console/          # Web console (handlers + embedded frontend)
-│   ├── s3api/            # S3 API handlers
-│   ├── server/           # HTTP server orchestration
-│   └── storage/          # Storage engine (filesystem + bbolt metadata)
+│   ├── auth/                 # AWS Signature V4 verification
+│   ├── config/               # Environment-based configuration
+│   ├── console/              # Web console (handlers + embedded frontend)
+│   ├── s3api/                # S3 API handlers
+│   ├── server/               # HTTP server orchestration
+│   └── storage/
+│       ├── engine.go         # Storage engine interface
+│       ├── filesystem.go     # Filesystem-backed storage
+│       ├── metadata.go       # bbolt metadata store & bucket locking
+│       ├── metrics.go        # Disk usage metrics (platform-specific)
+│       ├── sync.go           # Replication sync dispatcher
+│       └── webhook.go        # Webhook event dispatcher
+├── .github/workflows/
+│   ├── ci.yml                # CI: lint, test, build, Docker
+│   └── release.yml           # Release: GoReleaser + GHCR publish
 ├── Dockerfile
 ├── docker-compose.yml
+├── .golangci.yml             # Linter configuration
+├── .goreleaser.yml           # Release configuration
 └── README.md
 ```
 

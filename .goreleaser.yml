@@ -1,0 +1,86 @@
+# ================================================================
+# GoReleaser configuration for Objectra
+# ================================================================
+# Docs: https://goreleaser.com/customization/
+# ================================================================
+
+version: 2
+
+project_name: objectra
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: objectra
+    main: ./cmd/objectra
+    binary: objectra
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -w -s
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+      - CHANGELOG.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: "🚀 Features"
+      regexp: '^.*?feat(\(.+\))?\!?:.+$'
+      order: 0
+    - title: "🐛 Bug Fixes"
+      regexp: '^.*?fix(\(.+\))?\!?:.+$'
+      order: 1
+    - title: "📚 Documentation"
+      regexp: '^.*?docs(\(.+\))?\!?:.+$'
+      order: 2
+    - title: "🧪 Tests"
+      regexp: '^.*?test(\(.+\))?\!?:.+$'
+      order: 3
+    - title: "🔧 Maintenance"
+      regexp: '^.*?(refactor|perf|build)(\(.+\))?\!?:.+$'
+      order: 4
+    - title: "Other"
+      order: 999
+  filters:
+    exclude:
+      - "^chore:"
+      - "^ci:"
+      - "^style:"
+
+release:
+  github:
+    owner: salvatorecorvaglia
+    name: objectra
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"

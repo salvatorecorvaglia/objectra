@@ -1,0 +1,21 @@
+# ================================================================
+# golangci-lint configuration for Objectra
+# ================================================================
+
+run:
+  timeout: 5m
+  go: "1.23"
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - gosimple
+
+issues:
+  # Show all issues from a linter (don't cap per-linter)
+  max-issues-per-linter: 0
+  max-same-issues: 0

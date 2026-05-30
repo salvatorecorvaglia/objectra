@@ -17,10 +17,14 @@ Please take a moment to review this document to make the contribution process sm
   - [Prerequisites](#prerequisites)
   - [Running Locally](#running-locally)
   - [Running Tests](#running-tests)
+  - [Linting](#linting)
 - [Coding Guidelines](#coding-guidelines)
   - [Go Conventions](#go-conventions)
+  - [Concurrency & Performance](#concurrency--performance)
   - [Aesthetic & Design Principles](#aesthetic--design-principles)
 - [Commit Message Guidelines](#commit-message-guidelines)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [Releasing](#releasing)
 - [Licensing](#licensing)
 
 ---
@@ -62,11 +66,12 @@ We are always looking for ways to make Objectra better! If you have a feature re
    git checkout -b feature/my-cool-feature
    ```
 2. **Implement your changes**. Make sure to write unit tests for any new features or bug fixes.
-3. **Verify** your changes locally (build successfully and pass all tests).
-4. **Format your code**: Run `go fmt ./...` and `go vet ./...`.
-5. **Commit your changes** using clean, descriptive commit messages (see [Commit Message Guidelines](#commit-message-guidelines)).
-6. **Push** your branch to your fork.
-7. **Open a Pull Request** against the `main` branch of Objectra. Provide a clear description of what your PR does, referencing any related issues.
+3. **Verify** your changes locally (build successfully and pass all tests — see [Running Tests](#running-tests) and [Linting](#linting)).
+4. **Commit your changes** using clean, descriptive commit messages (see [Commit Message Guidelines](#commit-message-guidelines)).
+5. **Push** your branch to your fork.
+6. **Open a Pull Request** against the `main` branch of Objectra. Provide a clear description of what your PR does, referencing any related issues.
+
+> **Note**: CI will automatically run lint checks, tests (with race detection), build verification, and a Docker build on your PR. All checks must pass before merging.
 
 ---
 
@@ -77,6 +82,7 @@ We are always looking for ways to make Objectra better! If you have a feature re
 - **Go 1.23+** (installed on your local machine)
 - **Docker & Docker Compose** (optional, for containerized environment tests)
 - **AWS CLI / Boto3** (optional, for S3 API compatibility verification)
+- **golangci-lint** (optional for local linting — CI runs this automatically)
 
 ### Running Locally
 
@@ -91,7 +97,7 @@ We are always looking for ways to make Objectra better! If you have a feature re
    Copy the example environment file:
 
    ```bash
-   cp env.example .env
+   cp .env.example .env
    ```
 
 3. **Build from source**:
@@ -115,9 +121,31 @@ Objectra has unit and integration tests across the codebase. Make sure all tests
 # Run all tests in the workspace
 go test -v ./...
 
-# Run tests with race detector
+# Run tests with race detector (used in CI)
 go test -race ./...
+
+# Run tests with coverage report
+go test -race -coverprofile=coverage.out -covermode=atomic ./...
+go tool cover -html=coverage.out -o coverage.html
 ```
+
+### Linting
+
+The project uses [golangci-lint](https://golangci-lint.run/) with the configuration defined in [.golangci.yml](.golangci.yml). Enabled linters include: `govet`, `staticcheck`, `errcheck`, `ineffassign`, `unused`, and `gosimple`.
+
+```bash
+# Install golangci-lint (if not already installed)
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+# Run the linter
+golangci-lint run
+
+# Or use go fmt and go vet directly
+go fmt ./...
+go vet ./...
+```
+
+> **Tip**: CI runs `golangci-lint` automatically on every push and pull request, so you don't need it installed locally — but running it before pushing helps catch issues early.
 
 ---
 
@@ -151,12 +179,51 @@ We prefer clean and descriptive commit messages following the [Conventional Comm
 - `fix: resolve memory leak in multipart upload`
 - `docs: update setup instructions in README`
 - `test: add tests for path traversal protection`
+- `refactor: simplify metadata store locking`
+- `perf: optimize streaming I/O buffer allocation`
+- `ci: update golangci-lint to latest version`
 
 Keep commit titles short (under 50-60 characters) and use the message body for more detail if necessary.
 
-## 📜 Code of Conduct
+> **Why this matters**: The release workflow uses [GoReleaser](https://goreleaser.com/) which auto-generates changelogs grouped by commit type (`feat`, `fix`, `docs`, `test`, `refactor`, `perf`). Commits prefixed with `chore:`, `ci:`, or `style:` are excluded from release notes.
 
-Please maintain a respectful and professional tone in all communications.
+---
+
+## CI/CD Pipeline
+
+Every push and pull request to `main` triggers the **CI workflow** (`.github/workflows/ci.yml`):
+
+| Job        | Description                                           |
+| ---------- | ----------------------------------------------------- |
+| **Lint**   | Runs `golangci-lint` with the project configuration   |
+| **Test**   | Runs `go test -race` across Go 1.23 and stable        |
+| **Build**  | Compiles a static binary (`CGO_ENABLED=0`)            |
+| **Docker** | Builds the Docker image (no push) to verify the build |
+
+All jobs must pass for a PR to be mergeable.
+
+---
+
+## Releasing
+
+Releases are automated via the **Release workflow** (`.github/workflows/release.yml`), triggered by pushing a semver tag:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+This will:
+
+1. **Run tests** to verify the tagged commit.
+2. **GoReleaser** creates GitHub releases with cross-compiled binaries (Linux, macOS, Windows — amd64/arm64) and auto-generated changelogs.
+3. **Docker Publish** builds and pushes multi-architecture images (`linux/amd64`, `linux/arm64`) to `ghcr.io/salvatorecorvaglia/objectra`.
+
+---
+
+## Licensing
+
+By submitting a contribution, you agree that your work will be licensed under the [MIT License](LICENSE), the same license that covers the project.
 
 ---
 
