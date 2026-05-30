@@ -1718,6 +1718,109 @@ func TestPathTraversalInvalidChars(t *testing.T) {
 	}
 }
 
+func TestGetObjectRangeSeek(t *testing.T) {
+	engine := setupTestEngine(t)
+	engine.CreateBucket("seek-bucket")
+
+	content := []byte("abcdefghijklmnopqrstuvwxyz")
+	ctx := context.Background()
+	_, err := engine.PutObject(ctx, "seek-bucket", "alphabet.txt", bytes.NewReader(content), int64(len(content)), "application/octet-stream")
+	if err != nil {
+		t.Fatalf("failed to put object: %v", err)
+	}
+
+	reader, _, err := engine.GetObject(ctx, "seek-bucket", "alphabet.txt", "")
+	if err != nil {
+		t.Fatalf("failed to get object: %v", err)
+	}
+	defer reader.Close()
+
+	seeker, ok := reader.(io.ReadSeeker)
+	if !ok {
+		t.Fatal("expected reader to implement io.ReadSeeker")
+	}
+
+	// Seek to 10
+	pos, err := seeker.Seek(10, io.SeekStart)
+	if err != nil {
+		t.Fatalf("failed to seek: %v", err)
+	}
+	if pos != 10 {
+		t.Errorf("expected position 10, got %d", pos)
+	}
+
+	// Read 5 bytes
+	buf := make([]byte, 5)
+	n, err := reader.Read(buf)
+	if err != nil {
+		t.Fatalf("failed to read: %v", err)
+	}
+	if n != 5 {
+		t.Errorf("expected to read 5 bytes, got %d", n)
+	}
+	if string(buf) != "klmno" {
+		t.Errorf("expected 'klmno', got %q", string(buf))
+	}
+
+	// Seek forward 2 bytes from current
+	pos, err = seeker.Seek(2, io.SeekCurrent)
+	if err != nil {
+		t.Fatalf("failed to seek: %v", err)
+	}
+	if pos != 17 { // 10 + 5 + 2
+		t.Errorf("expected position 17, got %d", pos)
+	}
+
+	// Read 3 bytes
+	buf = make([]byte, 3)
+	n, err = reader.Read(buf)
+	if err != nil {
+		t.Fatalf("failed to read: %v", err)
+	}
+	if string(buf) != "rst" {
+		t.Errorf("expected 'rst', got %q", string(buf))
+	}
+}
+
+func TestGracefulShutdown(t *testing.T) {
+	engine := setupTestEngine(t)
+	engine.CreateBucket("shutdown-bucket")
+
+	// Set webhook URL and sync endpoint env variables to force initialization of dispatchers
+	t.Setenv("OBJECTRA_WEBHOOK_URL", "http://localhost:12345/webhook")
+	t.Setenv("OBJECTRA_SYNC_ENDPOINT", "http://localhost:12345")
+	t.Setenv("OBJECTRA_SYNC_BUCKET", "backup-bucket")
+
+	ctx := context.Background()
+	info, err := engine.PutObject(ctx, "shutdown-bucket", "test.txt", strings.NewReader("content"), 7, "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	// Triggering activities will initialize the dispatchers and worker goroutines
+	engine.triggerWebhook("Put", info)
+	engine.MirrorSync("shutdown-bucket", "test.txt", "PUT")
+
+	// Let's call Close which will stop the dispatchers
+	err = engine.Close()
+	if err != nil {
+		t.Fatalf("engine.Close failed: %v", err)
+	}
+
+	// Verify that the shutdown flags are set to 1
+	if atomic.LoadInt32(&engine.isSyncShuttingDown) != 1 {
+		t.Error("expected isSyncShuttingDown to be 1")
+	}
+	if atomic.LoadInt32(&engine.isWebhookShuttingDown) != 1 {
+		t.Error("expected isWebhookShuttingDown to be 1")
+	}
+
+	// Try triggering again - it should be ignored or warning should be printed without panic/block
+	engine.triggerWebhook("Put", info)
+	engine.MirrorSync("shutdown-bucket", "test.txt", "PUT")
+}
+
+
 
 
 

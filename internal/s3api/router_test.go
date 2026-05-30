@@ -228,6 +228,27 @@ func TestS3API_Integration(t *testing.T) {
 		}
 	})
 
+	// 3b. Get Object Range
+	t.Run("GetObjectRange", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/testbucket/hello.txt", nil)
+		req.Host = "localhost:9000"
+		req.Header.Set("Range", "bytes=6-10")
+		signTestRequest(req, accessKey, secretKey, "us-east-1", "s3", time.Now().UTC(), nil)
+
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusPartialContent {
+			t.Errorf("expected status 206, got %d, body: %s", rec.Code, rec.Body.String())
+		}
+		if rec.Body.String() != "world" {
+			t.Errorf("expected body 'world', got %q", rec.Body.String())
+		}
+		if rec.Header().Get("Content-Range") != "bytes 6-10/11" {
+			t.Errorf("expected Content-Range 'bytes 6-10/11', got %q", rec.Header().Get("Content-Range"))
+		}
+	})
+
 	// 4. Delete Object
 	t.Run("DeleteObject", func(t *testing.T) {
 		req := httptest.NewRequest("DELETE", "/testbucket/hello.txt", nil)

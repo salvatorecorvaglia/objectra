@@ -3,12 +3,15 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/salvatorecorvaglia/objectra/internal/auth"
@@ -33,6 +36,26 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
+
+	// Setup persistent JWT secret for Console session tracking
+	jwtSecretEnv := os.Getenv("OBJECTRA_JWT_SECRET")
+	var jwtSecret []byte
+	if jwtSecretEnv != "" {
+		jwtSecret = []byte(jwtSecretEnv)
+	} else {
+		storedSecret, err := engine.GetSystemValue("jwt_secret")
+		if err == nil && storedSecret != "" {
+			jwtSecret, _ = hex.DecodeString(storedSecret)
+		}
+		if len(jwtSecret) == 0 {
+			jwtSecret = make([]byte, 32)
+			if _, err := rand.Read(jwtSecret); err != nil {
+				return nil, fmt.Errorf("failed to generate random JWT secret: %w", err)
+			}
+			_ = engine.PutSystemValue("jwt_secret", hex.EncodeToString(jwtSecret))
+		}
+	}
+	console.SetJWTSecret(jwtSecret)
 
 	creds := auth.NewCredentials(cfg.AccessKey, cfg.SecretKey)
 

@@ -17,13 +17,12 @@ var jwtSecret []byte
 func init() {
 	if secret := os.Getenv("OBJECTRA_JWT_SECRET"); secret != "" {
 		jwtSecret = []byte(secret)
-		return
 	}
+}
 
-	jwtSecret = make([]byte, 32)
-	if _, err := rand.Read(jwtSecret); err != nil {
-		panic("failed to generate JWT secret: " + err.Error())
-	}
+// SetJWTSecret sets the console JWT token signing key.
+func SetJWTSecret(secret []byte) {
+	jwtSecret = secret
 }
 
 // GenerateToken creates a JWT token for authenticated console sessions.

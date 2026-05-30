@@ -32,6 +32,20 @@ type FilesystemEngine struct {
 	metadata *MetadataStore
 	mu       sync.Mutex
 	locks    map[string]*uploadLock
+
+	// Sync replication queue
+	syncQueue          chan syncTask
+	syncOnce           sync.Once
+	syncWG             sync.WaitGroup
+	isSyncShuttingDown int32
+	syncMu             sync.Mutex
+
+	// Webhook queue
+	webhookQueue          chan webhookTask
+	webhookOnce           sync.Once
+	webhookWG             sync.WaitGroup
+	isWebhookShuttingDown int32
+	webhookMu             sync.Mutex
 }
 
 type uploadLock struct {
@@ -63,9 +77,19 @@ func NewFilesystemEngine(dataDir string) (*FilesystemEngine, error) {
 	}, nil
 }
 
-// Close closes the underlying metadata store.
+// Close closes the underlying metadata store and stops workers.
 func (fs *FilesystemEngine) Close() error {
+	fs.StopSyncDispatcher()
+	fs.StopWebhookDispatcher()
 	return fs.metadata.Close()
+}
+
+func (fs *FilesystemEngine) GetSystemValue(key string) (string, error) {
+	return fs.metadata.GetSystemValue(key)
+}
+
+func (fs *FilesystemEngine) PutSystemValue(key, val string) error {
+	return fs.metadata.PutSystemValue(key, val)
 }
 
 func (fs *FilesystemEngine) bucketPath(name string) string {
@@ -498,9 +522,9 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 
 	GlobalMetrics.AddUploaded(uint64(written))
 
-	triggerWebhook("ObjectCreated:Put", info)
+	fs.triggerWebhook("ObjectCreated:Put", info)
 
-	MirrorSync(fs, bucket, key, "PUT")
+	fs.MirrorSync(bucket, key, "PUT")
 
 	return info, nil
 }
@@ -563,6 +587,12 @@ func (fs *FilesystemEngine) GetObject(ctx context.Context, bucket, key, versionI
 	}
 
 	rc := &readCloserWrapper{Reader: reader, closers: closers}
+	if rs, ok := reader.(io.ReadSeeker); ok {
+		return &metricsReadSeekCloser{
+			metricsReadCloser: metricsReadCloser{ReadCloser: rc},
+			seeker:            rs,
+		}, info, nil
+	}
 	return &metricsReadCloser{ReadCloser: rc}, info, nil
 }
 
@@ -658,8 +688,8 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 			Key:       key,
 			VersionID: versionID,
 		}
-		triggerWebhook("ObjectRemoved:Delete", info)
-		MirrorSync(fs, bucket, key, "DELETE")
+		fs.triggerWebhook("ObjectRemoved:Delete", info)
+		fs.MirrorSync(bucket, key, "DELETE")
 		return nil
 	}
 
@@ -692,8 +722,8 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 			return err
 		}
 
-		triggerWebhook("ObjectRemoved:DeleteMarkerCreated", info)
-		MirrorSync(fs, bucket, key, "DELETE")
+		fs.triggerWebhook("ObjectRemoved:DeleteMarkerCreated", info)
+		fs.MirrorSync(bucket, key, "DELETE")
 		return nil
 	}
 
@@ -714,8 +744,8 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 		return err
 	}
 
-	triggerWebhook("ObjectRemoved:Delete", info)
-	MirrorSync(fs, bucket, key, "DELETE")
+	fs.triggerWebhook("ObjectRemoved:Delete", info)
+	fs.MirrorSync(bucket, key, "DELETE")
 	return nil
 }
 
@@ -1355,9 +1385,9 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 
 	GlobalMetrics.DecActiveMultiparts()
 
-	triggerWebhook("ObjectCreated:CompleteMultipartUpload", info)
+	fs.triggerWebhook("ObjectCreated:CompleteMultipartUpload", info)
 
-	MirrorSync(fs, bucket, key, "PUT")
+	fs.MirrorSync(bucket, key, "PUT")
 
 	return info, nil
 }
@@ -1558,6 +1588,15 @@ func (m *metricsReadCloser) Read(p []byte) (int, error) {
 	return n, err
 }
 
+type metricsReadSeekCloser struct {
+	metricsReadCloser
+	seeker io.ReadSeeker
+}
+
+func (m *metricsReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
+	return m.seeker.Seek(offset, whence)
+}
+
 // DataDir returns the path to the storage data directory.
 func (fs *FilesystemEngine) DataDir() string {
 	return fs.dataDir
@@ -1684,6 +1723,21 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 					}
 					// Check if expired
 					if now.Sub(m.LastModified) > cutoff {
+						if m.IsDeleteMarker {
+							// If versioning is enabled and the only version left is a delete marker, expire it fully
+							hasNoncurrent := false
+							for _, v := range versions {
+								if v.Key == m.Key && v.VersionID != m.VersionID {
+									hasNoncurrent = true
+									break
+								}
+							}
+							if !hasNoncurrent {
+								slog.Info("[Storage] Removing expired object delete marker", "key", m.Key, "bucket", bInfo.Name, "versionID", m.VersionID)
+								_ = fs.DeleteObject(bInfo.Name, m.Key, m.VersionID)
+							}
+							continue
+						}
 						slog.Info("[Storage] Expiring current version of key in bucket", "key", m.Key, "bucket", bInfo.Name, "age", now.Sub(m.LastModified), "cutoff", cutoff)
 						_ = fs.DeleteObject(bInfo.Name, m.Key, "")
 					}

@@ -450,6 +450,9 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request, bucket st
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse upload"})
 		return
 	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
 
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -561,6 +564,9 @@ func (h *Handler) uploadPart(w http.ResponseWriter, r *http.Request, bucket stri
 	if err := r.ParseMultipartForm(10 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse upload"})
 		return
+	}
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
 	}
 
 	uploadID := r.FormValue("uploadId")

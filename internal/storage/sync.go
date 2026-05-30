@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bufio"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -13,7 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,19 +57,18 @@ type syncTask struct {
 	op     string
 }
 
-var (
-	syncQueue chan syncTask
-	syncOnce  sync.Once
-)
+// Globals deleted; moved to FilesystemEngine struct.
 
 const syncQueueSize = 5000
 const syncWorkerCount = 10
 
-func initSyncDispatcher() {
-	syncQueue = make(chan syncTask, syncQueueSize)
+func (fs *FilesystemEngine) initSyncDispatcher() {
+	fs.syncQueue = make(chan syncTask, syncQueueSize)
 	for i := 0; i < syncWorkerCount; i++ {
+		fs.syncWG.Add(1)
 		go func() {
-			for task := range syncQueue {
+			defer fs.syncWG.Done()
+			for task := range fs.syncQueue {
 				err := performSync(task.fs, task.cfg, task.bucket, task.key, task.op)
 				if err != nil {
 					slog.Error("[Sync] Mirroring failed", "op", task.op, "bucket", task.bucket, "key", task.key, "error", err)
@@ -80,14 +80,39 @@ func initSyncDispatcher() {
 	}
 }
 
+// StopSyncDispatcher halts replication queue processing, waits for pending transfers, and shuts down workers.
+func (fs *FilesystemEngine) StopSyncDispatcher() {
+	fs.syncMu.Lock()
+	defer fs.syncMu.Unlock()
+
+	if atomic.SwapInt32(&fs.isSyncShuttingDown, 1) == 1 {
+		return
+	}
+
+	if fs.syncQueue != nil {
+		close(fs.syncQueue)
+		fs.syncWG.Wait()
+	}
+}
+
 // MirrorSync schedules an async mirroring operation to the backup S3 bucket.
-func MirrorSync(fs *FilesystemEngine, bucket, key, op string) {
+func (fs *FilesystemEngine) MirrorSync(bucket, key, op string) {
 	cfg := LoadSyncConfig()
 	if cfg == nil {
 		return
 	}
 
-	syncOnce.Do(initSyncDispatcher)
+	fs.syncMu.Lock()
+	defer fs.syncMu.Unlock()
+
+	if atomic.LoadInt32(&fs.isSyncShuttingDown) == 1 {
+		slog.Warn("[Sync] Sync dispatcher shutting down, ignoring replication request", "op", op, "bucket", bucket, "key", key)
+		return
+	}
+
+	fs.syncOnce.Do(func() {
+		fs.initSyncDispatcher()
+	})
 
 	task := syncTask{
 		fs:     fs,
@@ -98,7 +123,7 @@ func MirrorSync(fs *FilesystemEngine, bucket, key, op string) {
 	}
 
 	select {
-	case syncQueue <- task:
+	case fs.syncQueue <- task:
 	default:
 		slog.Warn("[Sync] Sync queue full, dropping sync task", "op", op, "bucket", bucket, "key", key)
 	}
@@ -130,7 +155,12 @@ func performSync(fs *FilesystemEngine, cfg *SyncConfig, bucket, key, op string) 
 		}
 		defer reader.Close()
 
-		req, err = http.NewRequest("PUT", destURL, reader)
+		bufferedReader := &bufferedReadCloser{
+			Reader: bufio.NewReaderSize(reader, 64*1024),
+			Closer: reader,
+		}
+
+		req, err = http.NewRequest("PUT", destURL, bufferedReader)
 		if err != nil {
 			return err
 		}
@@ -161,6 +191,11 @@ func performSync(fs *FilesystemEngine, cfg *SyncConfig, bucket, key, op string) 
 	}
 
 	return nil
+}
+
+type bufferedReadCloser struct {
+	*bufio.Reader
+	io.Closer
 }
 
 func hmacSHA256(key []byte, data []byte) []byte {

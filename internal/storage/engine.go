@@ -205,5 +205,7 @@ type Engine interface {
 	GetBucketLogging(bucket string) (*BucketLoggingStatus, error)
 	CleanExpiredObjects() error
 	CleanExpiredMultipartUploads(cutoff time.Duration) error
+	GetSystemValue(key string) (string, error)
+	PutSystemValue(key, val string) error
 	Close() error
 }

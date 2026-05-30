@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -30,33 +30,57 @@ type webhookTask struct {
 	payload WebhookPayload
 }
 
-var (
-	webhookQueue chan webhookTask
-	webhookOnce  sync.Once
-)
+// Globals deleted; moved to FilesystemEngine struct.
 
 const webhookQueueSize = 5000
 const webhookWorkerCount = 10
 
-func initWebhookDispatcher() {
-	webhookQueue = make(chan webhookTask, webhookQueueSize)
+func (fs *FilesystemEngine) initWebhookDispatcher() {
+	fs.webhookQueue = make(chan webhookTask, webhookQueueSize)
 	for i := 0; i < webhookWorkerCount; i++ {
+		fs.webhookWG.Add(1)
 		go func() {
-			for task := range webhookQueue {
+			defer fs.webhookWG.Done()
+			for task := range fs.webhookQueue {
 				sendWebhookEvent(task.url, task.payload)
 			}
 		}()
 	}
 }
 
+// StopWebhookDispatcher halts webhook processing, flushes remaining notifications, and waits for workers to terminate.
+func (fs *FilesystemEngine) StopWebhookDispatcher() {
+	fs.webhookMu.Lock()
+	defer fs.webhookMu.Unlock()
+
+	if atomic.SwapInt32(&fs.isWebhookShuttingDown, 1) == 1 {
+		return
+	}
+
+	if fs.webhookQueue != nil {
+		close(fs.webhookQueue)
+		fs.webhookWG.Wait()
+	}
+}
+
 // triggerWebhook parses the configuration and sends the event asynchronously.
-func triggerWebhook(eventName string, info *ObjectInfo) {
+func (fs *FilesystemEngine) triggerWebhook(eventName string, info *ObjectInfo) {
 	url := os.Getenv("OBJECTRA_WEBHOOK_URL")
 	if url == "" {
 		return
 	}
 
-	webhookOnce.Do(initWebhookDispatcher)
+	fs.webhookMu.Lock()
+	defer fs.webhookMu.Unlock()
+
+	if atomic.LoadInt32(&fs.isWebhookShuttingDown) == 1 {
+		slog.Warn("[Webhook] Webhook dispatcher shutting down, ignoring event", "event", eventName, "bucket", info.Bucket, "key", info.Key)
+		return
+	}
+
+	fs.webhookOnce.Do(func() {
+		fs.initWebhookDispatcher()
+	})
 
 	payload := WebhookPayload{
 		EventName: "s3:" + eventName,
@@ -74,7 +98,7 @@ func triggerWebhook(eventName string, info *ObjectInfo) {
 	}
 
 	select {
-	case webhookQueue <- task:
+	case fs.webhookQueue <- task:
 	default:
 		slog.Warn("[Webhook] Webhook queue full, dropping event", "event", eventName, "bucket", info.Bucket, "key", info.Key)
 	}

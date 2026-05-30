@@ -26,11 +26,15 @@ type MetadataStore struct {
 	globalDB      *bolt.DB
 	activeBuckets map[string]*bolt.DB
 	mu            sync.RWMutex
-	bucketLocks   map[string]*bucketLock
-	locksMu       sync.Mutex
+	bucketLocks   [32]*bucketLockSegment
 	dataDir       string
 	initLocks     map[string]*sync.Mutex
 	initMu        sync.Mutex
+}
+
+type bucketLockSegment struct {
+	mu    sync.Mutex
+	locks map[string]*bucketLock
 }
 
 type bucketLock struct {
@@ -38,18 +42,31 @@ type bucketLock struct {
 	refCount int
 }
 
-func (m *MetadataStore) acquireBucketLock(bucket string, write bool) func() {
-	m.locksMu.Lock()
-	if m.bucketLocks == nil {
-		m.bucketLocks = make(map[string]*bucketLock)
+func fnv32(key string) uint32 {
+	hash := uint32(2166136261)
+	const prime = 16777619
+	for i := 0; i < len(key); i++ {
+		hash ^= uint32(key[i])
+		hash *= prime
 	}
-	l, exists := m.bucketLocks[bucket]
+	return hash
+}
+
+func (m *MetadataStore) getSegment(bucket string) *bucketLockSegment {
+	idx := fnv32(bucket) % 32
+	return m.bucketLocks[idx]
+}
+
+func (m *MetadataStore) acquireBucketLock(bucket string, write bool) func() {
+	seg := m.getSegment(bucket)
+	seg.mu.Lock()
+	l, exists := seg.locks[bucket]
 	if !exists {
 		l = &bucketLock{}
-		m.bucketLocks[bucket] = l
+		seg.locks[bucket] = l
 	}
 	l.refCount++
-	m.locksMu.Unlock()
+	seg.mu.Unlock()
 
 	if write {
 		l.Lock()
@@ -64,12 +81,12 @@ func (m *MetadataStore) acquireBucketLock(bucket string, write bool) func() {
 			l.RUnlock()
 		}
 
-		m.locksMu.Lock()
+		seg.mu.Lock()
 		l.refCount--
 		if l.refCount == 0 {
-			delete(m.bucketLocks, bucket)
+			delete(seg.locks, bucket)
 		}
-		m.locksMu.Unlock()
+		seg.mu.Unlock()
 	}
 }
 
@@ -98,8 +115,12 @@ func NewMetadataStore(dataDir string) (*MetadataStore, error) {
 	m := &MetadataStore{
 		globalDB:      globalDB,
 		activeBuckets: make(map[string]*bolt.DB),
-		bucketLocks:   make(map[string]*bucketLock),
 		dataDir:       dataDir,
+	}
+	for i := 0; i < 32; i++ {
+		m.bucketLocks[i] = &bucketLockSegment{
+			locks: make(map[string]*bucketLock),
+		}
 	}
 
 	if err := m.migrateIfNecessary(); err != nil {
@@ -1066,5 +1087,27 @@ func (m *MetadataStore) PutObjectMetaRaw(info *ObjectInfo) error {
 			return b.Put(objectMetaKey(info.Bucket, info.Key), data)
 		}
 		return nil
+	})
+}
+
+// GetSystemValue retrieves a system configuration value from the central database.
+func (m *MetadataStore) GetSystemValue(key string) (string, error) {
+	var val string
+	err := m.globalDB.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		data := b.Get([]byte("_sys_" + key))
+		if data != nil {
+			val = string(data)
+		}
+		return nil
+	})
+	return val, err
+}
+
+// PutSystemValue stores a system configuration value in the central database.
+func (m *MetadataStore) PutSystemValue(key, val string) error {
+	return m.globalDB.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketsBucket)
+		return b.Put([]byte("_sys_" + key), []byte(val))
 	})
 }
