@@ -2,7 +2,6 @@
 # golangci-lint configuration for Objectra
 # ================================================================
 
-version: 1
 
 run:
   timeout: 5m

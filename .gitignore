@@ -1,5 +1,5 @@
 # Binaries
-objectra
+/objectra
 *.exe
 *.exe~
 *.dll
