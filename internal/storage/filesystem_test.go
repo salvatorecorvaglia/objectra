@@ -1113,11 +1113,14 @@ func TestPrometheusMetrics(t *testing.T) {
 
 func TestOutboundMirroring(t *testing.T) {
 	// Setup a mock S3 receiver server
+	var mu sync.Mutex
 	var receivedPut, receivedDelete bool
 	var receivedPath string
 	var authHeader string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
 		authHeader = r.Header.Get("Authorization")
 		receivedPath = r.URL.Path
 		switch r.Method {
@@ -1161,25 +1164,36 @@ func TestOutboundMirroring(t *testing.T) {
 
 	// Wait up to 2 seconds for async sync execution
 	for i := 0; i < 20; i++ {
-		if receivedPut {
+		mu.Lock()
+		put := receivedPut
+		mu.Unlock()
+		if put {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if !receivedPut {
+	mu.Lock()
+	put := receivedPut
+	path := receivedPath
+	auth := authHeader
+	mu.Unlock()
+
+	if !put {
 		t.Error("expected mock server to receive PUT request for replication")
 	}
-	if receivedPath != "/backup-bucket/sync.txt" {
-		t.Errorf("expected path /backup-bucket/sync.txt, got %q", receivedPath)
+	if path != "/backup-bucket/sync.txt" {
+		t.Errorf("expected path /backup-bucket/sync.txt, got %q", path)
 	}
-	if !strings.Contains(authHeader, "AWS4-HMAC-SHA256") {
-		t.Errorf("expected Authorization header to contain AWS4-HMAC-SHA256, got %q", authHeader)
+	if !strings.Contains(auth, "AWS4-HMAC-SHA256") {
+		t.Errorf("expected Authorization header to contain AWS4-HMAC-SHA256, got %q", auth)
 	}
 
 	// Reset mock states
+	mu.Lock()
 	receivedPath = ""
 	authHeader = ""
+	mu.Unlock()
 
 	// 2. Perform DeleteObject and check async mirroring
 	err = engine.DeleteObject(bucket, "sync.txt", "")
@@ -1189,17 +1203,25 @@ func TestOutboundMirroring(t *testing.T) {
 
 	// Wait up to 2 seconds for async sync execution
 	for i := 0; i < 20; i++ {
-		if receivedDelete {
+		mu.Lock()
+		del := receivedDelete
+		mu.Unlock()
+		if del {
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	if !receivedDelete {
+	mu.Lock()
+	del := receivedDelete
+	pathDel := receivedPath
+	mu.Unlock()
+
+	if !del {
 		t.Error("expected mock server to receive DELETE request for replication")
 	}
-	if receivedPath != "/backup-bucket/sync.txt" {
-		t.Errorf("expected path /backup-bucket/sync.txt, got %q", receivedPath)
+	if pathDel != "/backup-bucket/sync.txt" {
+		t.Errorf("expected path /backup-bucket/sync.txt, got %q", pathDel)
 	}
 }
 

@@ -2,9 +2,10 @@
 # golangci-lint configuration for Objectra
 # ================================================================
 
+version: 1
+
 run:
   timeout: 5m
-  go: "1.23"
 
 linters:
   enable:

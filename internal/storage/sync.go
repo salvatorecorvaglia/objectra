@@ -200,7 +200,7 @@ type bufferedReadCloser struct {
 
 func hmacSHA256(key []byte, data []byte) []byte {
 	h := hmac.New(sha256.New, key)
-	h.Write(data)
+	_, _ = h.Write(data)
 	return h.Sum(nil)
 }
 

@@ -19,6 +19,13 @@ import (
 	"github.com/salvatorecorvaglia/objectra/internal/storage"
 )
 
+const (
+	errMethodNotAllowed = "method not allowed"
+	errInvalidRequest   = "invalid request"
+	contentTypeHeader   = "Content-Type"
+	errMissingKey       = "missing key parameter"
+)
+
 //go:embed static/*
 var staticFiles embed.FS
 
@@ -181,7 +188,7 @@ func (h *Handler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 // handleLogin handles POST /api/login.
 func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": errMethodNotAllowed})
 		return
 	}
 
@@ -189,9 +196,8 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		AccessKey string `json:"accessKey"`
 		SecretKey string `json:"secretKey"`
 	}
-
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errInvalidRequest})
 		return
 	}
 
@@ -353,7 +359,7 @@ func (h *Handler) handleSetBucketPublic(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"bucket": bucket, "public": public})
 }
 
-func (h *Handler) handleGetBucketPublic(w http.ResponseWriter, r *http.Request, bucket string) {
+func (h *Handler) handleGetBucketPublic(w http.ResponseWriter, _ *http.Request, bucket string) {
 	public, err := h.engine.IsBucketPublic(bucket)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -451,7 +457,7 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request, bucket st
 		return
 	}
 	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
 	}
 
 	file, header, err := r.FormFile("file")
@@ -467,7 +473,7 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request, bucket st
 		key = header.Filename
 	}
 
-	contentType := header.Header.Get("Content-Type")
+	contentType := header.Header.Get(contentTypeHeader)
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
@@ -489,7 +495,7 @@ func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request, bucket st
 func (h *Handler) downloadObject(w http.ResponseWriter, r *http.Request, bucket string) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing key parameter"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMissingKey})
 		return
 	}
 
@@ -504,16 +510,16 @@ func (h *Handler) downloadObject(w http.ResponseWriter, r *http.Request, bucket 
 	parts := strings.Split(key, "/")
 	filename := parts[len(parts)-1]
 
-	w.Header().Set("Content-Type", info.ContentType)
+	w.Header().Set(contentTypeHeader, info.ContentType)
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	_, _ = io.Copy(w, reader)
 }
 
 func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request, bucket string) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing key parameter"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMissingKey})
 		return
 	}
 
@@ -526,9 +532,9 @@ func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request, bucket st
 }
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set(contentTypeHeader, "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 func (h *Handler) initiateMultipart(w http.ResponseWriter, r *http.Request, bucket string) {
@@ -537,7 +543,7 @@ func (h *Handler) initiateMultipart(w http.ResponseWriter, r *http.Request, buck
 		ContentType string `json:"contentType"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errInvalidRequest})
 		return
 	}
 	if req.Key == "" {
@@ -566,7 +572,7 @@ func (h *Handler) uploadPart(w http.ResponseWriter, r *http.Request, bucket stri
 		return
 	}
 	if r.MultipartForm != nil {
-		defer r.MultipartForm.RemoveAll()
+		defer func() { _ = r.MultipartForm.RemoveAll() }()
 	}
 
 	uploadID := r.FormValue("uploadId")
@@ -590,7 +596,7 @@ func (h *Handler) uploadPart(w http.ResponseWriter, r *http.Request, bucket stri
 	var size int64
 	if ok {
 		size, _ = seeker.Seek(0, io.SeekEnd)
-		seeker.Seek(0, io.SeekStart)
+		_, _ = seeker.Seek(0, io.SeekStart)
 	} else {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid file stream"})
 		return
@@ -618,7 +624,7 @@ func (h *Handler) completeMultipart(w http.ResponseWriter, r *http.Request, buck
 		} `json:"parts"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errInvalidRequest})
 		return
 	}
 
@@ -649,7 +655,7 @@ func (h *Handler) abortMultipart(w http.ResponseWriter, r *http.Request, bucket 
 		Key      string `json:"key"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errInvalidRequest})
 		return
 	}
 
@@ -665,7 +671,7 @@ func (h *Handler) abortMultipart(w http.ResponseWriter, r *http.Request, bucket 
 func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bucket string) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing key parameter"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMissingKey})
 		return
 	}
 
@@ -718,12 +724,12 @@ func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	metricsStr := storage.GlobalMetrics.FormatPrometheus(dataDir)
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	w.Header().Set(contentTypeHeader, "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(metricsStr))
+	_, _ = w.Write([]byte(metricsStr))
 }
 
-func (h *Handler) handleGetLifecycle(w http.ResponseWriter, r *http.Request, bucket string) {
+func (h *Handler) handleGetLifecycle(w http.ResponseWriter, _ *http.Request, bucket string) {
 	lc, err := h.engine.GetBucketLifecycle(bucket)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
@@ -746,7 +752,7 @@ func (h *Handler) handlePutLifecycle(w http.ResponseWriter, r *http.Request, buc
 	writeJSON(w, http.StatusOK, map[string]string{"status": "lifecycle configuration updated"})
 }
 
-func (h *Handler) handleDeleteLifecycle(w http.ResponseWriter, r *http.Request, bucket string) {
+func (h *Handler) handleDeleteLifecycle(w http.ResponseWriter, _ *http.Request, bucket string) {
 	if err := h.engine.DeleteBucketLifecycle(bucket); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return

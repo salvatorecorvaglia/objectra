@@ -13,9 +13,17 @@ import (
 	"github.com/salvatorecorvaglia/objectra/internal/storage"
 )
 
+const (
+	amzSSECAlgorithmHeader = "x-amz-server-side-encryption-customer-algorithm"
+	amzSSECKeyMD5Header    = "x-amz-server-side-encryption-customer-key-MD5"
+	contentTypeHeader      = "Content-Type"
+	amzVersionIDHeader     = "x-amz-version-id"
+	amzDeleteMarkerHeader  = "x-amz-delete-marker"
+)
+
 // extractSSECParams extracts SSE-C headers from the HTTP request.
 func extractSSECParams(r *http.Request) (*storage.SSECParams, error) {
-	algo := r.Header.Get("x-amz-server-side-encryption-customer-algorithm")
+	algo := r.Header.Get(amzSSECAlgorithmHeader)
 	if algo == "" {
 		return nil, nil
 	}
@@ -30,7 +38,7 @@ func extractSSECParams(r *http.Request) (*storage.SSECParams, error) {
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("InvalidEncryptionKey: The encryption key is invalid")
 	}
-	keyMD5B64 := r.Header.Get("x-amz-server-side-encryption-customer-key-MD5")
+	keyMD5B64 := r.Header.Get(amzSSECKeyMD5Header)
 	if keyMD5B64 == "" {
 		return nil, fmt.Errorf("MissingEncryptionKeyMD5: The encryption key MD5 is missing")
 	}
@@ -48,7 +56,7 @@ func extractSSECParams(r *http.Request) (*storage.SSECParams, error) {
 
 // handlePutObject handles PUT /<bucket>/<key> (PutObject).
 func (rt *Router) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
-	contentType := r.Header.Get("Content-Type")
+	contentType := r.Header.Get(contentTypeHeader)
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
@@ -74,11 +82,11 @@ func (rt *Router) handlePutObject(w http.ResponseWriter, r *http.Request, bucket
 
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, info.ETag))
 	if info.VersionID != "" {
-		w.Header().Set("x-amz-version-id", info.VersionID)
+		w.Header().Set(amzVersionIDHeader, info.VersionID)
 	}
 	if info.SSECustomerAlgorithm != "" {
-		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", info.SSECustomerAlgorithm)
-		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", info.SSECustomerKeyMD5)
+		w.Header().Set(amzSSECAlgorithmHeader, info.SSECustomerAlgorithm)
+		w.Header().Set(amzSSECKeyMD5Header, info.SSECustomerKeyMD5)
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -102,8 +110,8 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 	reader, info, err := rt.engine.GetObject(ctx, bucket, key, versionID)
 	if err != nil {
 		if info != nil && info.IsDeleteMarker {
-			w.Header().Set("x-amz-delete-marker", "true")
-			w.Header().Set("x-amz-version-id", info.VersionID)
+			w.Header().Set(amzDeleteMarkerHeader, "true")
+			w.Header().Set(amzVersionIDHeader, info.VersionID)
 			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", resource)
 			return
 		}
@@ -113,17 +121,17 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 	}
 	defer reader.Close()
 
-	w.Header().Set("Content-Type", info.ContentType)
+	w.Header().Set(contentTypeHeader, info.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, info.ETag))
 	w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
 	w.Header().Set("Accept-Ranges", "bytes")
 	if info.VersionID != "" {
-		w.Header().Set("x-amz-version-id", info.VersionID)
+		w.Header().Set(amzVersionIDHeader, info.VersionID)
 	}
 	if info.SSECustomerAlgorithm != "" {
-		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", info.SSECustomerAlgorithm)
-		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", info.SSECustomerKeyMD5)
+		w.Header().Set(amzSSECAlgorithmHeader, info.SSECustomerAlgorithm)
+		w.Header().Set(amzSSECKeyMD5Header, info.SSECustomerKeyMD5)
 	}
 
 	// If the reader supports seeking, use http.ServeContent which handles
@@ -135,7 +143,7 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 
 	// Fallback for non-seekable readers: serve full content only.
 	w.WriteHeader(http.StatusOK)
-	io.Copy(w, reader)
+	_, _ = io.Copy(w, reader)
 }
 
 // handleHeadObject handles HEAD /<bucket>/<key> (HeadObject).
@@ -157,8 +165,8 @@ func (rt *Router) handleHeadObject(w http.ResponseWriter, r *http.Request, bucke
 	info, err := rt.engine.HeadObject(ctx, bucket, key, versionID)
 	if err != nil {
 		if info != nil && info.IsDeleteMarker {
-			w.Header().Set("x-amz-delete-marker", "true")
-			w.Header().Set("x-amz-version-id", info.VersionID)
+			w.Header().Set(amzDeleteMarkerHeader, "true")
+			w.Header().Set(amzVersionIDHeader, info.VersionID)
 			writeS3Error(w, "NoSuchKey", "The specified key does not exist.", resource)
 			return
 		}
@@ -167,17 +175,17 @@ func (rt *Router) handleHeadObject(w http.ResponseWriter, r *http.Request, bucke
 		}
 	}
 
-	w.Header().Set("Content-Type", info.ContentType)
+	w.Header().Set(contentTypeHeader, info.ContentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, info.ETag))
 	w.Header().Set("Last-Modified", info.LastModified.UTC().Format(http.TimeFormat))
 	w.Header().Set("Accept-Ranges", "bytes")
 	if info.VersionID != "" {
-		w.Header().Set("x-amz-version-id", info.VersionID)
+		w.Header().Set(amzVersionIDHeader, info.VersionID)
 	}
 	if info.SSECustomerAlgorithm != "" {
-		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", info.SSECustomerAlgorithm)
-		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", info.SSECustomerKeyMD5)
+		w.Header().Set(amzSSECAlgorithmHeader, info.SSECustomerAlgorithm)
+		w.Header().Set(amzSSECKeyMD5Header, info.SSECustomerKeyMD5)
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -197,12 +205,12 @@ func (rt *Router) handleDeleteObject(w http.ResponseWriter, r *http.Request, buc
 	if err == nil {
 		versionStatus, _ := rt.engine.GetBucketVersioning(bucket)
 		if versionID == "" && (versionStatus == "Enabled" || versionStatus == "Suspended") {
-			w.Header().Set("x-amz-delete-marker", "true")
+			w.Header().Set(amzDeleteMarkerHeader, "true")
 			if info, err := rt.engine.HeadObject(r.Context(), bucket, key, ""); err == nil && info.IsDeleteMarker {
-				w.Header().Set("x-amz-version-id", info.VersionID)
+				w.Header().Set(amzVersionIDHeader, info.VersionID)
 			}
 		} else if versionID != "" {
-			w.Header().Set("x-amz-version-id", versionID)
+			w.Header().Set(amzVersionIDHeader, versionID)
 		}
 	}
 

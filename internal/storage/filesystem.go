@@ -24,6 +24,17 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+const (
+	errInvalidBucketTraversal = "invalid bucket name: path traversal detected"
+	errInvalidKeyTraversal    = "invalid object key: path traversal detected"
+	errInvalidUploadID        = "invalid upload ID: path traversal detected"
+	errBucketNotFound         = "The specified bucket does not exist"
+	errKeyNotFound            = "The specified key does not exist."
+	errUploadNotFound         = "The specified multipart upload does not exist."
+	errFailedGenerateIV       = "failed to generate random IV: %w"
+	errFailedCreateAES        = "failed to create AES cipher: %w"
+)
+
 // FilesystemEngine implements the Engine interface using the local filesystem.
 // Objects are stored as files under <dataDir>/buckets/<bucket>/<key>.
 // Metadata is persisted in a bbolt database.
@@ -98,15 +109,15 @@ func (fs *FilesystemEngine) bucketPath(name string) string {
 
 func (fs *FilesystemEngine) validatePathSafety(bucket, key, versionID string) error {
 	if !filepath.IsLocal(bucket) {
-		return fmt.Errorf("invalid bucket name: path traversal detected")
+		return fmt.Errorf(errInvalidBucketTraversal)
 	}
 	trimmedKey := strings.TrimLeft(key, "/\\")
 	if trimmedKey != "" {
 		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
-			return fmt.Errorf("invalid object key: path traversal detected")
+			return fmt.Errorf(errInvalidKeyTraversal)
 		}
 	} else if key != "" {
-		return fmt.Errorf("invalid object key: path traversal detected")
+		return fmt.Errorf(errInvalidKeyTraversal)
 	}
 	if versionID != "" {
 		if !filepath.IsLocal(versionID) {
@@ -130,7 +141,7 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 	// Ensure the resolved path stays within the bucket directory
 	rel, err := filepath.Rel(base, resolved)
 	if err != nil || !isSafeRelPath(rel) {
-		return "", fmt.Errorf("invalid object key: path traversal detected")
+		return "", fmt.Errorf(errInvalidKeyTraversal)
 	}
 	return resolved, nil
 }
@@ -185,38 +196,38 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 
 func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string, error) {
 	if !filepath.IsLocal(bucket) {
-		return "", fmt.Errorf("invalid bucket name: path traversal detected")
+		return "", fmt.Errorf(errInvalidBucketTraversal)
 	}
 	if !filepath.IsLocal(uploadID) {
-		return "", fmt.Errorf("invalid upload ID: path traversal detected")
+		return "", fmt.Errorf(errInvalidUploadID)
 	}
 	if strings.ContainsAny(uploadID, "/\\") || strings.Contains(uploadID, "..") {
-		return "", fmt.Errorf("invalid upload ID: path traversal detected")
+		return "", fmt.Errorf(errInvalidUploadID)
 	}
 	base := filepath.Join(fs.dataDir, "multipart", bucket)
 	resolved := filepath.Join(base, uploadID)
 	// Ensure the resolved path stays within the bucket's multipart directory
 	rel, err := filepath.Rel(base, resolved)
 	if err != nil || !isSafeRelPath(rel) {
-		return "", fmt.Errorf("invalid upload ID: path traversal detected")
+		return "", fmt.Errorf(errInvalidUploadID)
 	}
 	return resolved, nil
 }
 
 func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, error) {
 	if !filepath.IsLocal(bucket) {
-		return "", fmt.Errorf("invalid bucket name: path traversal detected")
+		return "", fmt.Errorf(errInvalidBucketTraversal)
 	}
 	trimmedKey := strings.TrimLeft(key, "/\\")
 	if trimmedKey != "" {
 		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
-			return "", fmt.Errorf("invalid object key: path traversal detected")
+			return "", fmt.Errorf(errInvalidKeyTraversal)
 		}
 	} else if key != "" {
-		return "", fmt.Errorf("invalid object key: path traversal detected")
+		return "", fmt.Errorf(errInvalidKeyTraversal)
 	}
 	if !filepath.IsLocal(uploadID) {
-		return "", fmt.Errorf("invalid upload ID: path traversal detected")
+		return "", fmt.Errorf(errInvalidUploadID)
 	}
 	uploadPath, err := fs.multipartUploadPath(bucket, uploadID)
 	if err != nil {
@@ -226,7 +237,7 @@ func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, 
 	// Ensure the resolved path stays within the uploadPath directory
 	rel, err := filepath.Rel(uploadPath, resolved)
 	if err != nil || !isSafeRelPath(rel) {
-		return "", fmt.Errorf("invalid object key: path traversal detected")
+		return "", fmt.Errorf(errInvalidKeyTraversal)
 	}
 	return resolved, nil
 }
@@ -276,7 +287,7 @@ func (fs *FilesystemEngine) DeleteBucket(name string) error {
 		return err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 
 	// Check if bucket has objects, delete markers, or active multipart uploads
@@ -318,7 +329,7 @@ func (fs *FilesystemEngine) PutBucketCORS(bucket string, cors *CORSConfiguration
 		return err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.PutBucketCORS(bucket, cors)
 }
@@ -333,7 +344,7 @@ func (fs *FilesystemEngine) GetBucketCORS(bucket string) (*CORSConfiguration, er
 		return nil, err
 	}
 	if !exists {
-		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return nil, &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.GetBucketCORS(bucket)
 }
@@ -348,7 +359,7 @@ func (fs *FilesystemEngine) DeleteBucketCORS(bucket string) error {
 		return err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.DeleteBucketCORS(bucket)
 }
@@ -363,7 +374,7 @@ func (fs *FilesystemEngine) CountObjects(bucket string) (int, error) {
 		return 0, err
 	}
 	if !exists {
-		return 0, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return 0, &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.CountObjectMetas(bucket)
 }
@@ -379,7 +390,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 		return nil, err
 	}
 	if !exists {
-		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return nil, &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 
 	versionStatus, err := fs.metadata.GetBucketVersioning(bucket)
@@ -434,7 +445,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 		// Generate random IV
 		iv = make([]byte, 16)
 		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-			return nil, fmt.Errorf("failed to generate random IV: %w", err)
+			return nil, fmt.Errorf(errFailedGenerateIV, err)
 		}
 		if _, err := tmpFile.Write(iv); err != nil {
 			return nil, fmt.Errorf("failed to write IV to file: %w", err)
@@ -447,7 +458,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	if ssecParams != nil {
 		block, err := aes.NewCipher(ssecParams.Key)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+			return nil, fmt.Errorf(errFailedCreateAES, err)
 		}
 		stream := cipher.NewCTR(block, iv)
 		out = &cipher.StreamWriter{S: stream, W: out}
@@ -547,7 +558,7 @@ func (fs *FilesystemEngine) GetObject(ctx context.Context, bucket, key, versionI
 
 	file, err := os.Open(objPath)
 	if err != nil {
-		return nil, nil, &S3Error{Code: "NoSuchKey", Message: "The specified key does not exist."}
+		return nil, nil, &S3Error{Code: "NoSuchKey", Message: errKeyNotFound}
 	}
 
 	var closers []io.Closer
@@ -570,7 +581,7 @@ func (fs *FilesystemEngine) GetObject(ctx context.Context, bucket, key, versionI
 		block, err := aes.NewCipher(ssecParams.Key)
 		if err != nil {
 			file.Close()
-			return nil, nil, fmt.Errorf("failed to create AES cipher: %w", err)
+			return nil, nil, fmt.Errorf(errFailedCreateAES, err)
 		}
 		stream := cipher.NewCTR(block, iv)
 		reader = &cipher.StreamReader{S: stream, R: file}
@@ -607,11 +618,11 @@ func (fs *FilesystemEngine) HeadObject(ctx context.Context, bucket, key, version
 
 	info, err := fs.metadata.GetObjectMeta(bucket, key, versionID)
 	if err != nil {
-		return nil, &S3Error{Code: "NoSuchKey", Message: "The specified key does not exist."}
+		return nil, &S3Error{Code: "NoSuchKey", Message: errKeyNotFound}
 	}
 
 	if info.IsDeleteMarker {
-		return info, &S3Error{Code: "NoSuchKey", Message: "The specified key does not exist."}
+		return info, &S3Error{Code: "NoSuchKey", Message: errKeyNotFound}
 	}
 
 	// Extract SSECParams from context
@@ -662,7 +673,7 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 		return err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 
 	versionStatus, err := fs.metadata.GetBucketVersioning(bucket)
@@ -783,7 +794,7 @@ func (fs *FilesystemEngine) GetBucketVersioning(bucket string) (string, error) {
 		return "", err
 	}
 	if !exists {
-		return "", &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return "", &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.GetBucketVersioning(bucket)
 }
@@ -798,7 +809,7 @@ func (fs *FilesystemEngine) SetBucketVersioning(bucket, status string) error {
 		return err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	if status != "Enabled" && status != "Suspended" && status != "Disabled" {
 		return &S3Error{Code: "InvalidArgument", Message: "Versioning status must be Enabled, Suspended, or Disabled"}
@@ -816,7 +827,7 @@ func (fs *FilesystemEngine) SetBucketPublic(bucket string, public bool) error {
 		return err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.SetBucketPublic(bucket, public)
 }
@@ -831,7 +842,7 @@ func (fs *FilesystemEngine) IsBucketPublic(bucket string) (bool, error) {
 		return false, err
 	}
 	if !exists {
-		return false, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return false, &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.IsBucketPublic(bucket)
 }
@@ -849,7 +860,7 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 		return nil, err
 	}
 	if !exists {
-		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return nil, &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 
 	maxKeys := input.MaxKeys
@@ -987,7 +998,7 @@ func (fs *FilesystemEngine) CreateMultipartUpload(bucket, key, contentType strin
 		return nil, err
 	}
 	if !exists {
-		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return nil, &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 
 	uploadID := uuid.New().String()
@@ -1035,7 +1046,7 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 
 	meta, err := fs.metadata.GetMultipartMeta(bucket, key, uploadID)
 	if err != nil {
-		return nil, &S3Error{Code: "NoSuchUpload", Message: "The specified multipart upload does not exist."}
+		return nil, &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}
 	}
 
 	// Extract SSECParams from context
@@ -1089,7 +1100,7 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 	if ssecParams != nil {
 		iv = make([]byte, 16)
 		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-			return nil, fmt.Errorf("failed to generate random IV: %w", err)
+			return nil, fmt.Errorf(errFailedGenerateIV, err)
 		}
 		if _, err := tmpFile.Write(iv); err != nil {
 			return nil, fmt.Errorf("failed to write IV: %w", err)
@@ -1102,7 +1113,7 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 	if ssecParams != nil {
 		block, err := aes.NewCipher(ssecParams.Key)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+			return nil, fmt.Errorf(errFailedCreateAES, err)
 		}
 		stream := cipher.NewCTR(block, iv)
 		out = &cipher.StreamWriter{S: stream, W: out}
@@ -1170,7 +1181,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 
 	meta, err := fs.metadata.GetMultipartMeta(bucket, key, uploadID)
 	if err != nil {
-		return nil, &S3Error{Code: "NoSuchUpload", Message: "The specified multipart upload does not exist."}
+		return nil, &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}
 	}
 
 	// Sort requested parts by part number
@@ -1253,7 +1264,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 	if meta.SSECustomerAlgorithm != "" {
 		newIV := make([]byte, 16)
 		if _, err := io.ReadFull(rand.Reader, newIV); err != nil {
-			return nil, fmt.Errorf("failed to generate random IV: %w", err)
+			return nil, fmt.Errorf(errFailedGenerateIV, err)
 		}
 		if _, err := tmpFile.Write(newIV); err != nil {
 			return nil, fmt.Errorf("failed to write IV: %w", err)
@@ -1261,7 +1272,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 
 		block, err := aes.NewCipher(meta.SSECustomerKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+			return nil, fmt.Errorf(errFailedCreateAES, err)
 		}
 		stream := cipher.NewCTR(block, newIV)
 		out = &cipher.StreamWriter{S: stream, W: out}
@@ -1304,7 +1315,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 				for _, c := range closers {
 					c.Close()
 				}
-				return nil, fmt.Errorf("failed to create AES cipher: %w", err)
+				return nil, fmt.Errorf(errFailedCreateAES, err)
 			}
 			stream := cipher.NewCTR(block, partIV)
 			partReader = &cipher.StreamReader{S: stream, R: partFile}
@@ -1346,7 +1357,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 	var etag string
 	if len(md5s) > 0 {
 		mHash := md5.New()
-		mHash.Write(md5s)
+		_, _ = mHash.Write(md5s)
 		etag = fmt.Sprintf("%s-%d", hex.EncodeToString(mHash.Sum(nil)), len(parts))
 	} else {
 		etag = hex.EncodeToString(hash.Sum(nil))
@@ -1407,7 +1418,7 @@ func (fs *FilesystemEngine) AbortMultipartUpload(bucket, key, uploadID string) e
 
 	_, err := fs.metadata.GetMultipartMeta(bucket, key, uploadID)
 	if err != nil {
-		return &S3Error{Code: "NoSuchUpload", Message: "The specified multipart upload does not exist."}
+		return &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}
 	}
 
 	uploadPath, err := fs.multipartUploadPath(bucket, uploadID)
@@ -1612,7 +1623,7 @@ func (fs *FilesystemEngine) PutBucketLifecycle(bucket string, lc *LifecycleConfi
 		return err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.PutBucketLifecycle(bucket, lc)
 }
@@ -1627,7 +1638,7 @@ func (fs *FilesystemEngine) GetBucketLifecycle(bucket string) (*LifecycleConfigu
 		return nil, err
 	}
 	if !exists {
-		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return nil, &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	lc, err := fs.metadata.GetBucketLifecycle(bucket)
 	if err != nil {
@@ -1649,7 +1660,7 @@ func (fs *FilesystemEngine) DeleteBucketLifecycle(bucket string) error {
 		return err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.DeleteBucketLifecycle(bucket)
 }
@@ -1664,7 +1675,7 @@ func (fs *FilesystemEngine) PutBucketLogging(bucket string, logging *BucketLoggi
 		return err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.PutBucketLogging(bucket, logging)
 }
@@ -1679,7 +1690,7 @@ func (fs *FilesystemEngine) GetBucketLogging(bucket string) (*BucketLoggingStatu
 		return nil, err
 	}
 	if !exists {
-		return nil, &S3Error{Code: "NoSuchBucket", Message: "The specified bucket does not exist"}
+		return nil, &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 	return fs.metadata.GetBucketLogging(bucket)
 }

@@ -61,13 +61,13 @@ func writeS3Error(w http.ResponseWriter, code, message, resource string) {
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
-	xml.NewEncoder(w).Encode(resp)
+	_ = xml.NewEncoder(w).Encode(resp)
 }
 
 // writeXML writes an XML response with the given status code.
 func writeXML(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
-	w.Write([]byte(xml.Header))
-	xml.NewEncoder(w).Encode(v)
+	_, _ = w.Write([]byte(xml.Header))
+	_ = xml.NewEncoder(w).Encode(v)
 }

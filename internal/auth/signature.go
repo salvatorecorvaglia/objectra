@@ -15,6 +15,13 @@ import (
 	"time"
 )
 
+const (
+	amzDateHeader        = "X-Amz-Date"
+	unsignedPayload      = "UNSIGNED-PAYLOAD"
+	aws4HMACSHA256Format = "AWS4-HMAC-SHA256\n%s\n%s\n%s"
+	amzSignatureQuery    = "X-Amz-Signature"
+)
+
 // AuthError represents a specific S3 authentication/signature error.
 type AuthError struct {
 	Code    string
@@ -70,7 +77,7 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 	}
 
 	// Get the date for signing
-	dateStr := r.Header.Get("X-Amz-Date")
+	dateStr := r.Header.Get(amzDateHeader)
 	if dateStr == "" {
 		dateStr = r.Header.Get("Date")
 	}
@@ -95,7 +102,7 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 
 	// Verify request payload matches content SHA256 header (if not unsigned or streaming)
 	payloadHash := r.Header.Get("X-Amz-Content-Sha256")
-	if payloadHash != "" && payloadHash != "UNSIGNED-PAYLOAD" && payloadHash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+	if payloadHash != "" && payloadHash != unsignedPayload && payloadHash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
 		actualHash, err := HashPayload(r)
 		if err != nil {
 			return fmt.Errorf("failed to hash request payload: %w", err)
@@ -115,7 +122,7 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 
 	// Build string to sign
 	scope := fmt.Sprintf("%s/%s/%s/aws4_request", datestamp, parsed.Region, parsed.Service)
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
+	stringToSign := fmt.Sprintf(aws4HMACSHA256Format,
 		dateStr,
 		scope,
 		hashSHA256([]byte(canonicalRequest)),
@@ -151,9 +158,9 @@ func (v *SigV4Verifier) verifyPresigned(r *http.Request) error {
 		return &AuthError{Code: "InvalidAccessKeyId", Message: "The Access Key Id you provided does not exist in our records."}
 	}
 
-	dateStr := q.Get("X-Amz-Date")
+	dateStr := q.Get(amzDateHeader)
 	signedHeaders := strings.Split(q.Get("X-Amz-SignedHeaders"), ";")
-	signature := q.Get("X-Amz-Signature")
+	signature := q.Get(amzSignatureQuery)
 
 	// Check expiration
 	expires := q.Get("X-Amz-Expires")
@@ -173,11 +180,11 @@ func (v *SigV4Verifier) verifyPresigned(r *http.Request) error {
 	}
 
 	// Build canonical request for presigned URL
-	// For presigned, the payload hash is "UNSIGNED-PAYLOAD"
+	// For presigned, the payload hash is unsignedPayload
 	canonicalRequest := v.buildCanonicalRequestPresigned(r, signedHeaders)
 
 	scope := fmt.Sprintf("%s/%s/%s/aws4_request", datestamp, region, service)
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
+	stringToSign := fmt.Sprintf(aws4HMACSHA256Format,
 		dateStr,
 		scope,
 		hashSHA256([]byte(canonicalRequest)),
@@ -268,7 +275,7 @@ func (v *SigV4Verifier) buildCanonicalRequest(r *http.Request, signedHeaders []s
 	// Payload hash
 	payloadHash := r.Header.Get("X-Amz-Content-Sha256")
 	if payloadHash == "" {
-		payloadHash = "UNSIGNED-PAYLOAD"
+		payloadHash = unsignedPayload
 	}
 
 	return fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
@@ -288,7 +295,7 @@ func (v *SigV4Verifier) buildCanonicalRequestPresigned(r *http.Request, signedHe
 
 	// For presigned URLs, exclude X-Amz-Signature from query string
 	queryParams := r.URL.Query()
-	queryParams.Del("X-Amz-Signature")
+	queryParams.Del(amzSignatureQuery)
 	canonicalQueryString := getCanonicalQueryString(queryParams)
 
 	sort.Strings(signedHeaders)
@@ -313,7 +320,7 @@ func (v *SigV4Verifier) buildCanonicalRequestPresigned(r *http.Request, signedHe
 		canonicalQueryString,
 		canonicalHeaders.String(),
 		signedHeadersStr,
-		"UNSIGNED-PAYLOAD",
+		unsignedPayload,
 	)
 }
 
@@ -362,14 +369,14 @@ func (v *SigV4Verifier) deriveSigningKey(datestamp, region, service string) []by
 // hmacSHA256 computes HMAC-SHA256.
 func hmacSHA256(key, data []byte) []byte {
 	h := hmac.New(sha256.New, key)
-	h.Write(data)
+	_, _ = h.Write(data)
 	return h.Sum(nil)
 }
 
 // hashSHA256 computes SHA256 hash and returns hex string.
 func hashSHA256(data []byte) string {
 	h := sha256.New()
-	h.Write(data)
+	_, _ = h.Write(data)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -405,7 +412,7 @@ func HashPayload(r *http.Request) (string, error) {
 	}
 
 	shaWriter := sha256.New()
-	shaWriter.Write(buf)
+	_, _ = shaWriter.Write(buf)
 
 	_, err = io.Copy(io.MultiWriter(tmpFile, shaWriter), r.Body)
 	if err != nil {
@@ -460,7 +467,7 @@ func PresignGetObject(accessKey, secretKey, region, bucket, key string, expires 
 	query := url.Values{}
 	query.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
 	query.Set("X-Amz-Credential", accessKey+"/"+credentialScope)
-	query.Set("X-Amz-Date", amzDate)
+	query.Set(amzDateHeader, amzDate)
 	query.Set("X-Amz-Expires", fmt.Sprintf("%.0f", expires.Seconds()))
 	query.Set("X-Amz-SignedHeaders", "host")
 
@@ -492,7 +499,7 @@ func PresignGetObject(accessKey, secretKey, region, bucket, key string, expires 
 	signedHeaders := "host"
 
 	// Canonical request
-	canonicalRequest := fmt.Sprintf("GET\n%s\n%s\n%s\n%s\nUNSIGNED-PAYLOAD",
+	canonicalRequest := fmt.Sprintf("GET\n%s\n%s\n%s\n%s\n"+unsignedPayload,
 		canonicalPath,
 		canonicalQuery,
 		canonicalHeaders,
@@ -500,7 +507,7 @@ func PresignGetObject(accessKey, secretKey, region, bucket, key string, expires 
 	)
 
 	// String to sign
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
+	stringToSign := fmt.Sprintf(aws4HMACSHA256Format,
 		amzDate,
 		credentialScope,
 		hashSHA256([]byte(canonicalRequest)),
@@ -516,7 +523,7 @@ func PresignGetObject(accessKey, secretKey, region, bucket, key string, expires 
 	signature := hex.EncodeToString(hmacSHA256(kSigning, []byte(stringToSign)))
 
 	// Append signature to query
-	query.Set("X-Amz-Signature", signature)
+	query.Set(amzSignatureQuery, signature)
 
 	endpoint := strings.TrimSuffix(s3Endpoint, "/")
 
