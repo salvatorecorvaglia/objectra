@@ -219,11 +219,9 @@ This will:
 2. **GoReleaser** creates GitHub releases with cross-compiled binaries (Linux, macOS, Windows — amd64/arm64) and auto-generated changelogs.
 3. **Docker Publish** builds and pushes multi-architecture images (`linux/amd64`, `linux/arm64`) to `ghcr.io/salvatorecorvaglia/objectra`.
 
----
+## 📜 Code of Conduct
 
-## Licensing
-
-By submitting a contribution, you agree that your work will be licensed under the [MIT License](LICENSE), the same license that covers the project.
+Please maintain a respectful and professional tone in all communications.
 
 ---
 
