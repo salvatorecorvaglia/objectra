@@ -1,4 +1,4 @@
-# Objectra
+# Objectra 🖼️
 
 **Self-hosted, S3-compatible object storage with a built-in web console.**
 
