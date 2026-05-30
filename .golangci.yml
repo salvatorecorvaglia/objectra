@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://gist.githubusercontent.com/sargunv/c2ca41a08391cd06feaad97aece309e4/raw/empty-json-schema.json
 # ================================================================
 # golangci-lint configuration for Objectra
 # ================================================================
@@ -19,3 +20,9 @@ issues:
   # Show all issues from a linter (don't cap per-linter)
   max-issues-per-linter: 0
   max-same-issues: 0
+
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - ineffassign

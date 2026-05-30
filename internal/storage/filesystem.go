@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -109,15 +110,15 @@ func (fs *FilesystemEngine) bucketPath(name string) string {
 
 func (fs *FilesystemEngine) validatePathSafety(bucket, key, versionID string) error {
 	if !filepath.IsLocal(bucket) {
-		return fmt.Errorf(errInvalidBucketTraversal)
+		return errors.New(errInvalidBucketTraversal)
 	}
 	trimmedKey := strings.TrimLeft(key, "/\\")
 	if trimmedKey != "" {
 		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
-			return fmt.Errorf(errInvalidKeyTraversal)
+			return errors.New(errInvalidKeyTraversal)
 		}
 	} else if key != "" {
-		return fmt.Errorf(errInvalidKeyTraversal)
+		return errors.New(errInvalidKeyTraversal)
 	}
 	if versionID != "" {
 		if !filepath.IsLocal(versionID) {
@@ -141,7 +142,7 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 	// Ensure the resolved path stays within the bucket directory
 	rel, err := filepath.Rel(base, resolved)
 	if err != nil || !isSafeRelPath(rel) {
-		return "", fmt.Errorf(errInvalidKeyTraversal)
+		return "", errors.New(errInvalidKeyTraversal)
 	}
 	return resolved, nil
 }
@@ -196,38 +197,38 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 
 func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string, error) {
 	if !filepath.IsLocal(bucket) {
-		return "", fmt.Errorf(errInvalidBucketTraversal)
+		return "", errors.New(errInvalidBucketTraversal)
 	}
 	if !filepath.IsLocal(uploadID) {
-		return "", fmt.Errorf(errInvalidUploadID)
+		return "", errors.New(errInvalidUploadID)
 	}
 	if strings.ContainsAny(uploadID, "/\\") || strings.Contains(uploadID, "..") {
-		return "", fmt.Errorf(errInvalidUploadID)
+		return "", errors.New(errInvalidUploadID)
 	}
 	base := filepath.Join(fs.dataDir, "multipart", bucket)
 	resolved := filepath.Join(base, uploadID)
 	// Ensure the resolved path stays within the bucket's multipart directory
 	rel, err := filepath.Rel(base, resolved)
 	if err != nil || !isSafeRelPath(rel) {
-		return "", fmt.Errorf(errInvalidUploadID)
+		return "", errors.New(errInvalidUploadID)
 	}
 	return resolved, nil
 }
 
 func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, error) {
 	if !filepath.IsLocal(bucket) {
-		return "", fmt.Errorf(errInvalidBucketTraversal)
+		return "", errors.New(errInvalidBucketTraversal)
 	}
 	trimmedKey := strings.TrimLeft(key, "/\\")
 	if trimmedKey != "" {
 		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
-			return "", fmt.Errorf(errInvalidKeyTraversal)
+			return "", errors.New(errInvalidKeyTraversal)
 		}
 	} else if key != "" {
-		return "", fmt.Errorf(errInvalidKeyTraversal)
+		return "", errors.New(errInvalidKeyTraversal)
 	}
 	if !filepath.IsLocal(uploadID) {
-		return "", fmt.Errorf(errInvalidUploadID)
+		return "", errors.New(errInvalidUploadID)
 	}
 	uploadPath, err := fs.multipartUploadPath(bucket, uploadID)
 	if err != nil {
@@ -237,7 +238,7 @@ func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, 
 	// Ensure the resolved path stays within the uploadPath directory
 	rel, err := filepath.Rel(uploadPath, resolved)
 	if err != nil || !isSafeRelPath(rel) {
-		return "", fmt.Errorf(errInvalidKeyTraversal)
+		return "", errors.New(errInvalidKeyTraversal)
 	}
 	return resolved, nil
 }
@@ -625,38 +626,9 @@ func (fs *FilesystemEngine) HeadObject(ctx context.Context, bucket, key, version
 		return info, &S3Error{Code: "NoSuchKey", Message: errKeyNotFound}
 	}
 
-	// Extract SSECParams from context
-	var ssecParams *SSECParams
-	if ctx != nil {
-		if params, ok := ctx.Value(SSECContextKey).(*SSECParams); ok && params != nil {
-			ssecParams = params
-		}
-	}
-
-	// 1. If object is encrypted but no SSE-C params provided
-	if info.SSECustomerAlgorithm != "" && ssecParams == nil {
-		return info, &S3Error{
-			Code:    "InvalidArgument",
-			Message: "The object was stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved without it",
-		}
-	}
-
-	// 2. If object is NOT encrypted but SSE-C params ARE provided
-	if info.SSECustomerAlgorithm == "" && ssecParams != nil {
-		return info, &S3Error{
-			Code:    "InvalidArgument",
-			Message: "The object was not stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved with it",
-		}
-	}
-
-	// 3. If object is encrypted and SSE-C params are provided, check MD5 match
-	if info.SSECustomerAlgorithm != "" && ssecParams != nil {
-		if ssecParams.KeyMD5 != info.SSECustomerKeyMD5 {
-			return info, &S3Error{
-				Code:    "InvalidDigest",
-				Message: "The customer-provided encryption key MD5 does not match",
-			}
-		}
+	ssecParams := extractSSECParams(ctx)
+	if err := validateSSECParams(info, ssecParams); err != nil {
+		return info, err
 	}
 
 	return info, nil
@@ -1392,7 +1364,9 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 	if uploadPath, err := fs.multipartUploadPath(bucket, uploadID); err == nil {
 		os.RemoveAll(uploadPath)
 	}
-	fs.metadata.DeleteMultipartMeta(bucket, key, uploadID)
+	if err := fs.metadata.DeleteMultipartMeta(bucket, key, uploadID); err != nil {
+		slog.Error("Failed to delete multipart metadata", "error", err, "bucket", bucket, "key", key, "uploadID", uploadID)
+	}
 
 	GlobalMetrics.DecActiveMultiparts()
 
@@ -1805,6 +1779,39 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 					}
 				}
 			}
+		}
+	}
+	return nil
+}
+
+func extractSSECParams(ctx context.Context) *SSECParams {
+	if ctx == nil {
+		return nil
+	}
+	if params, ok := ctx.Value(SSECContextKey).(*SSECParams); ok {
+		return params
+	}
+	return nil
+}
+
+func validateSSECParams(info *ObjectInfo, params *SSECParams) error {
+	if info.SSECustomerAlgorithm != "" {
+		if params == nil {
+			return &S3Error{
+				Code:    "InvalidArgument",
+				Message: "The object was stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved without it",
+			}
+		}
+		if params.KeyMD5 != info.SSECustomerKeyMD5 {
+			return &S3Error{
+				Code:    "InvalidDigest",
+				Message: "The customer-provided encryption key MD5 does not match",
+			}
+		}
+	} else if params != nil {
+		return &S3Error{
+			Code:    "InvalidArgument",
+			Message: "The object was not stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved with it",
 		}
 	}
 	return nil

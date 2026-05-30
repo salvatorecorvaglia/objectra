@@ -1799,6 +1799,9 @@ func TestGetObjectRangeSeek(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read: %v", err)
 	}
+	if n != 3 {
+		t.Errorf("expected 3 bytes read, got %d", n)
+	}
 	if string(buf) != "rst" {
 		t.Errorf("expected 'rst', got %q", string(buf))
 	}

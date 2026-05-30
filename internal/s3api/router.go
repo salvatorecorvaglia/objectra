@@ -111,7 +111,7 @@ func (rt *Router) logAccess(r *http.Request, bucket, key string, statusCode int,
 	}
 
 	requestID := "objectra"
-	operation := r.Method + "." + r.URL.Path
+	var operation string
 	if key != "" {
 		operation = "REST." + r.Method + ".OBJECT"
 	} else {
