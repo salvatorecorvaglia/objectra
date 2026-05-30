@@ -196,34 +196,6 @@ Open `http://localhost:9001` in your browser and log in with your access key and
 | GetBucketLogging        | ✅     |
 | PutBucketLogging        | ✅     |
 
-## Architecture
-
-```
-objectra/
-├── cmd/objectra/             # Entry point (main.go)
-├── internal/
-│   ├── auth/                 # AWS Signature V4 verification
-│   ├── config/               # Environment-based configuration
-│   ├── console/              # Web console (handlers + embedded frontend)
-│   ├── s3api/                # S3 API handlers
-│   ├── server/               # HTTP server orchestration
-│   └── storage/
-│       ├── engine.go         # Storage engine interface
-│       ├── filesystem.go     # Filesystem-backed storage
-│       ├── metadata.go       # bbolt metadata store & bucket locking
-│       ├── metrics.go        # Disk usage metrics (platform-specific)
-│       ├── sync.go           # Replication sync dispatcher
-│       └── webhook.go        # Webhook event dispatcher
-├── .github/workflows/
-│   ├── ci.yml                # CI: lint, test, build, Docker
-│   └── release.yml           # Release: GoReleaser + GHCR publish
-├── Dockerfile
-├── docker-compose.yml
-├── .golangci.yml             # Linter configuration
-├── .goreleaser.yml           # Release configuration
-└── README.md
-```
-
 ---
 
 ## 🤝 Contributing
