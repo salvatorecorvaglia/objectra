@@ -41,7 +41,7 @@ func GenerateSelfSignedCert() (tls.Certificate, error) {
 
 	// Local domains and IP addresses to include in SAN (Subject Alternative Name)
 	template.IPAddresses = []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")}
-	template.DNSNames = []string{"localhost", "127.0.0.1"}
+	template.DNSNames = []string{"localhost"}
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
 	if err != nil {

@@ -164,7 +164,10 @@ func (rt *Router) handlePutBucketLifecycle(w http.ResponseWriter, r *http.Reques
 
 // handleDeleteBucketLifecycle handles DELETE /<bucket>?lifecycle.
 func (rt *Router) handleDeleteBucketLifecycle(w http.ResponseWriter, _ *http.Request, bucket string) {
-	_ = rt.engine.DeleteBucketLifecycle(bucket)
+	err := rt.engine.DeleteBucketLifecycle(bucket)
+	if handleStorageError(w, err, "/"+bucket) {
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

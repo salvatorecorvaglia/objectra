@@ -8,6 +8,7 @@ import (
 	"crypto/cipher"
 	"crypto/md5"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -81,6 +82,8 @@ func NewFilesystemEngine(dataDir string) (*FilesystemEngine, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	cleanupOrphanedTempFiles(dataDir)
 
 	return &FilesystemEngine{
 		dataDir:  dataDir,
@@ -1037,7 +1040,7 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		return nil, &S3Error{Code: "InvalidArgument", Message: "The object was not stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved with it"}
 	}
 	if meta.SSECustomerAlgorithm != "" && ssecParams != nil {
-		if ssecParams.KeyMD5 != meta.SSECustomerKeyMD5 {
+		if subtle.ConstantTimeCompare([]byte(ssecParams.KeyMD5), []byte(meta.SSECustomerKeyMD5)) != 1 {
 			return nil, &S3Error{Code: "InvalidDigest", Message: "The customer-provided encryption key MD5 does not match"}
 		}
 	}
@@ -1494,34 +1497,39 @@ func (fs *FilesystemEngine) CleanExpiredMultipartUploads(cutoff time.Duration) e
 
 	now := time.Now().UTC()
 	for _, bInfo := range buckets {
-		db, err := fs.metadata.getBucketDB(bInfo.Name)
-		if err != nil {
-			slog.Error("[Storage] Failed to open DB for bucket during multipart cleanup", "bucket", bInfo.Name, "error", err)
-			continue
-		}
+		func() {
+			unlock := fs.metadata.acquireBucketLock(bInfo.Name, false)
+			defer unlock()
 
-		err = db.View(func(tx *bolt.Tx) error {
-			b := tx.Bucket(multipartBucket)
-			if b == nil {
-				return nil
+			db, err := fs.metadata.getBucketDB(bInfo.Name)
+			if err != nil {
+				slog.Error("[Storage] Failed to open DB for bucket during multipart cleanup", "bucket", bInfo.Name, "error", err)
+				return
 			}
-			return b.ForEach(func(k, v []byte) error {
-				var meta MultipartMeta
-				if err := json.Unmarshal(v, &meta); err == nil {
-					if now.Sub(meta.Created) > cutoff {
-						aborts = append(aborts, uploadToAbort{
-							bucket:   meta.Bucket,
-							key:      meta.Key,
-							uploadID: meta.UploadID,
-						})
-					}
+
+			err = db.View(func(tx *bolt.Tx) error {
+				b := tx.Bucket(multipartBucket)
+				if b == nil {
+					return nil
 				}
-				return nil
+				return b.ForEach(func(k, v []byte) error {
+					var meta MultipartMeta
+					if err := json.Unmarshal(v, &meta); err == nil {
+						if now.Sub(meta.Created) > cutoff {
+							aborts = append(aborts, uploadToAbort{
+								bucket:   meta.Bucket,
+								key:      meta.Key,
+								uploadID: meta.UploadID,
+							})
+						}
+					}
+					return nil
+				})
 			})
-		})
-		if err != nil {
-			slog.Error("[Storage] Failed to scan multipart uploads for bucket", "bucket", bInfo.Name, "error", err)
-		}
+			if err != nil {
+				slog.Error("[Storage] Failed to scan multipart uploads for bucket", "bucket", bInfo.Name, "error", err)
+			}
+		}()
 	}
 
 	for _, u := range aborts {
@@ -1802,7 +1810,7 @@ func validateSSECParams(info *ObjectInfo, params *SSECParams) error {
 				Message: "The object was stored using a Server-side Encryption with Customer-provided Keys (SSE-C) and cannot be retrieved without it",
 			}
 		}
-		if params.KeyMD5 != info.SSECustomerKeyMD5 {
+		if subtle.ConstantTimeCompare([]byte(params.KeyMD5), []byte(info.SSECustomerKeyMD5)) != 1 {
 			return &S3Error{
 				Code:    "InvalidDigest",
 				Message: "The customer-provided encryption key MD5 does not match",
@@ -1815,6 +1823,27 @@ func validateSSECParams(info *ObjectInfo, params *SSECParams) error {
 		}
 	}
 	return nil
+}
+
+func cleanupOrphanedTempFiles(dataDir string) {
+	walkDirs := []string{
+		filepath.Join(dataDir, "buckets"),
+		filepath.Join(dataDir, "multipart"),
+	}
+	for _, dir := range walkDirs {
+		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if !d.IsDir() {
+				name := d.Name()
+				if strings.HasPrefix(name, ".objectra-tmp-") || strings.HasPrefix(name, ".part-tmp-") || strings.HasPrefix(name, ".objectra-multipart-") {
+					_ = os.Remove(path)
+				}
+			}
+			return nil
+		})
+	}
 }
 
 

@@ -115,6 +115,7 @@ export $(grep -v '^#' .env | xargs) && ./objectra
 | `OBJECTRA_JWT_SECRET`       | _random_      | JWT signing key used for persistent console sessions  |
 | `OBJECTRA_LOGIN_RATE_LIMIT` | `5`           | Max console login requests per minute per IP          |
 | `OBJECTRA_API_RATE_LIMIT`   | `60`          | Max console API requests per minute per IP            |
+| `OBJECTRA_TRUST_PROXY`      | `false`       | Trust client's `X-Forwarded-For` header for rate limiting (when behind a proxy) |
 | `OBJECTRA_LOG_LEVEL`        | `info`        | Log level severity (`debug`, `info`, `warn`, `error`) |
 | `OBJECTRA_LOG_FORMAT`       | `text`        | Structured log format (`text` or `json`)              |
 

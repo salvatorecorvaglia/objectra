@@ -43,6 +43,10 @@ func main() {
 	}
 	slog.SetDefault(slog.New(handler))
 
+	if cfg.AccessKey == "objectra" && cfg.SecretKey == "objectra123" {
+		slog.Warn("WARNING: Running Objectra with default credentials! Please set OBJECTRA_ACCESS_KEY and OBJECTRA_SECRET_KEY in production.")
+	}
+
 	printBanner(cfg)
 
 	srv, err := server.New(cfg)

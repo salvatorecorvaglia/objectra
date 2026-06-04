@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,55 +36,72 @@ type clientRateLimit struct {
 }
 
 type rateLimiter struct {
-	mu      sync.Mutex
-	clients map[string]*clientRateLimit
-	rate    float64 // tokens per second
-	burst   float64
-}
-
-func newRateLimiter(limitPerMin int) *rateLimiter {
-	rate := float64(limitPerMin) / 60.0
-	return &rateLimiter{
-		clients: make(map[string]*clientRateLimit),
-		rate:    rate,
-		burst:   float64(limitPerMin),
+		mu          sync.Mutex
+		clients     map[string]*clientRateLimit
+		rate        float64 // tokens per second
+		burst       float64
+		lastCleanup time.Time
 	}
-}
 
-func (rl *rateLimiter) allow(ip string) bool {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-
-	now := time.Now()
-	client, exists := rl.clients[ip]
-	if !exists {
-		client = &clientRateLimit{
-			tokens:     rl.burst,
-			lastAccess: now,
+	func newRateLimiter(limitPerMin int) *rateLimiter {
+		rate := float64(limitPerMin) / 60.0
+		return &rateLimiter{
+			clients:     make(map[string]*clientRateLimit),
+			rate:        rate,
+			burst:       float64(limitPerMin),
+			lastCleanup: time.Now(),
 		}
-		rl.clients[ip] = client
 	}
 
-	elapsed := now.Sub(client.lastAccess).Seconds()
-	client.tokens += elapsed * rl.rate
-	if client.tokens > rl.burst {
-		client.tokens = rl.burst
-	}
-	client.lastAccess = now
+	func (rl *rateLimiter) allow(ip string) bool {
+		rl.mu.Lock()
+		defer rl.mu.Unlock()
 
-	if client.tokens >= 1 {
-		client.tokens -= 1
-		return true
+		now := time.Now()
+
+		// Passive stale client cleanup (older than 10 minutes, runs at most once per minute)
+		if now.Sub(rl.lastCleanup) > 1*time.Minute {
+			for k, v := range rl.clients {
+				if now.Sub(v.lastAccess) > 10*time.Minute {
+					delete(rl.clients, k)
+				}
+			}
+			rl.lastCleanup = now
+		}
+
+		client, exists := rl.clients[ip]
+		if !exists {
+			client = &clientRateLimit{
+				tokens:     rl.burst,
+				lastAccess: now,
+			}
+			rl.clients[ip] = client
+		}
+
+		elapsed := now.Sub(client.lastAccess).Seconds()
+		client.tokens += elapsed * rl.rate
+		if client.tokens > rl.burst {
+			client.tokens = rl.burst
+		}
+		client.lastAccess = now
+
+		if client.tokens >= 1 {
+			client.tokens -= 1
+			return true
+		}
+		return false
 	}
-	return false
-}
+
+var trustProxy = os.Getenv("OBJECTRA_TRUST_PROXY") == "true"
 
 func getClientIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-		if idx := strings.Index(ip, ","); idx != -1 {
-			return strings.TrimSpace(ip[:idx])
+	if trustProxy {
+		if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+			if idx := strings.Index(ip, ","); idx != -1 {
+				return strings.TrimSpace(ip[:idx])
+			}
+			return strings.TrimSpace(ip)
 		}
-		return strings.TrimSpace(ip)
 	}
 	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		return ip

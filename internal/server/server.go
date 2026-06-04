@@ -197,6 +197,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("S3 API server shutdown error: %w", err))
 	}
 
+	if r, ok := s.s3Server.Handler.(*s3api.Router); ok {
+		r.Close()
+	}
+
 	if err := s.consoleServer.Shutdown(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("Console server shutdown error: %w", err))
 	}

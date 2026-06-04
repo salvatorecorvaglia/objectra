@@ -118,6 +118,7 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 		if handleStorageError(w, err, resource) {
 			return
 		}
+		return
 	}
 	defer reader.Close()
 

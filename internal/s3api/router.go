@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,22 +16,35 @@ import (
 	"github.com/salvatorecorvaglia/objectra/internal/storage"
 )
 
+type logTask struct {
+	targetBucket string
+	logKey       string
+	logLine      string
+}
+
 // Router handles S3 API request routing and dispatching.
 type Router struct {
 	engine   storage.Engine
 	verifier *auth.SigV4Verifier
 	region   string
 	domain   string
+	logChan  chan logTask
+	logStop  chan struct{}
+	logWG    sync.WaitGroup
 }
 
 // NewRouter creates a new S3 API router.
 func NewRouter(engine storage.Engine, creds *auth.Credentials, region string, domain string) *Router {
-	return &Router{
+	rt := &Router{
 		engine:   engine,
 		verifier: auth.NewSigV4Verifier(creds),
 		region:   region,
 		domain:   domain,
+		logChan:  make(chan logTask, 1000),
+		logStop:  make(chan struct{}),
 	}
+	rt.startLogWorkers(3)
+	return rt
 }
 
 type metricsResponseWriter struct {
@@ -139,16 +153,17 @@ func (rt *Router) logAccess(r *http.Request, bucket, key string, statusCode int,
 		owner, bucket, timeStr, remoteIP, requester, requestID, operation, key, reqURI, statusCode, errCode, bytesSent, duration.Milliseconds(), duration.Milliseconds(), referrer, userAgent,
 	)
 
-	// Deliver log asynchronously
-	go func() {
-		logKey := fmt.Sprintf("%s%s_%s.log", targetPrefix, time.Now().UTC().Format("2006-01-02-15-04-05"), uuid.New().String()[:8])
-		reader := strings.NewReader(logLine)
-		ctx := context.Background()
-		_, err := rt.engine.PutObject(ctx, targetBucket, logKey, reader, int64(len(logLine)), "text/plain")
-		if err != nil {
-			slog.Error("[S3 API] Failed to deliver access log", "bucket", targetBucket, "key", logKey, "error", err)
-		}
-	}()
+	logKey := fmt.Sprintf("%s%s_%s.log", targetPrefix, time.Now().UTC().Format("2006-01-02-15-04-05"), uuid.New().String()[:8])
+	task := logTask{
+		targetBucket: targetBucket,
+		logKey:       logKey,
+		logLine:      logLine,
+	}
+	select {
+	case rt.logChan <- task:
+	default:
+		slog.Warn("[S3 API] Access log queue full, dropping log", "bucket", targetBucket, "key", logKey)
+	}
 }
 
 func (rt *Router) serveHTTPInternal(w http.ResponseWriter, r *http.Request) {
@@ -436,4 +451,26 @@ func (rt *Router) handleDeleteBucketCORS(w http.ResponseWriter, _ *http.Request,
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (rt *Router) startLogWorkers(count int) {
+	for i := 0; i < count; i++ {
+		rt.logWG.Add(1)
+		go func() {
+			defer rt.logWG.Done()
+			for task := range rt.logChan {
+				ctx := context.Background()
+				reader := strings.NewReader(task.logLine)
+				_, err := rt.engine.PutObject(ctx, task.targetBucket, task.logKey, reader, int64(len(task.logLine)), "text/plain")
+				if err != nil {
+					slog.Error("[S3 API] Failed to deliver access log", "bucket", task.targetBucket, "key", task.logKey, "error", err)
+				}
+			}
+		}()
+	}
+}
+
+func (rt *Router) Close() {
+	close(rt.logChan)
+	rt.logWG.Wait()
 }
