@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Bucket stripe locking around database scans in `CleanExpiredMultipartUploads` to prevent race conditions during concurrent bucket deletions.
 - S3 `DeleteBucketLifecycle` API handler to correctly validate bucket existence before returning `204 No Content`.
 - Safely handled GET object errors to avoid potential nil pointer dereference on readers.
+- Timing race conditions in the webhook and mirror sync integration tests.
 
 ### Security
 - Passive inline garbage collection in the console rate limiter map to prune inactive clients and mitigate memory leak vulnerability.

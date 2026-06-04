@@ -63,14 +63,42 @@ func TestMirrorSync_Integration(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
+	// Wait for the PUT request to be received before deleting, to ensure the async worker
+	// has read the file for mirroring before it gets deleted from primary storage.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		count := len(receivedReqs)
+		mu.Unlock()
+		if count >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for PUT mirroring request")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	// 2. Trigger mirroring via DeleteObject
 	err = engine.DeleteObject("primary-bucket", "docs/report.txt", "")
 	if err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
 
-	// Wait for async mirroring worker
-	time.Sleep(100 * time.Millisecond)
+	// Wait for async mirroring worker to complete the DELETE request
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		count := len(receivedReqs)
+		mu.Unlock()
+		if count >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for DELETE mirroring request")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()

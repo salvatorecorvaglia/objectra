@@ -62,14 +62,41 @@ func TestWebhook_Integration(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
+	// Wait for the PUT webhook event to be delivered
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		count := len(receivedPayloads)
+		mu.Unlock()
+		if count >= 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for PUT webhook payload")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
 	// Delete object to trigger delete event
 	err = engine.DeleteObject("webhooks", "test.txt", "")
 	if err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
 
-	// Give async worker time to deliver
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the DELETE webhook event to be delivered
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		count := len(receivedPayloads)
+		mu.Unlock()
+		if count >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for DELETE webhook payload")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
