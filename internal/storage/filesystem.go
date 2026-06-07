@@ -469,10 +469,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	}
 
 	var gzipWriter *gzip.Writer
-	compressed := false
-	if isCompressibleContentType(contentType) {
-		compressed = true
-	}
+	compressed := isCompressibleContentType(contentType)
 
 	if compressed {
 		gzipWriter = gzip.NewWriter(out)

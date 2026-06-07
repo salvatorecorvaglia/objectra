@@ -42,8 +42,8 @@ func signTestRequest(r *http.Request, accessKey, secretKey string, region, servi
 	signedHeaders := []string{"host", "x-amz-date"}
 
 	var canonicalHeaders strings.Builder
-	canonicalHeaders.WriteString(fmt.Sprintf("host:%s\n", r.Host))
-	canonicalHeaders.WriteString(fmt.Sprintf("x-amz-date:%s\n", amzDate))
+	fmt.Fprintf(&canonicalHeaders, "host:%s\n", r.Host)
+	fmt.Fprintf(&canonicalHeaders, "x-amz-date:%s\n", amzDate)
 
 	payloadHash := hashSHA256(body)
 	r.Header.Set("X-Amz-Content-Sha256", payloadHash)

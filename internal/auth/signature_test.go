@@ -25,8 +25,8 @@ func signRequest(r *http.Request, creds *Credentials, region, service string, t 
 	signedHeaders := []string{"host", "x-amz-date"}
 
 	var canonicalHeaders strings.Builder
-	canonicalHeaders.WriteString(fmt.Sprintf("host:%s\n", r.Host))
-	canonicalHeaders.WriteString(fmt.Sprintf("x-amz-date:%s\n", amzDate))
+	fmt.Fprintf(&canonicalHeaders, "host:%s\n", r.Host)
+	fmt.Fprintf(&canonicalHeaders, "x-amz-date:%s\n", amzDate)
 
 	payloadHash := hashSHA256([]byte(""))
 	r.Header.Set("X-Amz-Content-Sha256", payloadHash)
@@ -229,8 +229,8 @@ func signRequestWithBody(r *http.Request, creds *Credentials, region, service st
 	signedHeaders := []string{"host", "x-amz-date"}
 
 	var canonicalHeaders strings.Builder
-	canonicalHeaders.WriteString(fmt.Sprintf("host:%s\n", r.Host))
-	canonicalHeaders.WriteString(fmt.Sprintf("x-amz-date:%s\n", amzDate))
+	fmt.Fprintf(&canonicalHeaders, "host:%s\n", r.Host)
+	fmt.Fprintf(&canonicalHeaders, "x-amz-date:%s\n", amzDate)
 
 	payloadHash := customHash
 	if payloadHash == "" {

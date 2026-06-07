@@ -194,7 +194,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var errs []error
 
 	if err := s.s3Server.Shutdown(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("S3 API server shutdown error: %w", err))
+		errs = append(errs, fmt.Errorf("s3 API server shutdown error: %w", err))
 	}
 
 	if r, ok := s.s3Server.Handler.(*s3api.Router); ok {
@@ -202,11 +202,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 
 	if err := s.consoleServer.Shutdown(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("Console server shutdown error: %w", err))
+		errs = append(errs, fmt.Errorf("console server shutdown error: %w", err))
 	}
 
 	if err := s.engine.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("Storage engine close error: %w", err))
+		errs = append(errs, fmt.Errorf("storage engine close error: %w", err))
 	}
 
 	return errors.Join(errs...)

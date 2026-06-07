@@ -3,9 +3,7 @@
 # golangci-lint configuration for Objectra
 # ================================================================
 
-
-run:
-  timeout: 5m
+version: "2"
 
 linters:
   enable:
@@ -14,15 +12,26 @@ linters:
     - errcheck
     - ineffassign
     - unused
-    - gosimple
+
+  exclusions:
+    rules:
+      - linters:
+          - errcheck
+          - ineffassign
+        path: _test\.go
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+        - os.Remove
+        - os.RemoveAll
+        - (*go.etcd.io/bbolt.DB).Close
+        - (net.Listener).Close
+        - (*net.TCPListener).Close
 
 issues:
   # Show all issues from a linter (don't cap per-linter)
   max-issues-per-linter: 0
   max-same-issues: 0
-
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - ineffassign

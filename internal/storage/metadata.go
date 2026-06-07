@@ -124,7 +124,7 @@ func NewMetadataStore(dataDir string) (*MetadataStore, error) {
 	}
 
 	if err := m.migrateIfNecessary(); err != nil {
-		m.Close()
+		_ = m.Close()
 		return nil, fmt.Errorf("failed to run startup metadata migration: %w", err)
 	}
 
