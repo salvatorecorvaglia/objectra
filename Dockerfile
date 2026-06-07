@@ -42,9 +42,7 @@ WORKDIR /app
 COPY --from=builder /build/objectra .
 
 # Set default environment variables
-ENV OBJECTRA_ACCESS_KEY=objectra \
-    OBJECTRA_SECRET_KEY=objectra123 \
-    OBJECTRA_DATA_DIR=/data \
+ENV OBJECTRA_DATA_DIR=/data \
     OBJECTRA_S3_PORT=9000 \
     OBJECTRA_CONSOLE_PORT=9001 \
     OBJECTRA_REGION=us-east-1
