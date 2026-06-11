@@ -182,6 +182,13 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 	}
 	m.mu.RUnlock()
 
+	// Ensure the initialization lock is cleaned up from the map upon return
+	defer func() {
+		m.initMu.Lock()
+		delete(m.initLocks, bucket)
+		m.initMu.Unlock()
+	}()
+
 	// Open the database file (blocking Disk I/O) without holding global locks!
 	dbPath := filepath.Join(m.dataDir, "metadata", bucket+".db")
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
@@ -207,11 +214,6 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 	m.mu.Lock()
 	m.activeBuckets[bucket] = db
 	m.mu.Unlock()
-
-	// Cleanup the lock from the map
-	m.initMu.Lock()
-	delete(m.initLocks, bucket)
-	m.initMu.Unlock()
 
 	return db, nil
 }
@@ -1110,4 +1112,50 @@ func (m *MetadataStore) PutSystemValue(key, val string) error {
 		b := tx.Bucket(bucketsBucket)
 		return b.Put([]byte("_sys_" + key), []byte(val))
 	})
+}
+
+// GetObjectVersions returns all version records (including latest and historical) for a specific key.
+func (m *MetadataStore) GetObjectVersions(bucket, key string) ([]ObjectInfo, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
+	db, err := m.getBucketDB(bucket)
+	if err != nil {
+		return nil, err
+	}
+	var versions []ObjectInfo
+	prefix := []byte(bucket + "\x00" + key + "\x00")
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(objectsBucket)
+		if b == nil {
+			return nil
+		}
+		// Also read the latest version pointer
+		latestData := b.Get(objectMetaKey(bucket, key))
+		if latestData != nil {
+			var latestInfo ObjectInfo
+			if err := json.Unmarshal(latestData, &latestInfo); err == nil {
+				versions = append(versions, latestInfo)
+			}
+		}
+
+		c := b.Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			var info ObjectInfo
+			if err := json.Unmarshal(v, &info); err == nil {
+				// Avoid double adding if it's already there (though historical keys are distinct)
+				alreadyAdded := false
+				for _, existing := range versions {
+					if existing.VersionID == info.VersionID {
+						alreadyAdded = true
+						break
+					}
+				}
+				if !alreadyAdded {
+					versions = append(versions, info)
+				}
+			}
+		}
+		return nil
+	})
+	return versions, err
 }

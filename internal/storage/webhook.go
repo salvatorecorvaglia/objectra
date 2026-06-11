@@ -51,14 +51,16 @@ func (fs *FilesystemEngine) initWebhookDispatcher() {
 // StopWebhookDispatcher halts webhook processing, flushes remaining notifications, and waits for workers to terminate.
 func (fs *FilesystemEngine) StopWebhookDispatcher() {
 	fs.webhookMu.Lock()
-	defer fs.webhookMu.Unlock()
-
 	if atomic.SwapInt32(&fs.isWebhookShuttingDown, 1) == 1 {
+		fs.webhookMu.Unlock()
 		return
 	}
 
-	if fs.webhookQueue != nil {
-		close(fs.webhookQueue)
+	q := fs.webhookQueue
+	fs.webhookMu.Unlock()
+
+	if q != nil {
+		close(q)
 		fs.webhookWG.Wait()
 	}
 }

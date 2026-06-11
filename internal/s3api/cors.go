@@ -2,6 +2,7 @@ package s3api
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -84,6 +85,9 @@ func EvaluateCORS(r *http.Request, cors *storage.CORSConfiguration) (map[string]
 
 func matchOrigin(origin string, allowedOrigins []string) bool {
 	origin = strings.ToLower(origin)
+	originURL, err := url.Parse(origin)
+	hasParsedOrigin := (err == nil && originURL.Host != "")
+
 	for _, allowed := range allowedOrigins {
 		if allowed == "*" {
 			return true
@@ -91,7 +95,23 @@ func matchOrigin(origin string, allowedOrigins []string) bool {
 		if strings.ToLower(allowed) == origin {
 			return true
 		}
-		// Support simple subdomain wildcard match (e.g. *.example.com)
+
+		// Support wildcard matches with schemes (e.g., https://*.example.com)
+		if hasParsedOrigin {
+			allowedURL, err := url.Parse(strings.ToLower(allowed))
+			if err == nil && allowedURL.Host != "" {
+				if originURL.Scheme == allowedURL.Scheme {
+					if strings.HasPrefix(allowedURL.Host, "*.") {
+						suffix := allowedURL.Host[1:] // e.g. .example.com
+						if strings.HasSuffix(originURL.Host, suffix) {
+							return true
+						}
+					}
+				}
+			}
+		}
+
+		// Fallback: Support simple subdomain wildcard match (e.g. *.example.com) without scheme
 		if strings.HasPrefix(allowed, "*.") {
 			suffix := strings.ToLower(allowed[1:]) // e.g. .example.com
 			if strings.HasSuffix(origin, suffix) {

@@ -1018,7 +1018,7 @@
                     </div>
                 `;
             } else if (ext === '.pdf') {
-                previewContentContainer.innerHTML = `<iframe src="${presignedURL}" style="width: 100%; height: 60vh; border: none; border-radius: 6px; background: white;"></iframe>`;
+                previewContentContainer.innerHTML = `<iframe src="${presignedURL}" sandbox="allow-scripts allow-same-origin" style="width: 100%; height: 60vh; border: none; border-radius: 6px; background: white;"></iframe>`;
             } else if (['.txt', '.json', '.js', '.ts', '.go', '.html', '.css', '.md', '.log', '.env', '.yml', '.yaml', '.xml', '.ini', '.conf', '.sh', '.py'].includes(ext)) {
                 const text = await fetch(presignedURL).then(r => {
                     if (!r.ok) throw new Error('Failed to fetch text body');
@@ -1143,12 +1143,17 @@
             const originalHTML = batchDeleteBtn.innerHTML;
             batchDeleteBtn.textContent = 'Deleting...';
 
-            const promises = keys.map(key =>
-                api('DELETE', `/api/buckets/${currentBucket}/objects?key=${encodeURIComponent(key)}`)
-            );
-
+            const results = [];
             try {
-                const results = await Promise.all(promises);
+                const batchSize = 5;
+                for (let i = 0; i < keys.length; i += batchSize) {
+                    const chunk = keys.slice(i, i + batchSize);
+                    const chunkPromises = chunk.map(key =>
+                        api('DELETE', `/api/buckets/${currentBucket}/objects?key=${encodeURIComponent(key)}`)
+                    );
+                    const chunkResults = await Promise.all(chunkPromises);
+                    results.push(...chunkResults);
+                }
                 const succeeded = results.filter(r => r.ok).length;
                 const failed = results.length - succeeded;
 

@@ -22,6 +22,9 @@ const (
 	amzSignatureQuery    = "X-Amz-Signature"
 )
 
+// TempDir is the directory where temporary request body files are stored.
+var TempDir string
+
 // AuthError represents a specific S3 authentication/signature error.
 type AuthError struct {
 	Code    string
@@ -399,7 +402,11 @@ func HashPayload(r *http.Request) (string, error) {
 		return hashSHA256(buf), nil
 	}
 
-	tmpFile, err := os.CreateTemp("", "objectra-body-*")
+	tempDir := TempDir
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+	tmpFile, err := os.CreateTemp(tempDir, "objectra-body-*")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file for request body: %w", err)
 	}

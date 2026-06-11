@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/salvatorecorvaglia/objectra/internal/auth"
@@ -35,6 +36,12 @@ func New(cfg *config.Config) (*Server, error) {
 	engine, err := storage.NewFilesystemEngine(cfg.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
+	}
+
+	// Set temporary directory for auth hashing
+	auth.TempDir = filepath.Join(cfg.DataDir, "tmp")
+	if err := os.MkdirAll(auth.TempDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create temporary hashing directory: %w", err)
 	}
 
 	// Setup persistent JWT secret for Console session tracking

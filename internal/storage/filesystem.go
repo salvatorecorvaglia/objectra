@@ -715,12 +715,24 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 		return nil
 	}
 
-	objPath, err := fs.objectPathWithVersion(bucket, key, info.VersionID)
-	if err != nil {
-		return &S3Error{Code: "InvalidArgument", Message: err.Error()}
+	// Fetch all versions of the object to remove their files from disk
+	versions, err := fs.metadata.GetObjectVersions(bucket, key)
+	if err == nil {
+		for _, v := range versions {
+			objPath, err := fs.objectPathWithVersion(bucket, key, v.VersionID)
+			if err == nil {
+				os.Remove(objPath)
+				fs.cleanupParentDirs(objPath, bucket)
+			}
+		}
+	} else {
+		// Fallback to deleting the latest version's file if GetObjectVersions fails
+		objPath, err := fs.objectPathWithVersion(bucket, key, info.VersionID)
+		if err == nil {
+			os.Remove(objPath)
+			fs.cleanupParentDirs(objPath, bucket)
+		}
 	}
-	os.Remove(objPath)
-	fs.cleanupParentDirs(objPath, bucket)
 
 	err = fs.metadata.DeleteObjectMeta(bucket, key, "")
 	if err != nil {
@@ -1013,20 +1025,51 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
 
-	unlock := fs.lockUpload(uploadID)
-	defer unlock()
-
-	meta, err := fs.metadata.GetMultipartMeta(bucket, key, uploadID)
-	if err != nil {
-		return nil, &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}
-	}
-
-	// Extract SSECParams from context
+	// 1. Lock briefly to get/initialize multipart metadata and validate SSE-C params
 	var ssecParams *SSECParams
 	if ctx != nil {
 		if params, ok := ctx.Value(SSECContextKey).(*SSECParams); ok && params != nil {
 			ssecParams = params
 		}
+	}
+
+	// Brief lock to read and initialize metadata parameters
+	err := func() error {
+		unlock := fs.lockUpload(uploadID)
+		defer unlock()
+
+		meta, err := fs.metadata.GetMultipartMeta(bucket, key, uploadID)
+		if err != nil {
+			return err
+		}
+
+		// First part upload with SSE-C: initialize parameters in metadata
+		if meta.SSECustomerAlgorithm == "" && len(meta.Parts) == 0 && ssecParams != nil {
+			meta.SSECustomerAlgorithm = ssecParams.Algorithm
+			meta.SSECustomerKey = ssecParams.Key
+			meta.SSECustomerKeyMD5 = ssecParams.KeyMD5
+			if err := fs.metadata.PutMultipartMeta(meta); err != nil {
+				return err
+			}
+		}
+		return nil
+	}()
+	if err != nil {
+		return nil, &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}
+	}
+
+	// Read meta under brief lock for SSE-C validation
+	var meta *MultipartMeta
+	err = func() error {
+		unlock := fs.lockUpload(uploadID)
+		defer unlock()
+
+		var err error
+		meta, err = fs.metadata.GetMultipartMeta(bucket, key, uploadID)
+		return err
+	}()
+	if err != nil {
+		return nil, &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}
 	}
 
 	// SSE-C validation
@@ -1039,16 +1082,6 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 	if meta.SSECustomerAlgorithm != "" && ssecParams != nil {
 		if subtle.ConstantTimeCompare([]byte(ssecParams.KeyMD5), []byte(meta.SSECustomerKeyMD5)) != 1 {
 			return nil, &S3Error{Code: "InvalidDigest", Message: "The customer-provided encryption key MD5 does not match"}
-		}
-	}
-
-	// First part upload with SSE-C: initialize parameters in metadata
-	if meta.SSECustomerAlgorithm == "" && len(meta.Parts) == 0 && ssecParams != nil {
-		meta.SSECustomerAlgorithm = ssecParams.Algorithm
-		meta.SSECustomerKey = ssecParams.Key
-		meta.SSECustomerKeyMD5 = ssecParams.KeyMD5
-		if err := fs.metadata.PutMultipartMeta(meta); err != nil {
-			return nil, err
 		}
 	}
 
@@ -1118,6 +1151,15 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		PartNumber: partNumber,
 		ETag:       etag,
 		Size:       written,
+	}
+
+	// 2. Lock briefly at the end to update metadata
+	unlock := fs.lockUpload(uploadID)
+	defer unlock()
+
+	meta, err = fs.metadata.GetMultipartMeta(bucket, key, uploadID)
+	if err != nil {
+		return nil, &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}
 	}
 
 	// Update metadata with part info
@@ -1826,6 +1868,7 @@ func cleanupOrphanedTempFiles(dataDir string) {
 	walkDirs := []string{
 		filepath.Join(dataDir, "buckets"),
 		filepath.Join(dataDir, "multipart"),
+		filepath.Join(dataDir, "tmp"),
 	}
 	for _, dir := range walkDirs {
 		_ = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
@@ -1834,7 +1877,7 @@ func cleanupOrphanedTempFiles(dataDir string) {
 			}
 			if !d.IsDir() {
 				name := d.Name()
-				if strings.HasPrefix(name, ".objectra-tmp-") || strings.HasPrefix(name, ".part-tmp-") || strings.HasPrefix(name, ".objectra-multipart-") {
+				if strings.HasPrefix(name, ".objectra-tmp-") || strings.HasPrefix(name, ".part-tmp-") || strings.HasPrefix(name, ".objectra-multipart-") || strings.HasPrefix(name, "objectra-body-") {
 					_ = os.Remove(path)
 				}
 			}

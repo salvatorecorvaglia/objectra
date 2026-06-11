@@ -18,8 +18,12 @@ func TestMatchOrigin(t *testing.T) {
 		{"http://example.com", []string{"http://example.com"}, true},
 		{"http://example.com", []string{"https://example.com"}, false},
 		{"http://sub.example.com", []string{"*.example.com"}, true},
-		{"http://sub.example.com", []string{"http://*.example.com"}, false}, // standard wildcard syntax starts with * or http://*
+		{"http://sub.example.com", []string{"http://*.example.com"}, true},
+		{"https://sub.example.com", []string{"https://*.example.com"}, true},
+		{"https://sub.example.com", []string{"http://*.example.com"}, false},
+		{"https://sub.deep.example.com", []string{"https://*.example.com"}, true},
 		{"http://another.com", []string{"*.example.com"}, false},
+		{"http://another.com", []string{"https://*.example.com"}, false},
 	}
 
 	for _, tc := range tests {

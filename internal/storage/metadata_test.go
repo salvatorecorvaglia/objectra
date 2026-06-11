@@ -118,3 +118,36 @@ func TestMetadataMigration(t *testing.T) {
 		t.Errorf("unexpected multipart meta: %+v", mp)
 	}
 }
+
+func TestMetadataInitLocksCleanupOnError(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	meta, err := NewMetadataStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewMetadataStore failed: %v", err)
+	}
+	defer meta.Close()
+
+	// Pre-create a directory at the expected dbPath to force bolt.Open to fail
+	badBucket := "bad-bucket"
+	dbPath := filepath.Join(tmpDir, "metadata", badBucket+".db")
+	if err := os.MkdirAll(dbPath, 0700); err != nil {
+		t.Fatalf("failed to create directory to block db: %v", err)
+	}
+
+	// Trigger getBucketDB via GetObjectMeta
+	_, err = meta.GetObjectMeta(badBucket, "some-key", "")
+	if err == nil {
+		t.Fatal("expected GetObjectMeta to fail when DB path is a directory")
+	}
+
+	// Verify that the badBucket lock is cleaned up from initLocks map
+	meta.initMu.Lock()
+	_, exists := meta.initLocks[badBucket]
+	meta.initMu.Unlock()
+
+	if exists {
+		t.Error("expected initLocks entry to be deleted after initialization failure")
+	}
+}
+

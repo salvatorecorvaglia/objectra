@@ -83,14 +83,16 @@ func (fs *FilesystemEngine) initSyncDispatcher() {
 // StopSyncDispatcher halts replication queue processing, waits for pending transfers, and shuts down workers.
 func (fs *FilesystemEngine) StopSyncDispatcher() {
 	fs.syncMu.Lock()
-	defer fs.syncMu.Unlock()
-
 	if atomic.SwapInt32(&fs.isSyncShuttingDown, 1) == 1 {
+		fs.syncMu.Unlock()
 		return
 	}
 
-	if fs.syncQueue != nil {
-		close(fs.syncQueue)
+	q := fs.syncQueue
+	fs.syncMu.Unlock()
+
+	if q != nil {
+		close(q)
 		fs.syncWG.Wait()
 	}
 }

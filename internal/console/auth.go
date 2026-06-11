@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -13,12 +12,6 @@ import (
 
 // jwtSecret is generated at startup for signing console session tokens.
 var jwtSecret []byte
-
-func init() {
-	if secret := os.Getenv("OBJECTRA_JWT_SECRET"); secret != "" {
-		jwtSecret = []byte(secret)
-	}
-}
 
 // SetJWTSecret sets the console JWT token signing key.
 func SetJWTSecret(secret []byte) {
