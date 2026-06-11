@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Startup security warning if default S3 credentials (`objectra` / `objectra123`) are detected.
 - Storage engine startup sweep that cleans orphaned temporary/multipart files (`.objectra-tmp-`, etc.) left by previous crashes.
 - Webhook and replication mirroring test suites (`webhook_test.go` and `sync_test.go`) covering asynchronous events.
+- Automated Docker Hub publishing support in the GitHub Actions release workflow.
 
 ### Changed
 - Optimized multipart upload performance by reducing lock contention, holding metadata locks only briefly during validation and updates while allowing concurrent disk writes.
