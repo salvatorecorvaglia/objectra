@@ -83,4 +83,4 @@ release:
     name: objectra
   draft: false
   prerelease: auto
-  name_template: "v{{ .Version }}"
+  name_template: "Objectra v{{ .Version }}"
