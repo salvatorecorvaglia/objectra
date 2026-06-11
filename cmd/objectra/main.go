@@ -18,7 +18,21 @@ import (
 	"github.com/salvatorecorvaglia/objectra/internal/server"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
+	// Parse version flags
+	for _, arg := range os.Args[1:] {
+		if arg == "-v" || arg == "--version" || arg == "-version" || arg == "version" {
+			fmt.Printf("Objectra version %s (commit %s, built at %s)\n", version, commit, date)
+			os.Exit(0)
+		}
+	}
+
 	cfg := config.Load()
 
 	// Set up structured logging
@@ -79,7 +93,7 @@ func main() {
 }
 
 func printBanner(cfg *config.Config) {
-	banner := `
+	banner := fmt.Sprintf(`
    ____  __     _           __            
   / __ \/ /_   (_)__  _____/ /__________ _
  / / / / __ \ / / _ \/ ___/ __/ ___/ __  /
@@ -87,8 +101,8 @@ func printBanner(cfg *config.Config) {
 \____/_.___// /\___/\___/\__/_/   \__,_/  
          /___/                             
 
-  S3-Compatible Object Storage Server
-`
+  S3-Compatible Object Storage Server (%s)
+`, version)
 	fmt.Print(banner)
 	scheme := "http"
 	if cfg.TLSEnabled {
