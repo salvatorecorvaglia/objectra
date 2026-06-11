@@ -1,52 +1,67 @@
 # Contributing to Objectra 🖼️
 
-Thank you for your interest in contributing to Objectra! We welcome and appreciate contributions of all kinds, whether you are fixing a bug, improving documentation, or proposing new features.
+First off, thank you for taking the time to contribute! Contributions from the community are what make open-source projects like Objectra better. 
 
-Please take a moment to review this document to make the contribution process smooth and effective for everyone.
+Whether you want to fix a bug, suggest an enhancement, improve documentation, or implement a new S3 API feature, this guide will help you get started.
 
 ---
 
-## Table of Contents
+## 📖 Table of Contents
 
-- [Code of Conduct](#code-of-conduct)
-- [How to Contribute](#how-to-contribute)
+- [Code of Conduct](#-code-of-conduct)
+- [Codebase Architecture](#-codebase-architecture)
+- [How Can I Contribute?](#-how-can-i-contribute)
   - [Reporting Bugs](#reporting-bugs)
   - [Suggesting Enhancements](#suggesting-enhancements)
-  - [Pull Request Process](#pull-request-process)
-- [Local Development Setup](#local-development-setup)
+- [Setting Up Your Development Environment](#-setting-up-your-development-environment)
   - [Prerequisites](#prerequisites)
   - [Running Locally](#running-locally)
   - [Running Tests](#running-tests)
   - [Linting](#linting)
-- [Coding Guidelines](#coding-guidelines)
+- [Development & Design Guidelines](#-development--design-guidelines)
   - [Go Conventions](#go-conventions)
   - [Concurrency & Performance](#concurrency--performance)
   - [Aesthetic & Design Principles](#aesthetic--design-principles)
-- [Commit Message Guidelines](#commit-message-guidelines)
-- [CI/CD Pipeline](#cicd-pipeline)
-- [Releasing](#releasing)
-- [Licensing](#licensing)
+- [Submitting Your Changes](#-submitting-your-changes)
+  - [Branch Naming](#branch-naming)
+  - [Commit Message Guidelines](#commit-message-guidelines)
+  - [Pull Request Process](#pull-request-process)
+- [CI/CD & Releases](#-cicd--releases)
+  - [CI/CD Pipeline](#cicd-pipeline)
+  - [Releasing](#releasing)
+- [Add Yourself to Contributors](#-add-yourself-to-contributors)
 
 ---
 
-## Code of Conduct
+## 📄 Code of Conduct
 
-By participating in this project, you agree to abide by basic professional standards:
+We are committed to fostering a welcoming, respectful, and inclusive community. By participating in this project, you agree to treat all contributors with respect, maintain constructive feedback, and keep discussions friendly and professional.
 
-- Be respectful, welcoming, and inclusive of all contributors.
-- Focus on constructive feedback and collaboration.
-- Avoid personal attacks or exclusionary behavior.
+If you encounter any behavior that violates these principles, please see our [Security Policy](SECURITY.md) or contact the maintainers.
 
 ---
 
-## How to Contribute
+## 🏛️ Codebase Architecture
+
+Objectra is written in Go and structured to separate core storage engine logic, API handling, and the built-in web console:
+
+- **[`cmd/objectra/`](file:///Users/salvatorecorvaglia/github/objectra/cmd/objectra)**: The main entry point. Initializes configuration, storage backends, routers, and starts the S3 API and Console HTTP servers.
+- **[`internal/auth/`](file:///Users/salvatorecorvaglia/github/objectra/internal/auth)**: Implements AWS Signature V4 authentication for the S3 API and JWT authentication/sessions for the web console.
+- **[`internal/config/`](file:///Users/salvatorecorvaglia/github/objectra/internal/config)**: Defines configuration settings, handles environment variables, and parses `.env` profiles.
+- **[`internal/console/`](file:///Users/salvatorecorvaglia/github/objectra/internal/console)**: Contains handlers, routers, and frontend/static assets for the built-in web browser console.
+- **[`internal/s3api/`](file:///Users/salvatorecorvaglia/github/objectra/internal/s3api)**: Houses routers, middlewares, and controllers implementing the S3-compatible API endpoints (e.g., bucket/object operations, logging, lifecycles).
+- **[`internal/server/`](file:///Users/salvatorecorvaglia/github/objectra/internal/server)**: Handles HTTP/HTTPS server orchestration, TLS configurations, and rate-limiting limits.
+- **[`internal/storage/`](file:///Users/salvatorecorvaglia/github/objectra/internal/storage)**: The core storage abstraction. Implements local disk mapping, streaming I/O, bucket metadata management, lifecycle expiration execution, and bucket-level concurrency controls.
+
+---
+
+## 💡 How Can I Contribute?
 
 ### Reporting Bugs
 
-If you find a bug, please check the existing [GitHub Issues](https://github.com/salvatorecorvaglia/objectra/issues) to see if it has already been reported. If not, feel free to open a new issue. Include:
-
-1. **Clear title and description** of the bug.
-2. **Steps to reproduce** the issue.
+If you find a bug in Objectra, please open a GitHub Issue with the following details:
+1. **Clear title** and description of the issue.
+2. **Steps to reproduce** the bug.
 3. **Expected vs. actual behavior**.
 4. **Environment details** (Go version, OS, Docker version, client S3 SDK used).
 5. Relevant logs or error messages (with sensitive keys redacted).
@@ -54,69 +69,57 @@ If you find a bug, please check the existing [GitHub Issues](https://github.com/
 ### Suggesting Enhancements
 
 We are always looking for ways to make Objectra better! If you have a feature request or enhancement idea:
-
 1. Search the open issues to see if the feature has already been suggested.
 2. Open a new issue detailing your proposal, explaining the use case and how it benefits the project.
 3. Keep in mind Objectra's goal of being a lightweight, high-performance, and self-hosted S3-compatible storage engine.
 
-### Pull Request Process
-
-1. **Fork** the repository and create your branch from the `main` branch:
-   ```bash
-   git checkout -b feature/my-cool-feature
-   ```
-2. **Implement your changes**. Make sure to write unit tests for any new features or bug fixes.
-3. **Verify** your changes locally (build successfully and pass all tests — see [Running Tests](#running-tests) and [Linting](#linting)).
-4. **Commit your changes** using clean, descriptive commit messages (see [Commit Message Guidelines](#commit-message-guidelines)).
-5. **Push** your branch to your fork.
-6. **Open a Pull Request** against the `main` branch of Objectra. Provide a clear description of what your PR does, referencing any related issues.
-
-> **Note**: CI will automatically run lint checks, tests (with race detection), build verification, and a Docker build on your PR. All checks must pass before merging.
-
 ---
 
-## Local Development Setup
+## 💻 Setting Up Your Development Environment
 
 ### Prerequisites
 
-- **Go 1.23+** (installed on your local machine)
-- **Docker & Docker Compose** (optional, for containerized environment tests)
-- **AWS CLI / Boto3** (optional, for S3 API compatibility verification)
-- **golangci-lint** (optional for local linting — CI runs this automatically)
+- **Go 1.23 or higher** (Required to compile and run the project)
+- **Docker & Docker Compose** (Optional, for building/testing containerized builds)
+- **golangci-lint** (For running lint checks locally)
+- **AWS CLI / Boto3** (Optional, for S3 API compatibility verification)
 
 ### Running Locally
 
-1. **Clone your fork**:
-
+1. **Fork and Clone the Repository**
+   Fork the repository on GitHub and clone it to your local machine:
    ```bash
-   git clone https://github.com/YOUR-USERNAME/objectra.git
+   git clone https://github.com/<your-username>/objectra.git
    cd objectra
    ```
 
-2. **Set up configuration**:
-   Copy the example environment file:
-
+2. **Configure Environment Variables**
+   Create a local configuration file by copying the template file:
    ```bash
    cp .env.example .env
    ```
+   Modify the `.env` variables if you need to run ports on different addresses or change the default storage directory (`OBJECTRA_DATA_DIR`).
 
-3. **Build from source**:
-
+3. **Build the Server**
+   To verify that everything compiles correctly, build the binary:
    ```bash
    go build -o objectra ./cmd/objectra
    ```
 
-4. **Run the server**:
+4. **Run the Server**
    Load your environment variables and start Objectra:
    ```bash
    export $(grep -v '^#' .env | xargs) && ./objectra
+   ```
+   *Alternatively, run and compile in one step:*
+   ```bash
+   export $(grep -v '^#' .env | xargs) && go run ./cmd/objectra
    ```
    The S3 API will be available at `http://localhost:9000` and the web console at `http://localhost:9001`.
 
 ### Running Tests
 
 Objectra has unit and integration tests across the codebase. Make sure all tests pass before submitting a pull request:
-
 ```bash
 # Run all tests in the workspace
 go test -v ./...
@@ -126,47 +129,47 @@ go test -race ./...
 
 # Run tests with coverage report
 go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+# View coverage in HTML format
 go tool cover -html=coverage.out -o coverage.html
 ```
 
 ### Linting
 
-The project uses [golangci-lint](https://golangci-lint.run/) with the configuration defined in [.golangci.yml](.golangci.yml). Enabled linters include: `govet`, `staticcheck`, `errcheck`, `ineffassign`, `unused`, and `gosimple`.
-
+Before pushing your changes, run `golangci-lint` to check code quality. We enforce strict linting rules on every pull request:
 ```bash
 # Install golangci-lint (if not already installed)
 go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 # Run the linter
 golangci-lint run
-
-# Or use go fmt and go vet directly
-go fmt ./...
-go vet ./...
 ```
-
-> **Tip**: CI runs `golangci-lint` automatically on every push and pull request, so you don't need it installed locally — but running it before pushing helps catch issues early.
+Lint rules are defined in [`.golangci.yml`](file:///Users/salvatorecorvaglia/github/objectra/.golangci.yml).
 
 ---
 
-## Coding Guidelines
+## 🛠️ Development & Design Guidelines
 
 ### Go Conventions
 
-- Follow standard Go idioms and style conventions.
-- All Go files must be formatted using `gofmt` (or `go fmt ./...`).
-- Avoid adding unnecessary external dependencies to keep the project lightweight.
-- Ensure proper error handling: return errors to callers instead of ignoring them, and wrap errors with context where appropriate (e.g., `fmt.Errorf("error doing x: %w", err)`).
-- **Structured slog Logging**: Always use the structured logger `log/slog` rather than standard `log` or print statements. Include key-value context attributes where appropriate (e.g., `slog.Info("msg", "key", value)` or `slog.Error("msg", "error", err)`).
+- **Idiomatic Code**: Follow standard Go idioms and style conventions.
+- **Formatting**: All Go files must be formatted using `gofmt` (or `go fmt ./...`).
+- **Dependencies**: Avoid adding unnecessary external dependencies to keep the project lightweight.
+- **Error Handling**: Always check and handle errors explicitly. Return errors to callers instead of ignoring them, and wrap errors with context where appropriate (e.g., `fmt.Errorf("error doing x: %w", err)`).
+- **Structured slog Logging**: Always use the structured logger `log/slog` rather than standard `log` or print statements. Include key-value context attributes where appropriate:
+  - `slog.Debug`: Highly verbose details helpful for trace diagnostics.
+  - `slog.Info`: High-level operational events (e.g., server started, port bound).
+  - `slog.Warn`: Non-fatal issues (e.g., rate limits hit, configuration warnings).
+  - `slog.Error`: Fatal issues or operations that failed.
 - **Constant-time Security Checks**: When performing cryptographic or security-sensitive comparisons (e.g., SSE-C MD5 checksums, token validation, password verification), always use constant-time functions (e.g., `subtle.ConstantTimeCompare`) to mitigate side-channel timing attacks.
 
 ### Concurrency & Performance
 
-- **Bucket-Level Locking**: When reading or modifying bucket resources, acquire the corresponding bucket-level lock using the metadata store's locking mechanism (`acquireBucketLock`). Never use global package-level variables or raw mutexes for bucket operations.
+- **Bucket-Level Locking**: When reading or modifying bucket resources, acquire the corresponding bucket-level lock using the metadata store's locking mechanism (`acquireBucketLock`). Never use global package-level variables or raw mutexes for bucket operations to avoid race conditions.
 - **Asynchronous Execution & Queues**: Performance-critical async side-effects, such as triggering webhooks or replication mirroring tasks, should utilize the buffered dispatcher queues (e.g., `syncQueue` or `webhookQueue`) rather than spawning unmanaged goroutines. This prevents resource exhaustion under heavy loads.
 - **Bounded Access Logging Queue**: S3 API access logging must utilize a bounded worker pool queue (e.g., `logChan` with a capacity and a dedicated set of worker goroutines) to avoid goroutine explosion under high-load situations. Log events should be enqueued asynchronously, dropping them if the log queue is fully saturated.
 - **Passive Map Cleanups**: Stateful in-memory maps (e.g., console rate limit trackers, active user session mappings) must implement a passive cleanup mechanism (e.g., periodically purging expired/stale entries inline during request handling paths) to ensure memory footprint remains bounded.
-- **Streaming I/O**: Keep streaming operations memory-efficient. Avoid buffering large S3 objects in memory.
+- **Streaming I/O**: Keep streaming operations memory-efficient. Avoid buffering large S3 objects in memory. Stream bytes directly to/from disk where possible.
 
 ### Aesthetic & Design Principles
 
@@ -174,58 +177,54 @@ go vet ./...
 
 ---
 
-## Commit Message Guidelines
+## 🚀 Submitting Your Changes
+
+### Branch Naming
+
+Use clear branch names prefixing the type of changes you are making:
+- `feature/` for new features (e.g., `feature/lifecycle-rules`)
+- `bugfix/` for bug fixes (e.g., `bugfix/multipart-part-size`)
+- `docs/` for documentation updates (e.g., `docs/add-contributing-guide`)
+- `refactor/` for code refactoring
+- `test/` for testing additions
+
+### Commit Message Guidelines
 
 We prefer clean and descriptive commit messages following the [Conventional Commits](https://www.conventionalcommits.org/) specification:
+```
+<type>(<scope>): <short description>
 
-- `feat: add support for S3 Lifecycle policies`
-- `fix: resolve memory leak in multipart upload`
-- `docs: update setup instructions in README`
-- `test: add tests for path traversal protection`
-- `refactor: simplify metadata store locking`
-- `perf: optimize streaming I/O buffer allocation`
-- `ci: update golangci-lint to latest version`
-
-Keep commit titles short (under 50-60 characters) and use the message body for more detail if necessary.
+[Optional longer body describing details]
+```
+Common types include:
+- `feat`: A new feature (e.g., `feat(s3api): add support for S3 Lifecycle policies`)
+- `fix`: A bug fix (e.g., `fix(storage): resolve memory leak in multipart upload`)
+- `docs`: Documentation updates (e.g., `docs: update setup instructions in README`)
+- `test`: Add or modify tests (e.g., `test: add tests for path traversal protection`)
+- `refactor`: Code changes that neither fix a bug nor add a feature (e.g., `refactor: simplify metadata store locking`)
+- `perf`: Performance optimizations (e.g., `perf: optimize streaming I/O buffer allocation`)
+- `ci`: CI pipeline updates (e.g., `ci: update golangci-lint version`)
 
 > **Why this matters**: The release workflow uses [GoReleaser](https://goreleaser.com/) which auto-generates changelogs grouped by commit type (`feat`, `fix`, `docs`, `test`, `refactor`, `perf`). Commits prefixed with `chore:`, `ci:`, or `style:` are excluded from release notes.
 
----
+### Pull Request Process
 
-## CI/CD Pipeline
-
-Every push and pull request to `main` triggers the **CI workflow** (`.github/workflows/ci.yml`):
-
-| Job        | Description                                           |
-| ---------- | ----------------------------------------------------- |
-| **Lint**   | Runs `golangci-lint` with the project configuration   |
-| **Test**   | Runs `go test -race` across Go 1.23 and stable        |
-| **Build**  | Compiles a static binary (`CGO_ENABLED=0`)            |
-| **Docker** | Builds the Docker image (no push) to verify the build |
-
-All jobs must pass for a PR to be mergeable.
-
----
-
-## Releasing
-
-Releases are automated via the **Release workflow** (`.github/workflows/release.yml`), triggered by pushing a semver tag:
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-This will:
-
-1. **Run tests** to verify the tagged commit.
-2. **GoReleaser** creates GitHub releases with cross-compiled binaries (Linux, macOS, Windows — amd64/arm64) and auto-generated changelogs.
-3. **Docker Publish** builds and pushes multi-architecture images (`linux/amd64`, `linux/arm64`) to `ghcr.io/salvatorecorvaglia/objectra`.
-
-## 📜 Code of Conduct
-
-Please maintain a respectful and professional tone in all communications.
+1. Fork the repository and create your branch:
+   ```bash
+   git checkout -b feature/your-feature-name
+   ```
+2. Implement your changes, ensuring you write relevant unit/integration tests.
+3. Push your branch to your fork:
+   ```bash
+   git push origin feature/your-feature-name
+   ```
+4. Open a Pull Request against the `main` branch of the `salvatorecorvaglia/objectra` repository.
+5. Fill out the pull request template completely, detailing:
+   - What problem is solved by the PR.
+   - The approach taken.
+   - Verification and manual testing steps.
+6. Address any feedback during code review and update the branch as needed.
 
 ---
 
-Happy coding! 🌑
+Happy coding! 🖼️
