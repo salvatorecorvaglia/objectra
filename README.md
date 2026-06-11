@@ -23,13 +23,13 @@ Objectra is a high-performance object storage server written in Go that implemen
 
 Objectra is structured logically to separate the core storage logic from HTTP endpoints and web interfaces:
 
-- **[`cmd/objectra/`](file:///Users/salvatorecorvaglia/github/objectra/cmd/objectra)**: The entry point. Initializes runtime configurations, mounts databases, boots servers, and registers shutdown handlers.
-- **[`internal/storage/`](file:///Users/salvatorecorvaglia/github/objectra/internal/storage)**: The storage engine. Handles direct-to-disk layout mapping, chunked multipart uploads, metadata bookkeeping, lifecycle sweeps, replication queues, and webhook dispatching.
-- **[`internal/s3api/`](file:///Users/salvatorecorvaglia/github/objectra/internal/s3api)**: Exposes the AWS S3-compatible REST API endpoints.
-- **[`internal/console/`](file:///Users/salvatorecorvaglia/github/objectra/internal/console)**: Implements the API routes and serves the Single-Page Web Console UI.
-- **[`internal/server/`](file:///Users/salvatorecorvaglia/github/objectra/internal/server)**: Sets up the main HTTP/HTTPS server listeners, handles custom rate limiting, and configures TLS.
-- **[`internal/auth/`](file:///Users/salvatorecorvaglia/github/objectra/internal/auth)**: AWS Signature V4 verification algorithms and console credentials checking.
-- **[`internal/config/`](file:///Users/salvatorecorvaglia/github/objectra/internal/config)**: Server configuration binding and default value administration.
+- **[`cmd/objectra/`](cmd/objectra)**: The entry point. Initializes runtime configurations, mounts databases, boots servers, and registers shutdown handlers.
+- **[`internal/storage/`](internal/storage)**: The storage engine. Handles direct-to-disk layout mapping, chunked multipart uploads, metadata bookkeeping, lifecycle sweeps, replication queues, and webhook dispatching.
+- **[`internal/s3api/`](internal/s3api)**: Exposes the AWS S3-compatible REST API endpoints.
+- **[`internal/console/`](internal/console)**: Implements the API routes and serves the Single-Page Web Console UI.
+- **[`internal/server/`](internal/server)**: Sets up the main HTTP/HTTPS server listeners, handles custom rate limiting, and configures TLS.
+- **[`internal/auth/`](internal/auth)**: AWS Signature V4 verification algorithms and console credentials checking.
+- **[`internal/config/`](internal/config)**: Server configuration binding and default value administration.
 
 ---
 
