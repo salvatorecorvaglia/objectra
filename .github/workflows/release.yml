@@ -2,7 +2,7 @@
 # Objectra — Release
 # ================================================================
 # Triggered when a version tag (v*.*.*) is pushed.
-# Jobs: test → release (GoReleaser) + docker-publish (GHCR)
+# Jobs: test → release (GoReleaser) + docker-publish (GHCR & Docker Hub)
 # ================================================================
 
 name: Release
@@ -74,7 +74,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ── Docker Publish (GHCR) ────────────────────────────────────
+  # ── Docker Publish (GHCR & Docker Hub) ───────────────────────
   docker-publish:
     name: Docker Publish
     runs-on: ubuntu-latest
@@ -96,11 +96,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Extract version from tag
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/salvatorecorvaglia/objectra
+          images: |
+            ghcr.io/salvatorecorvaglia/objectra
+            ${{ secrets.DOCKERHUB_USERNAME }}/objectra
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
