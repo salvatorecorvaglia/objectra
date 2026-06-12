@@ -151,3 +151,41 @@ func TestMetadataInitLocksCleanupOnError(t *testing.T) {
 	}
 }
 
+func TestListBucketsIgnoresSystemKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	meta, err := NewMetadataStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewMetadataStore failed: %v", err)
+	}
+	defer meta.Close()
+
+	// 1. Create a regular bucket
+	bucket := &BucketInfo{
+		Name:         "testbucket",
+		CreationDate: time.Now().UTC(),
+	}
+	if err := meta.PutBucket(bucket); err != nil {
+		t.Fatalf("failed to put bucket: %v", err)
+	}
+
+	// 2. Put a system value (which creates a key starting with _sys_)
+	if err := meta.PutSystemValue("test_key", "raw-hex-non-json-value"); err != nil {
+		t.Fatalf("failed to put system value: %v", err)
+	}
+
+	// 3. Call ListBuckets and verify that only the regular bucket is returned and no error occurs
+	buckets, err := meta.ListBuckets()
+	if err != nil {
+		t.Fatalf("ListBuckets failed: %v", err)
+	}
+
+	if len(buckets) != 1 {
+		t.Errorf("expected exactly 1 bucket, got %d", len(buckets))
+	}
+
+	if buckets[0].Name != "testbucket" {
+		t.Errorf("expected bucket name 'testbucket', got '%s'", buckets[0].Name)
+	}
+}
+

@@ -422,6 +422,9 @@ func (m *MetadataStore) ListBuckets() ([]BucketInfo, error) {
 	err := m.globalDB.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		return b.ForEach(func(k, v []byte) error {
+			if bytes.HasPrefix(k, []byte("_sys_")) {
+				return nil
+			}
 			var info BucketInfo
 			if err := json.Unmarshal(v, &info); err != nil {
 				return err
