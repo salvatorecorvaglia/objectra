@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.0] - 2026-06-12
 
 ### Added
+
 - Multi-version object deletion support to ensure all historical versions are removed from disk upon object deletion.
 - CORS origin wildcard matching with scheme validation (e.g., `https://*.example.com`).
 - Multipart upload support for Server-Side Encryption with Customer-provided Keys (SSE-C).
@@ -21,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Webhook and replication mirroring test suites (`webhook_test.go` and `sync_test.go`) covering asynchronous events.
 
 ### Changed
+
 - Optimized multipart upload performance by reducing lock contention, holding metadata locks only briefly during validation and updates while allowing concurrent disk writes.
 - Upgraded GitHub Actions and CI workflow runner environments to use the latest versions.
 - Refactored code style, improved error message clarity, and modernized `golangci-lint` configuration settings.
@@ -29,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed loopback IP address (`127.0.0.1`) from auto-generated TLS certificate SAN `DNSNames`.
 
 ### Fixed
+
 - Deadlock and race conditions in webhook and mirror sync dispatchers by unlocking locks prior to closing queues during shutdown.
 - Lock leak in metadata store initialization by ensuring lock cleanup runs via `defer` on errors.
 - Flaky integration test assertions in webhook and mirror sync tests by replacing sleep-based waits with polling logic.
@@ -39,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Timing race conditions in the webhook and mirror sync integration tests.
 
 ### Security
+
 - Bumped `github.com/golang-jwt/jwt/v5` from `5.2.1` to `5.2.2`.
 - Passive inline garbage collection in the console rate limiter map to prune inactive clients and mitigate memory leak vulnerability.
 - Constant-time comparisons (via `crypto/subtle`) for custom SSE-C customer key MD5 comparisons.
