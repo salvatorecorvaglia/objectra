@@ -541,7 +541,7 @@ func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request, bucket st
 		return
 	}
 
-	if err := h.engine.DeleteObject(bucket, key, ""); err != nil {
+	if _, _, err := h.engine.DeleteObject(bucket, key, ""); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

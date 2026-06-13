@@ -27,7 +27,7 @@ func setupTestEngine(t *testing.T) *FilesystemEngine {
 	t.Helper()
 	t.Setenv("OBJECTRA_DISABLE_MIN_PART_SIZE", "true")
 	tmpDir := t.TempDir()
-	engine, err := NewFilesystemEngine(tmpDir)
+	engine, err := NewFilesystemEngine(tmpDir, nil, "")
 	if err != nil {
 		t.Fatalf("failed to create engine: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestDeleteObject(t *testing.T) {
 	engine.CreateBucket("bucket")
 	engine.PutObject(context.Background(), "bucket", "deleteme.txt", bytes.NewReader([]byte("bye")), 3, "text/plain")
 
-	err := engine.DeleteObject("bucket", "deleteme.txt", "")
+	_, _, err := engine.DeleteObject("bucket", "deleteme.txt", "")
 	if err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestBucketNameTraversalProtection(t *testing.T) {
 		if _, _, err := engine.GetObject(context.Background(), invalid, "test.txt", ""); err == nil {
 			t.Errorf("expected error when getting object from invalid bucket name %q", invalid)
 		}
-		if err := engine.DeleteObject(invalid, "test.txt", ""); err == nil {
+		if _, _, err := engine.DeleteObject(invalid, "test.txt", ""); err == nil {
 			t.Errorf("expected error when deleting object from invalid bucket name %q", invalid)
 		}
 	}
@@ -860,7 +860,7 @@ func TestObjectVersioning(t *testing.T) {
 	}
 
 	// Delete without version ID should create a delete marker
-	err = engine.DeleteObject(bucket, "file.txt", "")
+	_, _, err = engine.DeleteObject(bucket, "file.txt", "")
 	if err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
@@ -885,7 +885,7 @@ func TestObjectVersioning(t *testing.T) {
 	reader2.Close()
 
 	// Permanently delete v2
-	err = engine.DeleteObject(bucket, "file.txt", info2.VersionID)
+	_, _, err = engine.DeleteObject(bucket, "file.txt", info2.VersionID)
 	if err != nil {
 		t.Fatalf("DeleteObject v2 failed: %v", err)
 	}
@@ -1196,7 +1196,7 @@ func TestOutboundMirroring(t *testing.T) {
 	mu.Unlock()
 
 	// 2. Perform DeleteObject and check async mirroring
-	err = engine.DeleteObject(bucket, "sync.txt", "")
+	_, _, err = engine.DeleteObject(bucket, "sync.txt", "")
 	if err != nil {
 		t.Fatalf("failed to DeleteObject: %v", err)
 	}
@@ -1249,7 +1249,7 @@ func TestPathTraversalProtectionExtended(t *testing.T) {
 			t.Errorf("expected path traversal error for version ID %q, got nil", badVersion)
 		}
 
-		err = engine.DeleteObject(bucket, "test.txt", badVersion)
+		_, _, err = engine.DeleteObject(bucket, "test.txt", badVersion)
 		if err == nil {
 			t.Errorf("expected path traversal error for version ID %q, got nil", badVersion)
 		}
@@ -1327,7 +1327,7 @@ func TestDeleteBucketVersionedEmptiness(t *testing.T) {
 	}
 
 	// Delete it (creates a delete marker)
-	if err := engine.DeleteObject(bucket, "file.txt", ""); err != nil {
+	if _, _, err := engine.DeleteObject(bucket, "file.txt", ""); err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
 
@@ -1347,7 +1347,7 @@ func TestDeleteBucketVersionedEmptiness(t *testing.T) {
 	}
 
 	// Permanently delete version 1 and delete marker to empty it
-	if err := engine.DeleteObject(bucket, "file.txt", info.VersionID); err != nil {
+	if _, _, err := engine.DeleteObject(bucket, "file.txt", info.VersionID); err != nil {
 		t.Fatalf("DeleteObject version failed: %v", err)
 	}
 
@@ -1653,7 +1653,7 @@ func TestConcurrentWriteDelete(t *testing.T) {
 					}
 				}
 
-				err = engine.DeleteObject(bucket, key, "")
+				_, _, err = engine.DeleteObject(bucket, key, "")
 				if err != nil {
 					t.Errorf("DeleteObject failed during concurrent test: %v", err)
 					return
@@ -1711,7 +1711,7 @@ func TestPathTraversalInvalidChars(t *testing.T) {
 			} else {
 				r.Close()
 			}
-			errDel := engine.DeleteObject(bucket, badKey, "")
+			_, _, errDel := engine.DeleteObject(bucket, badKey, "")
 			if errDel != nil {
 				t.Errorf("failed to delete key with control char %q: %v", badKey, errDel)
 			}

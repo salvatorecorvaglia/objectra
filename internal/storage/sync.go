@@ -99,8 +99,7 @@ func (fs *FilesystemEngine) StopSyncDispatcher() {
 
 // MirrorSync schedules an async mirroring operation to the backup S3 bucket.
 func (fs *FilesystemEngine) MirrorSync(bucket, key, op string) {
-	cfg := LoadSyncConfig()
-	if cfg == nil {
+	if fs.syncConfig == nil {
 		return
 	}
 
@@ -118,7 +117,7 @@ func (fs *FilesystemEngine) MirrorSync(bucket, key, op string) {
 
 	task := syncTask{
 		fs:     fs,
-		cfg:    cfg,
+		cfg:    fs.syncConfig,
 		bucket: bucket,
 		key:    key,
 		op:     op,

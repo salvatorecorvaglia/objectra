@@ -12,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,7 +38,8 @@ func (e *AuthError) Error() string {
 
 // SigV4Verifier verifies AWS Signature Version 4 requests.
 type SigV4Verifier struct {
-	creds *Credentials
+	creds       *Credentials
+	signingKeys sync.Map
 }
 
 // NewSigV4Verifier creates a new verifier with the given credentials.
@@ -362,10 +364,17 @@ func getCanonicalQueryString(values url.Values) string {
 
 // deriveSigningKey derives the SigV4 signing key.
 func (v *SigV4Verifier) deriveSigningKey(datestamp, region, service string) []byte {
+	cacheKey := datestamp + "/" + region + "/" + service
+	if val, ok := v.signingKeys.Load(cacheKey); ok {
+		return val.([]byte)
+	}
+
 	kDate := hmacSHA256([]byte("AWS4"+v.creds.SecretKey), []byte(datestamp))
 	kRegion := hmacSHA256(kDate, []byte(region))
 	kService := hmacSHA256(kRegion, []byte(service))
 	kSigning := hmacSHA256(kService, []byte("aws4_request"))
+
+	v.signingKeys.Store(cacheKey, kSigning)
 	return kSigning
 }
 

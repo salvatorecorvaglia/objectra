@@ -171,7 +171,7 @@ func TestResolveBucketAndKey(t *testing.T) {
 
 func TestS3API_Integration(t *testing.T) {
 	tempDir := t.TempDir()
-	engine, err := storage.NewFilesystemEngine(tempDir)
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, "")
 	if err != nil {
 		t.Fatalf("Failed to create storage engine: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestS3API_Integration(t *testing.T) {
 
 func TestS3AccessLogging(t *testing.T) {
 	tempDir := t.TempDir()
-	engine, err := storage.NewFilesystemEngine(tempDir)
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, "")
 	if err != nil {
 		t.Fatalf("Failed to create storage engine: %v", err)
 	}

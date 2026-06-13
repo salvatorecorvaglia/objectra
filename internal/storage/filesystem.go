@@ -37,6 +37,41 @@ const (
 	errFailedCreateAES        = "failed to create AES cipher: %w"
 )
 
+var (
+	gzipWriterPool = sync.Pool{
+		New: func() interface{} {
+			w, _ := gzip.NewWriterLevel(nil, gzip.DefaultCompression)
+			return w
+		},
+	}
+	gzipReaderPool sync.Pool
+)
+
+func getGzipReader(r io.Reader) (*gzip.Reader, error) {
+	if v := gzipReaderPool.Get(); v != nil {
+		gr := v.(*gzip.Reader)
+		if err := gr.Reset(r); err != nil {
+			return nil, err
+		}
+		return gr, nil
+	}
+	return gzip.NewReader(r)
+}
+
+func putGzipReader(gr *gzip.Reader) {
+	gzipReaderPool.Put(gr)
+}
+
+type pooledGzipReader struct {
+	*gzip.Reader
+}
+
+func (p *pooledGzipReader) Close() error {
+	err := p.Reader.Close()
+	putGzipReader(p.Reader)
+	return err
+}
+
 // FilesystemEngine implements the Engine interface using the local filesystem.
 // Objects are stored as files under <dataDir>/buckets/<bucket>/<key>.
 // Metadata is persisted in a bbolt database.
@@ -47,6 +82,7 @@ type FilesystemEngine struct {
 	locks    map[string]*uploadLock
 
 	// Sync replication queue
+	syncConfig         *SyncConfig
 	syncQueue          chan syncTask
 	syncOnce           sync.Once
 	syncWG             sync.WaitGroup
@@ -54,6 +90,7 @@ type FilesystemEngine struct {
 	syncMu             sync.Mutex
 
 	// Webhook queue
+	webhookURL            string
 	webhookQueue          chan webhookTask
 	webhookOnce           sync.Once
 	webhookWG             sync.WaitGroup
@@ -67,7 +104,7 @@ type uploadLock struct {
 }
 
 // NewFilesystemEngine creates a new filesystem-backed storage engine.
-func NewFilesystemEngine(dataDir string) (*FilesystemEngine, error) {
+func NewFilesystemEngine(dataDir string, syncCfg *SyncConfig, webhookURL string) (*FilesystemEngine, error) {
 	bucketsDir := filepath.Join(dataDir, "buckets")
 	if err := os.MkdirAll(bucketsDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create buckets directory: %w", err)
@@ -86,9 +123,11 @@ func NewFilesystemEngine(dataDir string) (*FilesystemEngine, error) {
 	cleanupOrphanedTempFiles(dataDir)
 
 	return &FilesystemEngine{
-		dataDir:  dataDir,
-		metadata: meta,
-		locks:    make(map[string]*uploadLock),
+		dataDir:    dataDir,
+		metadata:   meta,
+		locks:      make(map[string]*uploadLock),
+		syncConfig: syncCfg,
+		webhookURL: webhookURL,
 	}, nil
 }
 
@@ -472,8 +511,10 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	compressed := isCompressibleContentType(contentType)
 
 	if compressed {
-		gzipWriter = gzip.NewWriter(out)
-		out = gzipWriter
+		gw := gzipWriterPool.Get().(*gzip.Writer)
+		gw.Reset(out)
+		gzipWriter = gw
+		out = gw
 	}
 
 	// Stream data to disk while computing MD5
@@ -487,6 +528,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 		if err := gzipWriter.Close(); err != nil {
 			return nil, fmt.Errorf("failed to close gzip writer: %w", err)
 		}
+		gzipWriterPool.Put(gzipWriter)
 	}
 
 	if err := bufWriter.Flush(); err != nil {
@@ -589,13 +631,14 @@ func (fs *FilesystemEngine) GetObject(ctx context.Context, bucket, key, versionI
 	}
 
 	if info.Compressed {
-		gzipReader, err := gzip.NewReader(reader)
+		gzipReader, err := getGzipReader(reader)
 		if err != nil {
 			file.Close()
 			return nil, nil, fmt.Errorf("failed to initialize gzip reader: %w", err)
 		}
-		closers = append(closers, gzipReader)
-		reader = gzipReader
+		pReader := &pooledGzipReader{Reader: gzipReader}
+		closers = append(closers, pReader)
+		reader = pReader
 	}
 
 	rc := &readCloserWrapper{Reader: reader, closers: closers}
@@ -635,17 +678,17 @@ func (fs *FilesystemEngine) HeadObject(ctx context.Context, bucket, key, version
 }
 
 // DeleteObject removes an object version or creates a delete marker.
-func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
+func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) (isDeleteMarker bool, delVersionID string, err error) {
 	if err := fs.validateBucketName(bucket); err != nil {
-		return err
+		return false, "", err
 	}
 
 	exists, err := fs.metadata.BucketExists(bucket)
 	if err != nil {
-		return err
+		return false, "", err
 	}
 	if !exists {
-		return &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
+		return false, "", &S3Error{Code: "NoSuchBucket", Message: errBucketNotFound}
 	}
 
 	versionStatus, err := fs.metadata.GetBucketVersioning(bucket)
@@ -656,14 +699,14 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 	if versionID != "" {
 		objPath, err := fs.objectPathWithVersion(bucket, key, versionID)
 		if err != nil {
-			return &S3Error{Code: "InvalidArgument", Message: err.Error()}
+			return false, "", &S3Error{Code: "InvalidArgument", Message: err.Error()}
 		}
 		os.Remove(objPath)
 		fs.cleanupParentDirs(objPath, bucket)
 
 		err = fs.metadata.DeleteObjectMeta(bucket, key, versionID)
 		if err != nil {
-			return err
+			return false, "", err
 		}
 
 		info := &ObjectInfo{
@@ -673,7 +716,7 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 		}
 		fs.triggerWebhook("ObjectRemoved:Delete", info)
 		fs.MirrorSync(bucket, key, "DELETE")
-		return nil
+		return false, "", nil
 	}
 
 	if versionStatus == "Enabled" || versionStatus == "Suspended" {
@@ -702,17 +745,17 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 		}
 
 		if err := fs.metadata.PutObjectMeta(info); err != nil {
-			return err
+			return false, "", err
 		}
 
 		fs.triggerWebhook("ObjectRemoved:DeleteMarkerCreated", info)
 		fs.MirrorSync(bucket, key, "DELETE")
-		return nil
+		return true, delVersionID, nil
 	}
 
 	info, err := fs.metadata.GetObjectMeta(bucket, key, "")
 	if err != nil {
-		return nil
+		return false, "", nil
 	}
 
 	// Fetch all versions of the object to remove their files from disk
@@ -736,12 +779,12 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) error {
 
 	err = fs.metadata.DeleteObjectMeta(bucket, key, "")
 	if err != nil {
-		return err
+		return false, "", err
 	}
 
 	fs.triggerWebhook("ObjectRemoved:Delete", info)
 	fs.MirrorSync(bucket, key, "DELETE")
-	return nil
+	return false, "", nil
 }
 
 // CopyObject copies an object from one location to another.
@@ -1294,8 +1337,10 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 
 	compressed := isCompressibleContentType(meta.ContentType)
 	if compressed {
-		gzipWriter = gzip.NewWriter(out)
-		out = gzipWriter
+		gw := gzipWriterPool.Get().(*gzip.Writer)
+		gw.Reset(out)
+		gzipWriter = gw
+		out = gw
 	}
 
 	hash := md5.New()
@@ -1349,6 +1394,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		if err := gzipWriter.Close(); err != nil {
 			return nil, fmt.Errorf("failed to close gzip writer: %w", err)
 		}
+		gzipWriterPool.Put(gzipWriter)
 	}
 
 	if err := tmpFile.Close(); err != nil {
@@ -1729,18 +1775,6 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 			continue
 		}
 
-		metas, err := fs.metadata.ListAllObjectMetas(bInfo.Name)
-		if err != nil {
-			slog.Error("[Storage] Failed to list object metas for bucket during cleanup", "bucket", bInfo.Name, "error", err)
-			continue
-		}
-
-		versions, err := fs.metadata.ListAllObjectVersions(bInfo.Name)
-		if err != nil {
-			slog.Error("[Storage] Failed to list object versions for bucket during cleanup", "bucket", bInfo.Name, "error", err)
-			continue
-		}
-
 		for _, rule := range bInfo.Lifecycle.Rules {
 			if strings.ToLower(rule.Status) != "enabled" {
 				continue
@@ -1749,48 +1783,53 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 			// 1. Current Version Expiration
 			if rule.Expiration != nil && rule.Expiration.Days > 0 {
 				cutoff := time.Duration(rule.Expiration.Days) * 24 * time.Hour
-				for _, m := range metas {
+				_ = fs.metadata.IterateObjectMetas(bInfo.Name, func(m *ObjectInfo) error {
 					if !strings.HasPrefix(m.Key, rule.Filter.Prefix) {
-						continue
+						return nil
 					}
 					// Check if expired
 					if now.Sub(m.LastModified) > cutoff {
 						if m.IsDeleteMarker {
 							// If versioning is enabled and the only version left is a delete marker, expire it fully
 							hasNoncurrent := false
-							for _, v := range versions {
-								if v.Key == m.Key && v.VersionID != m.VersionID {
-									hasNoncurrent = true
-									break
+							vers, err := fs.metadata.GetObjectVersions(bInfo.Name, m.Key)
+							if err == nil {
+								for _, v := range vers {
+									if v.VersionID != m.VersionID {
+										hasNoncurrent = true
+										break
+									}
 								}
 							}
 							if !hasNoncurrent {
 								slog.Info("[Storage] Removing expired object delete marker", "key", m.Key, "bucket", bInfo.Name, "versionID", m.VersionID)
-								_ = fs.DeleteObject(bInfo.Name, m.Key, m.VersionID)
+								_, _, _ = fs.DeleteObject(bInfo.Name, m.Key, m.VersionID)
 							}
-							continue
+							return nil
 						}
 						slog.Info("[Storage] Expiring current version of key in bucket", "key", m.Key, "bucket", bInfo.Name, "age", now.Sub(m.LastModified), "cutoff", cutoff)
-						_ = fs.DeleteObject(bInfo.Name, m.Key, "")
+						_, _, _ = fs.DeleteObject(bInfo.Name, m.Key, "")
 					}
-				}
+					return nil
+				})
 			}
 
 			// 2. Noncurrent Version Expiration
 			if rule.NoncurrentVersionExpiration != nil && rule.NoncurrentVersionExpiration.NoncurrentDays > 0 {
 				cutoff := time.Duration(rule.NoncurrentVersionExpiration.NoncurrentDays) * 24 * time.Hour
-				for _, v := range versions {
+				_ = fs.metadata.IterateObjectVersions(bInfo.Name, func(v *ObjectInfo) error {
 					if v.IsLatest {
-						continue // Only noncurrent versions
+						return nil // Only noncurrent versions
 					}
 					if !strings.HasPrefix(v.Key, rule.Filter.Prefix) {
-						continue
+						return nil
 					}
 					if now.Sub(v.LastModified) > cutoff {
 						slog.Info("[Storage] Expiring noncurrent version of key in bucket", "versionID", v.VersionID, "key", v.Key, "bucket", bInfo.Name, "age", now.Sub(v.LastModified), "cutoff", cutoff)
-						_ = fs.DeleteObject(bInfo.Name, v.Key, v.VersionID)
+						_, _, _ = fs.DeleteObject(bInfo.Name, v.Key, v.VersionID)
 					}
-				}
+					return nil
+				})
 			}
 
 			// 3. Abort Incomplete Multipart Upload

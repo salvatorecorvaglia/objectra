@@ -184,7 +184,7 @@ type Engine interface {
 	PutObject(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (*ObjectInfo, error)
 	GetObject(ctx context.Context, bucket, key, versionID string) (io.ReadCloser, *ObjectInfo, error)
 	HeadObject(ctx context.Context, bucket, key, versionID string) (*ObjectInfo, error)
-	DeleteObject(bucket, key, versionID string) error
+	DeleteObject(bucket, key, versionID string) (isDeleteMarker bool, delVersionID string, err error)
 	CopyObject(srcBucket, srcKey, dstBucket, dstKey string) (*ObjectInfo, error)
 
 	// List operations

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"os"
 	"sync/atomic"
 	"time"
 )
@@ -67,8 +66,7 @@ func (fs *FilesystemEngine) StopWebhookDispatcher() {
 
 // triggerWebhook parses the configuration and sends the event asynchronously.
 func (fs *FilesystemEngine) triggerWebhook(eventName string, info *ObjectInfo) {
-	url := os.Getenv("OBJECTRA_WEBHOOK_URL")
-	if url == "" {
+	if fs.webhookURL == "" {
 		return
 	}
 
@@ -95,7 +93,7 @@ func (fs *FilesystemEngine) triggerWebhook(eventName string, info *ObjectInfo) {
 	}
 
 	task := webhookTask{
-		url:     url,
+		url:     fs.webhookURL,
 		payload: payload,
 	}
 

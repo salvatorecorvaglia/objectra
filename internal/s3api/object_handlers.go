@@ -193,7 +193,7 @@ func (rt *Router) handleHeadObject(w http.ResponseWriter, r *http.Request, bucke
 
 func (rt *Router) handleDeleteObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	versionID := r.URL.Query().Get("versionId")
-	err := rt.engine.DeleteObject(bucket, key, versionID)
+	isDeleteMarker, delVersionID, err := rt.engine.DeleteObject(bucket, key, versionID)
 	resource := "/" + bucket + "/" + key
 
 	if err != nil {
@@ -204,11 +204,10 @@ func (rt *Router) handleDeleteObject(w http.ResponseWriter, r *http.Request, buc
 
 	// If a delete marker was created, S3 returns 204 with delete marker headers
 	if err == nil {
-		versionStatus, _ := rt.engine.GetBucketVersioning(bucket)
-		if versionID == "" && (versionStatus == "Enabled" || versionStatus == "Suspended") {
+		if versionID == "" && isDeleteMarker {
 			w.Header().Set(amzDeleteMarkerHeader, "true")
-			if info, err := rt.engine.HeadObject(r.Context(), bucket, key, ""); err == nil && info.IsDeleteMarker {
-				w.Header().Set(amzVersionIDHeader, info.VersionID)
+			if delVersionID != "" {
+				w.Header().Set(amzVersionIDHeader, delVersionID)
 			}
 		} else if versionID != "" {
 			w.Header().Set(amzVersionIDHeader, versionID)

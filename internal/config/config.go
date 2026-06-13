@@ -37,6 +37,18 @@ type Config struct {
 	LogLevel string
 	// LogFormat is the log format (text, json).
 	LogFormat string
+	// SyncEndpoint is the replication destination endpoint.
+	SyncEndpoint string
+	// SyncBucket is the replication destination bucket.
+	SyncBucket string
+	// SyncAccessKey is the replication access key.
+	SyncAccessKey string
+	// SyncSecretKey is the replication secret key.
+	SyncSecretKey string
+	// SyncRegion is the replication region.
+	SyncRegion string
+	// WebhookURL is the webhook notifications URL destination.
+	WebhookURL string
 }
 
 // Load reads configuration from environment variables, falling back to defaults.
@@ -56,6 +68,12 @@ func Load() *Config {
 		APIRateLimit:   envIntOrDefault("OBJECTRA_API_RATE_LIMIT", 60),
 		LogLevel:       envOrDefault("OBJECTRA_LOG_LEVEL", "info"),
 		LogFormat:      envOrDefault("OBJECTRA_LOG_FORMAT", "text"),
+		SyncEndpoint:   envOrDefault("OBJECTRA_SYNC_ENDPOINT", ""),
+		SyncBucket:     envOrDefault("OBJECTRA_SYNC_BUCKET", ""),
+		SyncAccessKey:  envOrDefault("OBJECTRA_SYNC_ACCESS_KEY", ""),
+		SyncSecretKey:  envOrDefault("OBJECTRA_SYNC_SECRET_KEY", ""),
+		SyncRegion:     envOrDefault("OBJECTRA_SYNC_REGION", "us-east-1"),
+		WebhookURL:     envOrDefault("OBJECTRA_WEBHOOK_URL", ""),
 	}
 }
 

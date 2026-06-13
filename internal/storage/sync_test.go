@@ -44,7 +44,7 @@ func TestMirrorSync_Integration(t *testing.T) {
 	t.Setenv("OBJECTRA_SYNC_REGION", "us-west-2")
 
 	tempDir := t.TempDir()
-	engine, err := NewFilesystemEngine(tempDir)
+	engine, err := NewFilesystemEngine(tempDir, LoadSyncConfig(), "")
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestMirrorSync_Integration(t *testing.T) {
 	}
 
 	// 2. Trigger mirroring via DeleteObject
-	err = engine.DeleteObject("primary-bucket", "docs/report.txt", "")
+	_, _, err = engine.DeleteObject("primary-bucket", "docs/report.txt", "")
 	if err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}

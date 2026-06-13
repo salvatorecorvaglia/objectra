@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/salvatorecorvaglia/objectra/internal/auth"
@@ -32,8 +33,19 @@ type Server struct {
 
 // New creates and configures both servers.
 func New(cfg *config.Config) (*Server, error) {
+	var syncCfg *storage.SyncConfig
+	if cfg.SyncEndpoint != "" {
+		syncCfg = &storage.SyncConfig{
+			Endpoint:  strings.TrimSuffix(cfg.SyncEndpoint, "/"),
+			Bucket:    cfg.SyncBucket,
+			AccessKey: cfg.SyncAccessKey,
+			SecretKey: cfg.SyncSecretKey,
+			Region:    cfg.SyncRegion,
+		}
+	}
+
 	// Initialize storage engine
-	engine, err := storage.NewFilesystemEngine(cfg.DataDir)
+	engine, err := storage.NewFilesystemEngine(cfg.DataDir, syncCfg, cfg.WebhookURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}

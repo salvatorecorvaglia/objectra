@@ -30,6 +30,9 @@ type MetadataStore struct {
 	dataDir       string
 	initLocks     map[string]*sync.Mutex
 	initMu        sync.Mutex
+
+	bucketCache map[string]*BucketInfo
+	cacheMu     sync.RWMutex
 }
 
 type bucketLockSegment struct {
@@ -116,6 +119,7 @@ func NewMetadataStore(dataDir string) (*MetadataStore, error) {
 		globalDB:      globalDB,
 		activeBuckets: make(map[string]*bolt.DB),
 		dataDir:       dataDir,
+		bucketCache:   make(map[string]*BucketInfo),
 	}
 	for i := 0; i < 32; i++ {
 		m.bucketLocks[i] = &bucketLockSegment{
@@ -346,7 +350,7 @@ func (m *MetadataStore) migrateIfNecessary() error {
 func (m *MetadataStore) PutBucket(info *BucketInfo) error {
 	unlock := m.acquireBucketLock(info.Name, true)
 	defer unlock()
-	return m.globalDB.Update(func(tx *bolt.Tx) error {
+	err := m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data, err := json.Marshal(info)
 		if err != nil {
@@ -354,6 +358,12 @@ func (m *MetadataStore) PutBucket(info *BucketInfo) error {
 		}
 		return b.Put([]byte(info.Name), data)
 	})
+	if err == nil {
+		m.cacheMu.Lock()
+		m.bucketCache[info.Name] = info
+		m.cacheMu.Unlock()
+	}
+	return err
 }
 
 // GetBucket retrieves bucket metadata by name.
@@ -375,6 +385,32 @@ func (m *MetadataStore) GetBucket(name string) (*BucketInfo, error) {
 	return &info, nil
 }
 
+// GetBucketCached retrieves bucket metadata by name from the cache.
+func (m *MetadataStore) GetBucketCached(name string) (*BucketInfo, error) {
+	m.cacheMu.RLock()
+	info, exists := m.bucketCache[name]
+	m.cacheMu.RUnlock()
+
+	if exists {
+		if info == nil {
+			return nil, fmt.Errorf("bucket not found: %s", name)
+		}
+		return info, nil
+	}
+
+	info, err := m.GetBucket(name)
+
+	m.cacheMu.Lock()
+	if err != nil {
+		m.bucketCache[name] = nil
+	} else {
+		m.bucketCache[name] = info
+	}
+	m.cacheMu.Unlock()
+
+	return info, err
+}
+
 // DeleteBucket removes bucket metadata and deletes its DB file.
 func (m *MetadataStore) DeleteBucket(name string) error {
 	unlock := m.acquireBucketLock(name, true)
@@ -386,6 +422,9 @@ func (m *MetadataStore) DeleteBucket(name string) error {
 	if err != nil {
 		return err
 	}
+	m.cacheMu.Lock()
+	delete(m.bucketCache, name)
+	m.cacheMu.Unlock()
 	return m.CloseAndRemoveBucketDB(name)
 }
 
@@ -453,7 +492,7 @@ func (m *MetadataStore) BucketExists(name string) (bool, error) {
 func (m *MetadataStore) PutBucketCORS(bucket string, cors *CORSConfiguration) error {
 	unlock := m.acquireBucketLock(bucket, true)
 	defer unlock()
-	return m.globalDB.Update(func(tx *bolt.Tx) error {
+	err := m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
 		if data == nil {
@@ -470,37 +509,28 @@ func (m *MetadataStore) PutBucketCORS(bucket string, cors *CORSConfiguration) er
 		}
 		return b.Put([]byte(bucket), newData)
 	})
+	if err == nil {
+		m.cacheMu.Lock()
+		delete(m.bucketCache, bucket)
+		m.cacheMu.Unlock()
+	}
+	return err
 }
 
 // GetBucketCORS gets CORS configuration for a bucket.
 func (m *MetadataStore) GetBucketCORS(bucket string) (*CORSConfiguration, error) {
-	unlock := m.acquireBucketLock(bucket, false)
-	defer unlock()
-	var cors *CORSConfiguration
-	err := m.globalDB.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketsBucket)
-		data := b.Get([]byte(bucket))
-		if data == nil {
-			return fmt.Errorf("bucket not found: %s", bucket)
-		}
-		var info BucketInfo
-		if err := json.Unmarshal(data, &info); err != nil {
-			return err
-		}
-		cors = info.CORS
-		return nil
-	})
+	info, err := m.GetBucketCached(bucket)
 	if err != nil {
 		return nil, err
 	}
-	return cors, nil
+	return info.CORS, nil
 }
 
 // DeleteBucketCORS deletes CORS configuration for a bucket.
 func (m *MetadataStore) DeleteBucketCORS(bucket string) error {
 	unlock := m.acquireBucketLock(bucket, true)
 	defer unlock()
-	return m.globalDB.Update(func(tx *bolt.Tx) error {
+	err := m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
 		if data == nil {
@@ -517,13 +547,19 @@ func (m *MetadataStore) DeleteBucketCORS(bucket string) error {
 		}
 		return b.Put([]byte(bucket), newData)
 	})
+	if err == nil {
+		m.cacheMu.Lock()
+		delete(m.bucketCache, bucket)
+		m.cacheMu.Unlock()
+	}
+	return err
 }
 
 // PutBucketVersioning sets versioning configuration for a bucket.
 func (m *MetadataStore) PutBucketVersioning(bucket string, status string) error {
 	unlock := m.acquireBucketLock(bucket, true)
 	defer unlock()
-	return m.globalDB.Update(func(tx *bolt.Tx) error {
+	err := m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
 		if data == nil {
@@ -540,34 +576,28 @@ func (m *MetadataStore) PutBucketVersioning(bucket string, status string) error 
 		}
 		return b.Put([]byte(bucket), newData)
 	})
+	if err == nil {
+		m.cacheMu.Lock()
+		delete(m.bucketCache, bucket)
+		m.cacheMu.Unlock()
+	}
+	return err
 }
 
 // GetBucketVersioning gets versioning configuration for a bucket.
 func (m *MetadataStore) GetBucketVersioning(bucket string) (string, error) {
-	unlock := m.acquireBucketLock(bucket, false)
-	defer unlock()
-	var status string
-	err := m.globalDB.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketsBucket)
-		data := b.Get([]byte(bucket))
-		if data == nil {
-			return fmt.Errorf("bucket not found: %s", bucket)
-		}
-		var info BucketInfo
-		if err := json.Unmarshal(data, &info); err != nil {
-			return err
-		}
-		status = info.Versioning
-		return nil
-	})
-	return status, err
+	info, err := m.GetBucketCached(bucket)
+	if err != nil {
+		return "", err
+	}
+	return info.Versioning, nil
 }
 
 // SetBucketPublic sets the public status of a bucket.
 func (m *MetadataStore) SetBucketPublic(bucket string, public bool) error {
 	unlock := m.acquireBucketLock(bucket, true)
 	defer unlock()
-	return m.globalDB.Update(func(tx *bolt.Tx) error {
+	err := m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
 		if data == nil {
@@ -584,27 +614,21 @@ func (m *MetadataStore) SetBucketPublic(bucket string, public bool) error {
 		}
 		return b.Put([]byte(bucket), newData)
 	})
+	if err == nil {
+		m.cacheMu.Lock()
+		delete(m.bucketCache, bucket)
+		m.cacheMu.Unlock()
+	}
+	return err
 }
 
 // IsBucketPublic gets the public status of a bucket.
 func (m *MetadataStore) IsBucketPublic(bucket string) (bool, error) {
-	unlock := m.acquireBucketLock(bucket, false)
-	defer unlock()
-	var public bool
-	err := m.globalDB.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketsBucket)
-		data := b.Get([]byte(bucket))
-		if data == nil {
-			return fmt.Errorf("bucket not found: %s", bucket)
-		}
-		var info BucketInfo
-		if err := json.Unmarshal(data, &info); err != nil {
-			return err
-		}
-		public = info.IsPublic
-		return nil
-	})
-	return public, err
+	info, err := m.GetBucketCached(bucket)
+	if err != nil {
+		return false, err
+	}
+	return info.IsPublic, nil
 }
 
 func objectMetaKey(bucket, key string) []byte {
@@ -955,7 +979,7 @@ func (m *MetadataStore) DeleteMultipartMeta(bucket, key, uploadID string) error 
 func (m *MetadataStore) PutBucketLifecycle(bucket string, lc *LifecycleConfiguration) error {
 	unlock := m.acquireBucketLock(bucket, true)
 	defer unlock()
-	return m.globalDB.Update(func(tx *bolt.Tx) error {
+	err := m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
 		if data == nil {
@@ -972,37 +996,28 @@ func (m *MetadataStore) PutBucketLifecycle(bucket string, lc *LifecycleConfigura
 		}
 		return b.Put([]byte(bucket), newData)
 	})
+	if err == nil {
+		m.cacheMu.Lock()
+		delete(m.bucketCache, bucket)
+		m.cacheMu.Unlock()
+	}
+	return err
 }
 
 // GetBucketLifecycle gets lifecycle configuration for a bucket.
 func (m *MetadataStore) GetBucketLifecycle(bucket string) (*LifecycleConfiguration, error) {
-	unlock := m.acquireBucketLock(bucket, false)
-	defer unlock()
-	var lc *LifecycleConfiguration
-	err := m.globalDB.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketsBucket)
-		data := b.Get([]byte(bucket))
-		if data == nil {
-			return fmt.Errorf("bucket not found: %s", bucket)
-		}
-		var info BucketInfo
-		if err := json.Unmarshal(data, &info); err != nil {
-			return err
-		}
-		lc = info.Lifecycle
-		return nil
-	})
+	info, err := m.GetBucketCached(bucket)
 	if err != nil {
 		return nil, err
 	}
-	return lc, nil
+	return info.Lifecycle, nil
 }
 
 // DeleteBucketLifecycle deletes lifecycle configuration for a bucket.
 func (m *MetadataStore) DeleteBucketLifecycle(bucket string) error {
 	unlock := m.acquireBucketLock(bucket, true)
 	defer unlock()
-	return m.globalDB.Update(func(tx *bolt.Tx) error {
+	err := m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
 		if data == nil {
@@ -1019,13 +1034,19 @@ func (m *MetadataStore) DeleteBucketLifecycle(bucket string) error {
 		}
 		return b.Put([]byte(bucket), newData)
 	})
+	if err == nil {
+		m.cacheMu.Lock()
+		delete(m.bucketCache, bucket)
+		m.cacheMu.Unlock()
+	}
+	return err
 }
 
 // PutBucketLogging sets logging configuration for a bucket.
 func (m *MetadataStore) PutBucketLogging(bucket string, logging *BucketLoggingStatus) error {
 	unlock := m.acquireBucketLock(bucket, true)
 	defer unlock()
-	return m.globalDB.Update(func(tx *bolt.Tx) error {
+	err := m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
 		data := b.Get([]byte(bucket))
 		if data == nil {
@@ -1042,30 +1063,21 @@ func (m *MetadataStore) PutBucketLogging(bucket string, logging *BucketLoggingSt
 		}
 		return b.Put([]byte(bucket), newData)
 	})
+	if err == nil {
+		m.cacheMu.Lock()
+		delete(m.bucketCache, bucket)
+		m.cacheMu.Unlock()
+	}
+	return err
 }
 
 // GetBucketLogging gets logging configuration for a bucket.
 func (m *MetadataStore) GetBucketLogging(bucket string) (*BucketLoggingStatus, error) {
-	unlock := m.acquireBucketLock(bucket, false)
-	defer unlock()
-	var logging *BucketLoggingStatus
-	err := m.globalDB.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(bucketsBucket)
-		data := b.Get([]byte(bucket))
-		if data == nil {
-			return fmt.Errorf("bucket not found: %s", bucket)
-		}
-		var info BucketInfo
-		if err := json.Unmarshal(data, &info); err != nil {
-			return err
-		}
-		logging = info.Logging
-		return nil
-	})
+	info, err := m.GetBucketCached(bucket)
 	if err != nil {
 		return nil, err
 	}
-	return logging, nil
+	return info.Logging, nil
 }
 
 // PutObjectMetaRaw stores object metadata exactly as provided, without overriding fields.
@@ -1162,3 +1174,70 @@ func (m *MetadataStore) GetObjectVersions(bucket, key string) ([]ObjectInfo, err
 	})
 	return versions, err
 }
+
+// IterateObjectMetas iterates through all object metadata for a given bucket (latest versions only) streaming it to a callback.
+func (m *MetadataStore) IterateObjectMetas(bucket string, fn func(info *ObjectInfo) error) error {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
+	db, err := m.getBucketDB(bucket)
+	if err != nil {
+		return err
+	}
+	prefix := []byte(bucket + "\x00")
+	return db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(objectsBucket)
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			objectKey := string(k[len(prefix):])
+			if strings.Contains(objectKey, "\x00") {
+				continue
+			}
+
+			var info ObjectInfo
+			if err := json.Unmarshal(v, &info); err != nil {
+				return err
+			}
+			if err := fn(&info); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// IterateObjectVersions iterates through all object version records (excluding latest pointers) streaming to a callback.
+func (m *MetadataStore) IterateObjectVersions(bucket string, fn func(info *ObjectInfo) error) error {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
+	db, err := m.getBucketDB(bucket)
+	if err != nil {
+		return err
+	}
+	prefix := []byte(bucket + "\x00")
+	return db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(objectsBucket)
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			objectKey := string(k[len(prefix):])
+			if !strings.Contains(objectKey, "\x00") {
+				continue
+			}
+
+			var info ObjectInfo
+			if err := json.Unmarshal(v, &info); err != nil {
+				return err
+			}
+			if err := fn(&info); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+

@@ -43,7 +43,7 @@ func TestWebhook_Integration(t *testing.T) {
 	t.Setenv("OBJECTRA_WEBHOOK_URL", server.URL)
 
 	tempDir := t.TempDir()
-	engine, err := NewFilesystemEngine(tempDir)
+	engine, err := NewFilesystemEngine(tempDir, nil, server.URL)
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestWebhook_Integration(t *testing.T) {
 	}
 
 	// Delete object to trigger delete event
-	err = engine.DeleteObject("webhooks", "test.txt", "")
+	_, _, err = engine.DeleteObject("webhooks", "test.txt", "")
 	if err != nil {
 		t.Fatalf("DeleteObject failed: %v", err)
 	}
