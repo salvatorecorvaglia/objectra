@@ -1148,9 +1148,17 @@ func TestOutboundMirroring(t *testing.T) {
 		os.Unsetenv("OBJECTRA_SYNC_REGION")
 	}()
 
-	engine := setupTestEngine(t)
+	t.Setenv("OBJECTRA_DISABLE_MIN_PART_SIZE", "true")
+	tmpDir := t.TempDir()
+	syncCfg := LoadSyncConfig()
+	engine, err := NewFilesystemEngine(tmpDir, syncCfg, "")
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+	t.Cleanup(func() { engine.Close() })
+
 	bucket := "sync-bucket"
-	err := engine.CreateBucket(bucket)
+	err = engine.CreateBucket(bucket)
 	if err != nil {
 		t.Fatalf("failed to create bucket: %v", err)
 	}
