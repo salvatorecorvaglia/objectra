@@ -20,7 +20,7 @@ func TestConsoleEndpoints(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	engine, err := storage.NewFilesystemEngine(tempDir)
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, "")
 	if err != nil {
 		t.Fatalf("failed to initialize storage engine: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestConsoleRateLimiting(t *testing.T) {
 	}
 	defer os.RemoveAll(tempDir)
 
-	engine, err := storage.NewFilesystemEngine(tempDir)
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, "")
 	if err != nil {
 		t.Fatalf("failed to initialize storage engine: %v", err)
 	}
