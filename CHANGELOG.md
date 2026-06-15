@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [0.1.0] - 2026-06-12
+## [0.1.0] - 2026-06-15
 
 ### Added
 
+- Bucket metadata caching within the metadata store to reduce database lookups.
+- Integration of replication sync configurations into the filesystem storage engine.
 - Multi-version object deletion support to ensure all historical versions are removed from disk upon object deletion.
 - CORS origin wildcard matching with scheme validation (e.g., `https://*.example.com`).
 - Multipart upload support for Server-Side Encryption with Customer-provided Keys (SSE-C).
@@ -23,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Updated filesystem storage engine initialization in tests to utilize temporary directories and configuration parameters.
+- Updated storage engine initialization in console tests with required initialization parameters.
+- Simplified image tagging strategy for Docker release publishing to use semver tags and `latest`.
+- Updated documentation references to use relative paths/links instead of absolute/hardcoded links.
 - Optimized multipart upload performance by reducing lock contention, holding metadata locks only briefly during validation and updates while allowing concurrent disk writes.
 - Upgraded GitHub Actions and CI workflow runner environments to use the latest versions.
 - Refactored code style, improved error message clarity, and modernized `golangci-lint` configuration settings.
@@ -32,6 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Excluded internal system keys (prefixed with `_sys_`) from S3 `ListBuckets` API results to prevent system metadata leakage.
 - Deadlock and race conditions in webhook and mirror sync dispatchers by unlocking locks prior to closing queues during shutdown.
 - Lock leak in metadata store initialization by ensuring lock cleanup runs via `defer` on errors.
 - Flaky integration test assertions in webhook and mirror sync tests by replacing sleep-based waits with polling logic.
@@ -40,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - S3 `DeleteBucketLifecycle` API handler to correctly validate bucket existence before returning `204 No Content`.
 - Safely handled GET object errors to avoid potential nil pointer dereference on readers.
 - Timing race conditions in the webhook and mirror sync integration tests.
+
+### Removed
+
+- Docker Hub publishing support from the GitHub Actions release workflow.
 
 ### Security
 
