@@ -1783,40 +1783,58 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 			// 1. Current Version Expiration
 			if rule.Expiration != nil && rule.Expiration.Days > 0 {
 				cutoff := time.Duration(rule.Expiration.Days) * 24 * time.Hour
+				var expiredList []struct {
+					key            string
+					versionID      string
+					isDeleteMarker bool
+				}
 				_ = fs.metadata.IterateObjectMetas(bInfo.Name, func(m *ObjectInfo) error {
 					if !strings.HasPrefix(m.Key, rule.Filter.Prefix) {
 						return nil
 					}
 					// Check if expired
 					if now.Sub(m.LastModified) > cutoff {
-						if m.IsDeleteMarker {
-							// If versioning is enabled and the only version left is a delete marker, expire it fully
-							hasNoncurrent := false
-							vers, err := fs.metadata.GetObjectVersions(bInfo.Name, m.Key)
-							if err == nil {
-								for _, v := range vers {
-									if v.VersionID != m.VersionID {
-										hasNoncurrent = true
-										break
-									}
-								}
-							}
-							if !hasNoncurrent {
-								slog.Info("[Storage] Removing expired object delete marker", "key", m.Key, "bucket", bInfo.Name, "versionID", m.VersionID)
-								_, _, _ = fs.DeleteObject(bInfo.Name, m.Key, m.VersionID)
-							}
-							return nil
-						}
-						slog.Info("[Storage] Expiring current version of key in bucket", "key", m.Key, "bucket", bInfo.Name, "age", now.Sub(m.LastModified), "cutoff", cutoff)
-						_, _, _ = fs.DeleteObject(bInfo.Name, m.Key, "")
+						expiredList = append(expiredList, struct {
+							key            string
+							versionID      string
+							isDeleteMarker bool
+						}{key: m.Key, versionID: m.VersionID, isDeleteMarker: m.IsDeleteMarker})
 					}
 					return nil
 				})
+
+				for _, exp := range expiredList {
+					if exp.isDeleteMarker {
+						// If versioning is enabled and the only version left is a delete marker, expire it fully
+						hasNoncurrent := false
+						vers, err := fs.metadata.GetObjectVersions(bInfo.Name, exp.key)
+						if err == nil {
+							for _, v := range vers {
+								if v.VersionID != exp.versionID {
+									hasNoncurrent = true
+									break
+								}
+							}
+						}
+						if !hasNoncurrent {
+							slog.Info("[Storage] Removing expired object delete marker", "key", exp.key, "bucket", bInfo.Name, "versionID", exp.versionID)
+							_, _, _ = fs.DeleteObject(bInfo.Name, exp.key, exp.versionID)
+						}
+					} else {
+						slog.Info("[Storage] Expiring current version of key in bucket", "key", exp.key, "bucket", bInfo.Name, "age", now.Sub(now), "cutoff", cutoff)
+						_, _, _ = fs.DeleteObject(bInfo.Name, exp.key, "")
+					}
+				}
 			}
 
 			// 2. Noncurrent Version Expiration
 			if rule.NoncurrentVersionExpiration != nil && rule.NoncurrentVersionExpiration.NoncurrentDays > 0 {
 				cutoff := time.Duration(rule.NoncurrentVersionExpiration.NoncurrentDays) * 24 * time.Hour
+				var expiredNoncurrentList []struct {
+					key       string
+					versionID string
+					age       time.Duration
+				}
 				_ = fs.metadata.IterateObjectVersions(bInfo.Name, func(v *ObjectInfo) error {
 					if v.IsLatest {
 						return nil // Only noncurrent versions
@@ -1825,11 +1843,19 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 						return nil
 					}
 					if now.Sub(v.LastModified) > cutoff {
-						slog.Info("[Storage] Expiring noncurrent version of key in bucket", "versionID", v.VersionID, "key", v.Key, "bucket", bInfo.Name, "age", now.Sub(v.LastModified), "cutoff", cutoff)
-						_, _, _ = fs.DeleteObject(bInfo.Name, v.Key, v.VersionID)
+						expiredNoncurrentList = append(expiredNoncurrentList, struct {
+							key       string
+							versionID string
+							age       time.Duration
+						}{key: v.Key, versionID: v.VersionID, age: now.Sub(v.LastModified)})
 					}
 					return nil
 				})
+
+				for _, exp := range expiredNoncurrentList {
+					slog.Info("[Storage] Expiring noncurrent version of key in bucket", "versionID", exp.versionID, "key", exp.key, "bucket", bInfo.Name, "age", exp.age, "cutoff", cutoff)
+					_, _, _ = fs.DeleteObject(bInfo.Name, exp.key, exp.versionID)
+				}
 			}
 
 			// 3. Abort Incomplete Multipart Upload
