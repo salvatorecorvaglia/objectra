@@ -126,6 +126,7 @@ Objectra can be configured entirely via environment variables.
 | **`OBJECTRA_LOG_FORMAT`** | `text` | Logger format (`text` or `json`). |
 | **`OBJECTRA_JWT_SECRET`** | *None* | Explicit secret key for console JWT session tokens. (Generated randomly and stored in DB if omitted). |
 | **`OBJECTRA_DISABLE_MIN_PART_SIZE`**| `false` | Set to `true` to disable the S3 5MB minimum multipart size limitation (useful for testing). |
+| **`OBJECTRA_S3_ENDPOINT`** | *None* | Custom public S3 endpoint URL (e.g. `https://s3.example.com`) used when generating presigned object URLs in the Console. Overrides request-host based resolution. |
 
 ### 🔄 Active-Passive Replication Configuration
 

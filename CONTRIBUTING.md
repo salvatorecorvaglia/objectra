@@ -170,6 +170,10 @@ Lint rules are defined in [`.golangci.yml`](.golangci.yml).
 - **Bounded Access Logging Queue**: S3 API access logging must utilize a bounded worker pool queue (e.g., `logChan` with a capacity and a dedicated set of worker goroutines) to avoid goroutine explosion under high-load situations. Log events should be enqueued asynchronously, dropping them if the log queue is fully saturated.
 - **Passive Map Cleanups**: Stateful in-memory maps (e.g., console rate limit trackers, active user session mappings) must implement a passive cleanup mechanism (e.g., periodically purging expired/stale entries inline during request handling paths) to ensure memory footprint remains bounded.
 - **Streaming I/O**: Keep streaming operations memory-efficient. Avoid buffering large S3 objects in memory. Stream bytes directly to/from disk where possible.
+- **HTTP Client Reuse**: Reuse `http.Client` instances across outbound requests (e.g., replication mirror syncing) to utilize TCP connection pooling and prevent system socket/port exhaustion under heavy request loads.
+- **HTTP Response Body Draining**: Always drain HTTP response bodies (e.g., via `io.Copy(io.Discard, resp.Body)`) before closing them. This allows the client transport layer to keep TCP connections alive and reuse them for subsequent requests.
+- **Reference-Counted Initialization Mutexes**: For dynamic, on-demand resource setup (e.g., opening per-bucket metadata databases), protect critical paths with reference-counted mutexes. Ensure the lock metadata is removed from internal maps only when the reference count reaches zero.
+- **LIFO Resource Teardown**: In closer wrappers handling multiple resources, invoke close operations in Last-In-First-Out (LIFO) order to guarantee dependencies are cleaned up in the correct sequence.
 
 ### Aesthetic & Design Principles
 

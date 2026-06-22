@@ -27,7 +27,7 @@ func TestConsoleEndpoints(t *testing.T) {
 	defer engine.Close()
 
 	creds := auth.NewCredentials("access", "secret")
-	handler := NewHandler(engine, creds, 9000, "us-east-1", 100, 1000)
+	handler := NewHandler(engine, creds, 9000, "us-east-1", "", 100, 1000)
 
 	err = engine.CreateBucket("test-bucket")
 	if err != nil {
@@ -206,7 +206,7 @@ func TestConsoleRateLimiting(t *testing.T) {
 
 	creds := auth.NewCredentials("access", "secret")
 	// Set very tight rate limit (burst of 1 for login, burst of 2 for API)
-	handler := NewHandler(engine, creds, 9000, "us-east-1", 1, 2)
+	handler := NewHandler(engine, creds, 9000, "us-east-1", "", 1, 2)
 
 	// Test login rate limiting
 	loginBody, _ := json.Marshal(map[string]string{

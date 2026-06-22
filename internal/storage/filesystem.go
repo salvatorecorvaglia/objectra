@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -88,6 +89,7 @@ type FilesystemEngine struct {
 	syncWG             sync.WaitGroup
 	isSyncShuttingDown int32
 	syncMu             sync.Mutex
+	syncClient         *http.Client
 
 	// Webhook queue
 	webhookURL            string
@@ -127,6 +129,9 @@ func NewFilesystemEngine(dataDir string, syncCfg *SyncConfig, webhookURL string)
 		metadata:   meta,
 		locks:      make(map[string]*uploadLock),
 		syncConfig: syncCfg,
+		syncClient: &http.Client{
+			Timeout: 5 * time.Minute,
+		},
 		webhookURL: webhookURL,
 	}, nil
 }
@@ -508,6 +513,12 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	}
 
 	var gzipWriter *gzip.Writer
+	defer func() {
+		if gzipWriter != nil {
+			gzipWriterPool.Put(gzipWriter)
+		}
+	}()
+
 	compressed := isCompressibleContentType(contentType)
 
 	if compressed {
@@ -529,6 +540,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 			return nil, fmt.Errorf("failed to close gzip writer: %w", err)
 		}
 		gzipWriterPool.Put(gzipWriter)
+		gzipWriter = nil
 	}
 
 	if err := bufWriter.Flush(); err != nil {
@@ -1632,8 +1644,8 @@ type readCloserWrapper struct {
 
 func (w *readCloserWrapper) Close() error {
 	var firstErr error
-	for _, c := range w.closers {
-		if err := c.Close(); err != nil && firstErr == nil {
+	for i := len(w.closers) - 1; i >= 0; i-- {
+		if err := w.closers[i].Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync/atomic"
@@ -126,6 +127,7 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 
 		resp, err := webhookClient.Do(req)
 		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 				return // Success!

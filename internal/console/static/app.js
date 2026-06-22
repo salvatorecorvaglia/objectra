@@ -201,6 +201,15 @@
     }
 
     async function loadBuckets() {
+        bucketsGrid.innerHTML = '';
+        bucketsEmpty.style.display = 'none';
+        bucketCount.textContent = 'Loading buckets...';
+
+        // Render 3 skeleton cards while loading
+        for (let i = 0; i < 3; i++) {
+            bucketsGrid.appendChild(createBucketSkeletonCard());
+        }
+
         try {
             const resp = await api('GET', '/api/buckets');
             const buckets = await resp.json();
@@ -217,6 +226,8 @@
                 });
             }
         } catch (err) {
+            bucketsGrid.innerHTML = '';
+            bucketCount.textContent = 'Failed to load buckets';
             showToast('Failed to load buckets', 'error');
         }
     }
@@ -282,6 +293,24 @@
         return card;
     }
 
+    function createBucketSkeletonCard() {
+        const card = document.createElement('div');
+        card.className = 'bucket-card skeleton-card';
+        card.innerHTML = `
+            <div class="bucket-card-header">
+                <div class="skeleton skeleton-icon"></div>
+            </div>
+            <div class="bucket-card-name" style="margin-top: 1rem;">
+                <div class="skeleton skeleton-title"></div>
+            </div>
+            <div class="bucket-card-meta" style="margin-top: 0.5rem; display: flex; gap: 1.5rem;">
+                <div class="skeleton skeleton-meta" style="width: 80px;"></div>
+                <div class="skeleton skeleton-meta" style="width: 70px;"></div>
+            </div>
+        `;
+        return card;
+    }
+
     // ---- Create Bucket Modal ----
 
     createBucketBtn.addEventListener('click', () => {
@@ -338,6 +367,15 @@
     async function loadObjects() {
         updateBreadcrumb();
 
+        // Render 5 skeleton rows while loading
+        objectsEmpty.style.display = 'none';
+        objectsTableContainer.style.display = 'block';
+        objectsTbody.innerHTML = '';
+        for (let i = 0; i < 5; i++) {
+            objectsTbody.appendChild(createObjectSkeletonRow());
+        }
+        paginationContainer.style.display = 'none';
+
         try {
             const params = new URLSearchParams({
                 prefix: currentPrefix,
@@ -373,6 +411,9 @@
                 paginationContainer.style.display = 'none';
             }
         } catch (err) {
+            objectsTbody.innerHTML = '';
+            objectsTableContainer.style.display = 'none';
+            objectsEmpty.style.display = 'block';
             showToast('Failed to load objects', 'error');
         }
     }
@@ -590,6 +631,23 @@
             });
         }
 
+        return tr;
+    }
+
+    function createObjectSkeletonRow() {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td><div class="skeleton skeleton-checkbox"></div></td>
+            <td>
+                <div class="file-name">
+                    <div class="skeleton skeleton-file-icon"></div>
+                    <div class="skeleton skeleton-text" style="width: 140px; height: 1.2rem;"></div>
+                </div>
+            </td>
+            <td><div class="skeleton skeleton-text" style="width: 60px;"></div></td>
+            <td><div class="skeleton skeleton-text" style="width: 120px;"></div></td>
+            <td></td>
+        `;
         return tr;
     }
 
@@ -1018,7 +1076,7 @@
                     </div>
                 `;
             } else if (ext === '.pdf') {
-                previewContentContainer.innerHTML = `<iframe src="${presignedURL}" sandbox="allow-scripts allow-same-origin" style="width: 100%; height: 60vh; border: none; border-radius: 6px; background: white;"></iframe>`;
+                previewContentContainer.innerHTML = `<iframe src="${presignedURL}" sandbox="allow-scripts" style="width: 100%; height: 60vh; border: none; border-radius: 6px; background: white;"></iframe>`;
             } else if (['.txt', '.json', '.js', '.ts', '.go', '.html', '.css', '.md', '.log', '.env', '.yml', '.yaml', '.xml', '.ini', '.conf', '.sh', '.py'].includes(ext)) {
                 const text = await fetch(presignedURL).then(r => {
                     if (!r.ok) throw new Error('Failed to fetch text body');

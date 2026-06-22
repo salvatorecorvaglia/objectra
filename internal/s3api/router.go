@@ -29,7 +29,6 @@ type Router struct {
 	region   string
 	domain   string
 	logChan  chan logTask
-	logStop  chan struct{}
 	logWG    sync.WaitGroup
 }
 
@@ -41,7 +40,6 @@ func NewRouter(engine storage.Engine, creds *auth.Credentials, region string, do
 		region:   region,
 		domain:   domain,
 		logChan:  make(chan logTask, 1000),
-		logStop:  make(chan struct{}),
 	}
 	rt.startLogWorkers(3)
 	return rt

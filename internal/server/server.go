@@ -89,7 +89,7 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// Web console server
-	consoleHandler := console.NewHandler(engine, creds, cfg.S3Port, cfg.Region, cfg.LoginRateLimit, cfg.APIRateLimit)
+	consoleHandler := console.NewHandler(engine, creds, cfg.S3Port, cfg.Region, cfg.S3Endpoint, cfg.LoginRateLimit, cfg.APIRateLimit)
 	consoleServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ConsolePort),
 		Handler:           consoleHandler,

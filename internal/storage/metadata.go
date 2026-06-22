@@ -21,6 +21,11 @@ var (
 	multipartBucket = []byte("multipart")
 )
 
+type initLock struct {
+	mu       sync.Mutex
+	refCount int
+}
+
 // MetadataStore manages bucket and object metadata using per-bucket bbolt databases.
 type MetadataStore struct {
 	globalDB      *bolt.DB
@@ -28,7 +33,7 @@ type MetadataStore struct {
 	mu            sync.RWMutex
 	bucketLocks   [32]*bucketLockSegment
 	dataDir       string
-	initLocks     map[string]*sync.Mutex
+	initLocks     map[string]*initLock
 	initMu        sync.Mutex
 
 	bucketCache map[string]*BucketInfo
@@ -166,17 +171,26 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 	// Get or create per-bucket initialization mutex
 	m.initMu.Lock()
 	if m.initLocks == nil {
-		m.initLocks = make(map[string]*sync.Mutex)
+		m.initLocks = make(map[string]*initLock)
 	}
-	bucketMu, exists := m.initLocks[bucket]
+	lock, exists := m.initLocks[bucket]
 	if !exists {
-		bucketMu = &sync.Mutex{}
-		m.initLocks[bucket] = bucketMu
+		lock = &initLock{}
+		m.initLocks[bucket] = lock
 	}
+	lock.refCount++
 	m.initMu.Unlock()
 
-	bucketMu.Lock()
-	defer bucketMu.Unlock()
+	lock.mu.Lock()
+	defer func() {
+		lock.mu.Unlock()
+		m.initMu.Lock()
+		lock.refCount--
+		if lock.refCount == 0 {
+			delete(m.initLocks, bucket)
+		}
+		m.initMu.Unlock()
+	}()
 
 	// Double check if already opened by another thread
 	m.mu.RLock()
@@ -185,13 +199,6 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 		return db, nil
 	}
 	m.mu.RUnlock()
-
-	// Ensure the initialization lock is cleaned up from the map upon return
-	defer func() {
-		m.initMu.Lock()
-		delete(m.initLocks, bucket)
-		m.initMu.Unlock()
-	}()
 
 	// Open the database file (blocking Disk I/O) without holding global locks!
 	dbPath := filepath.Join(m.dataDir, "metadata", bucket+".db")

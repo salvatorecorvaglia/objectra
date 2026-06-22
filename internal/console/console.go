@@ -115,18 +115,20 @@ type Handler struct {
 	creds        *auth.Credentials
 	s3Port       int
 	region       string
+	s3Endpoint   string
 	mux          *http.ServeMux
 	loginLimiter *rateLimiter
 	apiLimiter   *rateLimiter
 }
 
 // NewHandler creates a new console handler.
-func NewHandler(engine storage.Engine, creds *auth.Credentials, s3Port int, region string, loginLimit, apiLimit int) *Handler {
+func NewHandler(engine storage.Engine, creds *auth.Credentials, s3Port int, region string, s3Endpoint string, loginLimit, apiLimit int) *Handler {
 	h := &Handler{
 		engine:       engine,
 		creds:        creds,
 		s3Port:       s3Port,
 		region:       region,
+		s3Endpoint:   s3Endpoint,
 		mux:          http.NewServeMux(),
 		loginLimiter: newRateLimiter(loginLimit),
 		apiLimiter:   newRateLimiter(apiLimit),
@@ -701,22 +703,25 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 		}
 	}
 
-	// Resolve the S3 host from the incoming request (replacing port)
-	scheme := "http"
-	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
-		scheme = "https"
-	}
-	
-	hostWithoutPort := r.Host
-	if strings.Contains(r.Host, ":") {
-		h, _, err := net.SplitHostPort(r.Host)
-		if err == nil {
-			hostWithoutPort = h
+	s3Endpoint := h.s3Endpoint
+	if s3Endpoint == "" {
+		// Resolve the S3 host from the incoming request (replacing port)
+		scheme := "http"
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			scheme = "https"
 		}
-	}
+		
+		hostWithoutPort := r.Host
+		if strings.Contains(r.Host, ":") {
+			h, _, err := net.SplitHostPort(r.Host)
+			if err == nil {
+				hostWithoutPort = h
+			}
+		}
 
-	// Build the S3 endpoint URL
-	s3Endpoint := fmt.Sprintf("%s://%s:%d", scheme, hostWithoutPort, h.s3Port)
+		// Build the S3 endpoint URL
+		s3Endpoint = fmt.Sprintf("%s://%s:%d", scheme, hostWithoutPort, h.s3Port)
+	}
 
 	presignedURL, err := auth.PresignGetObject(
 		h.creds.AccessKey,

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-22
+
+### Added
+
+- `OBJECTRA_S3_ENDPOINT` environment variable configuration to customize public S3 endpoint URLs for console presigned links.
+- Skeleton loading shimmers to the Admin Web Console for buckets and objects loading states.
+- Concurrency integration tests for MetadataStore `initLocks` reference counting.
+
+### Changed
+
+- Reused `http.Client` for replication mirroring dispatcher (`performSync`) to prevent port/connection exhaustion.
+- Optimized metadata database initialization `initLocks` using reference-counted mutexes to prevent memory leak and race conditions on concurrent database lookups.
+- Enhanced PDF preview sandboxing in the console iframe to enforce strict script-only permissions (removing `allow-same-origin`).
+- Improved webhook dispatcher connection reuse by discarding and closing response bodies.
+- Cleaned up unused `logStop` channel in the S3 API router.
+- Refactored `readCloserWrapper.Close()` to close underlying closers in LIFO (Last-In-First-Out) order.
+
 ## [0.1.0] - 2026-06-15
 
 ### Added

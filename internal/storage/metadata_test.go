@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -186,6 +187,44 @@ func TestListBucketsIgnoresSystemKeys(t *testing.T) {
 
 	if buckets[0].Name != "testbucket" {
 		t.Errorf("expected bucket name 'testbucket', got '%s'", buckets[0].Name)
+	}
+}
+
+func TestConcurrentGetBucketDBInitLocks(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	meta, err := NewMetadataStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewMetadataStore failed: %v", err)
+	}
+	defer meta.Close()
+
+	badBucket := "concurrent-bad-bucket"
+	dbPath := filepath.Join(tmpDir, "metadata", badBucket+".db")
+	if err := os.MkdirAll(dbPath, 0700); err != nil {
+		t.Fatalf("failed to create directory to block db: %v", err)
+	}
+
+	const concurrency = 10
+	var wg sync.WaitGroup
+	wg.Add(concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = meta.GetObjectMeta(badBucket, "some-key", "")
+		}()
+	}
+
+	wg.Wait()
+
+	// Verify that the entry in initLocks is eventually deleted after all goroutines complete
+	meta.initMu.Lock()
+	_, exists := meta.initLocks[badBucket]
+	meta.initMu.Unlock()
+
+	if exists {
+		t.Error("expected initLocks entry to be deleted after all concurrent attempts complete")
 	}
 }
 

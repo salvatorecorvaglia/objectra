@@ -69,7 +69,7 @@ func (fs *FilesystemEngine) initSyncDispatcher() {
 		go func() {
 			defer fs.syncWG.Done()
 			for task := range fs.syncQueue {
-				err := performSync(task.fs, task.cfg, task.bucket, task.key, task.op)
+				err := performSync(task.fs, task.fs.syncClient, task.cfg, task.bucket, task.key, task.op)
 				if err != nil {
 					slog.Error("[Sync] Mirroring failed", "op", task.op, "bucket", task.bucket, "key", task.key, "error", err)
 				} else {
@@ -130,7 +130,7 @@ func (fs *FilesystemEngine) MirrorSync(bucket, key, op string) {
 	}
 }
 
-func performSync(fs *FilesystemEngine, cfg *SyncConfig, bucket, key, op string) error {
+func performSync(fs *FilesystemEngine, client *http.Client, cfg *SyncConfig, bucket, key, op string) error {
 	// Construct the destination URL
 	// Endpoint is e.g. http://localhost:9002
 	destURL := fmt.Sprintf("%s/%s/%s", cfg.Endpoint, cfg.Bucket, strings.TrimPrefix(key, "/"))
@@ -177,9 +177,6 @@ func performSync(fs *FilesystemEngine, cfg *SyncConfig, bucket, key, op string) 
 	// Sign request
 	signRequest(req, cfg.AccessKey, cfg.SecretKey, cfg.Region, "s3")
 
-	client := &http.Client{
-		Timeout: 5 * time.Minute,
-	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
