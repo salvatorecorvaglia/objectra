@@ -90,15 +90,20 @@ You can spin up Objectra immediately via Docker Compose.
 docker compose up -d
 ```
 
-To run manually using the CLI:
+To run manually using the CLI, build the Docker image locally first:
+
 ```bash
+# Build the Docker image locally
+docker build -t objectra .
+
+# Run the container
 docker run -d \
   -p 9000:9000 \
   -p 9001:9001 \
   -v $(pwd)/data:/data \
   -e OBJECTRA_ACCESS_KEY=myaccesskey \
   -e OBJECTRA_SECRET_KEY=mysecretkey \
-  salvatorecorvaglia/objectra
+  objectra
 ```
 
 ---
