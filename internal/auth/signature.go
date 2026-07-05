@@ -338,6 +338,19 @@ func getCanonicalURI(u *url.URL) string {
 	return path
 }
 
+func awsPercentEncode(s string) string {
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '~' || c == '.' {
+			buf.WriteByte(c)
+		} else {
+			buf.WriteString(fmt.Sprintf("%%%02X", c))
+		}
+	}
+	return buf.String()
+}
+
 // getCanonicalQueryString returns the sorted, URL-encoded query string.
 func getCanonicalQueryString(values url.Values) string {
 	if len(values) == 0 {
@@ -355,7 +368,7 @@ func getCanonicalQueryString(values url.Values) string {
 		vs := values[k]
 		sort.Strings(vs)
 		for _, v := range vs {
-			pairs = append(pairs, url.QueryEscape(k)+"="+url.QueryEscape(v))
+			pairs = append(pairs, awsPercentEncode(k)+"="+awsPercentEncode(v))
 		}
 	}
 
@@ -383,6 +396,11 @@ func hmacSHA256(key, data []byte) []byte {
 	h := hmac.New(sha256.New, key)
 	_, _ = h.Write(data)
 	return h.Sum(nil)
+}
+
+// HmacSHA256 computes HMAC-SHA256 and is exported for other packages.
+func HmacSHA256(key, data []byte) []byte {
+	return hmacSHA256(key, data)
 }
 
 // hashSHA256 computes SHA256 hash and returns hex string.

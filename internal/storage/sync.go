@@ -3,7 +3,6 @@ package storage
 import (
 	"bufio"
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -16,6 +15,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/salvatorecorvaglia/objectra/internal/auth"
 )
 
 // SyncConfig holds S3 replication target credentials and endpoint.
@@ -196,11 +197,7 @@ type bufferedReadCloser struct {
 	io.Closer
 }
 
-func hmacSHA256(key []byte, data []byte) []byte {
-	h := hmac.New(sha256.New, key)
-	_, _ = h.Write(data)
-	return h.Sum(nil)
-}
+
 
 func signRequest(req *http.Request, accessKey, secretKey, region, service string) {
 	t := time.Now().UTC()
@@ -266,13 +263,13 @@ func signRequest(req *http.Request, accessKey, secretKey, region, service string
 	)
 
 	// Deriving Key
-	kDate := hmacSHA256([]byte("AWS4"+secretKey), []byte(dateDay))
-	kRegion := hmacSHA256(kDate, []byte(region))
-	kService := hmacSHA256(kRegion, []byte(service))
-	kSigning := hmacSHA256(kService, []byte("aws4_request"))
+	kDate := auth.HmacSHA256([]byte("AWS4"+secretKey), []byte(dateDay))
+	kRegion := auth.HmacSHA256(kDate, []byte(region))
+	kService := auth.HmacSHA256(kRegion, []byte(service))
+	kSigning := auth.HmacSHA256(kService, []byte("aws4_request"))
 
 	// Signature
-	signature := hex.EncodeToString(hmacSHA256(kSigning, []byte(stringToSign)))
+	signature := hex.EncodeToString(auth.HmacSHA256(kSigning, []byte(stringToSign)))
 
 	// Auth Header
 	authHeader := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",

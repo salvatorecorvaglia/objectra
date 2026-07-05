@@ -293,6 +293,24 @@
         </div>
     </div>
 
+    <!-- Confirm Delete Modal -->
+    <div id="delete-modal" class="modal-overlay" style="display:none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Confirm Deletion</h3>
+                <button class="modal-close" data-close="delete-modal" aria-label="Close Delete Modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="delete-modal-msg" style="font-size: 0.95rem; color: var(--text-primary); margin-bottom: 0.5rem;"></p>
+                <p style="font-size: 0.85rem; color: var(--accent-red); font-weight: 500;">Warning: This action is permanent and cannot be undone.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" data-close="delete-modal">Cancel</button>
+                <button id="confirm-delete-btn" class="btn btn-danger">Delete</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Upload Progress -->
     <div id="upload-progress" class="upload-progress" style="display:none;">
         <div class="upload-progress-header">

@@ -142,9 +142,84 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 		return
 	}
 
+	// Fallback for non-seekable readers: check if client requested Range
+	rangeHeader := r.Header.Get("Range")
+	if rangeHeader != "" {
+		ranges, err := parseRange(rangeHeader, info.Size)
+		if err != nil {
+			writeS3Error(w, "InvalidRange", "The requested range is not satisfiable", resource)
+			return
+		}
+		if len(ranges) == 1 {
+			ra := ranges[0]
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", ra.start, ra.start+ra.length-1, info.Size))
+			w.Header().Set("Content-Length", strconv.FormatInt(ra.length, 10))
+			w.WriteHeader(http.StatusPartialContent)
+
+			// Discard the initial bytes
+			_, _ = io.CopyN(io.Discard, reader, ra.start)
+			// Copy only the requested length
+			_, _ = io.CopyN(w, reader, ra.length)
+			return
+		}
+	}
+
 	// Fallback for non-seekable readers: serve full content only.
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, reader)
+}
+
+type httpRange struct {
+	start, length int64
+}
+
+func parseRange(s string, size int64) ([]httpRange, error) {
+	if s == "" {
+		return nil, nil
+	}
+	const b = "bytes="
+	if !strings.HasPrefix(s, b) {
+		return nil, fmt.Errorf("invalid range")
+	}
+	s = s[len(b):]
+	parts := strings.Split(s, "-")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid range")
+	}
+	var start, end int64
+	var err error
+	if parts[0] == "" {
+		// -suffix
+		end = size - 1
+		suffix, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || suffix <= 0 {
+			return nil, fmt.Errorf("invalid range")
+		}
+		start = size - suffix
+		if start < 0 {
+			start = 0
+		}
+	} else {
+		start, err = strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || start < 0 {
+			return nil, fmt.Errorf("invalid range")
+		}
+		if parts[1] == "" {
+			end = size - 1
+		} else {
+			end, err = strconv.ParseInt(parts[1], 10, 64)
+			if err != nil || end < start {
+				return nil, fmt.Errorf("invalid range")
+			}
+			if end >= size {
+				end = size - 1
+			}
+		}
+	}
+	if start >= size {
+		return nil, fmt.Errorf("range out of bounds")
+	}
+	return []httpRange{{start: start, length: end - start + 1}}, nil
 }
 
 // handleHeadObject handles HEAD /<bucket>/<key> (HeadObject).

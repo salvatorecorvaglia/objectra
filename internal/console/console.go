@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -157,10 +158,34 @@ func (h *Handler) setupRoutes() {
 	// Prometheus metrics endpoint
 	h.mux.HandleFunc("/metrics", h.handleMetrics)
 
-	// Static files (embedded frontend)
+	// Static files (embedded frontend) with SPA wildcard fallback
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	fileServer := http.FileServer(http.FS(staticFS))
-	h.mux.Handle("/", fileServer)
+	h.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		// If the file exists in staticFS, serve it
+		f, err := staticFS.Open(path)
+		if err == nil {
+			f.Close()
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		// If requesting a file path (contains extension) that doesn't exist, return 404
+		if strings.Contains(path, ".") {
+			http.NotFound(w, r)
+			return
+		}
+
+		// Otherwise, serve index.html for client-side SPA routing
+		r.URL.Path = "/"
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 // ServeHTTP implements the http.Handler interface.
@@ -170,8 +195,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// In production, this should be set to the actual console URL.
 	origin := r.Header.Get("Origin")
 	if origin != "" {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Vary", "Origin")
+		if isValidConsoleOrigin(origin, r.Host) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		} else {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "unauthorized origin"})
+			return
+		}
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
@@ -741,6 +771,29 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 }
 
 func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	metricsToken := os.Getenv("OBJECTRA_METRICS_TOKEN")
+	authorized := false
+
+	authHeader := r.Header.Get("Authorization")
+	if metricsToken != "" {
+		if authHeader == "Bearer "+metricsToken {
+			authorized = true
+		}
+	}
+
+	if !authorized && authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimPrefix(authHeader, "Bearer ")
+		if _, err := ValidateToken(token); err == nil {
+			authorized = true
+		}
+	}
+
+	if !authorized {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="Metrics"`)
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
 	dataDir := "."
 	if fsEng, ok := h.engine.(interface{ DataDir() string }); ok {
 		dataDir = fsEng.DataDir()
@@ -750,6 +803,23 @@ func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set(contentTypeHeader, "text/plain; version=0.0.4; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(metricsStr))
+}
+
+func isValidConsoleOrigin(origin string, requestHost string) bool {
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(u.Host, requestHost) {
+		return true
+	}
+	if u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" {
+		return true
+	}
+	return false
 }
 
 func (h *Handler) handleGetLifecycle(w http.ResponseWriter, _ *http.Request, bucket string) {

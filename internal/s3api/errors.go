@@ -25,6 +25,7 @@ var errorHTTPStatus = map[string]int{
 	"NoSuchCORSConfiguration": http.StatusNotFound,
 	"InternalError":           http.StatusInternalServerError,
 	"MethodNotAllowed":        http.StatusMethodNotAllowed,
+	"InvalidRange":            http.StatusRequestedRangeNotSatisfiable,
 	"MalformedXML":            http.StatusBadRequest,
 	"SignatureDoesNotMatch":   http.StatusForbidden,
 	"InvalidAccessKeyId":      http.StatusForbidden,

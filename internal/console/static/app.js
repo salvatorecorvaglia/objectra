@@ -275,7 +275,8 @@
         const deleteBtn = card.querySelector('.bucket-delete-btn');
         deleteBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
-            if (!confirm(`Delete bucket "${bucket.name}"? It must be empty.`)) return;
+            const ok = await confirmPremium(`Delete bucket "${bucket.name}"? It must be empty.`);
+            if (!ok) return;
             try {
                 const resp = await api('DELETE', `/api/buckets/${bucket.name}`);
                 if (resp.ok) {
@@ -616,7 +617,8 @@
             });
 
             tr.querySelector('.delete-obj-btn').addEventListener('click', async () => {
-                if (!confirm(`Delete "${displayName}"?`)) return;
+                const ok = await confirmPremium(`Delete "${displayName}"?`);
+                if (!ok) return;
                 try {
                     const resp = await api('DELETE', `/api/buckets/${currentBucket}/objects?key=${encodeURIComponent(item.key)}`);
                     if (resp.ok) {
@@ -1195,7 +1197,8 @@
             const keys = Array.from(checkedBoxes).map(cb => cb.dataset.key);
             if (keys.length === 0) return;
 
-            if (!confirm(`Are you sure you want to delete the ${keys.length} selected object(s)?`)) return;
+            const ok = await confirmPremium(`Are you sure you want to delete the ${keys.length} selected object(s)?`);
+            if (!ok) return;
 
             batchDeleteBtn.disabled = true;
             const originalHTML = batchDeleteBtn.innerHTML;
@@ -1233,6 +1236,48 @@
     }
 
     // ---- Utilities ----
+
+    function confirmPremium(message) {
+        return new Promise((resolve) => {
+            const modal = document.getElementById('delete-modal');
+            const msgEl = document.getElementById('delete-modal-msg');
+            const confirmBtn = document.getElementById('confirm-delete-btn');
+            
+            msgEl.textContent = message;
+            openModal('delete-modal');
+            
+            const handleConfirm = () => {
+                cleanup();
+                resolve(true);
+            };
+            
+            const handleCancel = () => {
+                cleanup();
+                resolve(false);
+            };
+            
+            const cleanup = () => {
+                confirmBtn.removeEventListener('click', handleConfirm);
+                modal.querySelectorAll('[data-close="delete-modal"]').forEach(btn => {
+                    btn.removeEventListener('click', handleCancel);
+                });
+                modal.removeEventListener('click', handleOverlayClick);
+                closeModal('delete-modal');
+            };
+            
+            const handleOverlayClick = (e) => {
+                if (e.target === modal) {
+                    handleCancel();
+                }
+            };
+            
+            confirmBtn.addEventListener('click', handleConfirm);
+            modal.querySelectorAll('[data-close="delete-modal"]').forEach(btn => {
+                btn.addEventListener('click', handleCancel);
+            });
+            modal.addEventListener('click', handleOverlayClick);
+        });
+    }
 
     function formatSize(bytes) {
         if (bytes === 0) return '0 B';

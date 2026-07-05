@@ -38,6 +38,7 @@ type MetadataStore struct {
 
 	bucketCache map[string]*BucketInfo
 	cacheMu     sync.RWMutex
+	inMigration bool
 }
 
 type bucketLockSegment struct {
@@ -168,6 +169,24 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 	}
 	m.mu.RUnlock()
 
+	// Verify bucket exists in global DB to prevent re-creation of deleted DB files (unless migrating)
+	if !m.inMigration {
+		exists := false
+		err := m.globalDB.View(func(tx *bolt.Tx) error {
+			b := tx.Bucket(bucketsBucket)
+			if b != nil {
+				exists = b.Get([]byte(bucket)) != nil
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			return nil, fmt.Errorf("bucket not found in registry: %s", bucket)
+		}
+	}
+
 	// Get or create per-bucket initialization mutex
 	m.initMu.Lock()
 	if m.initLocks == nil {
@@ -257,6 +276,9 @@ func (m *MetadataStore) migrateIfNecessary() error {
 	if !objectsBucketExists && !multipartBucketExists {
 		return nil
 	}
+
+	m.inMigration = true
+	defer func() { m.inMigration = false }()
 
 	slog.Info("[Migration] Migrating old single-database metadata to per-bucket databases")
 

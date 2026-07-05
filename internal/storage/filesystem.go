@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -131,6 +132,19 @@ func NewFilesystemEngine(dataDir string, syncCfg *SyncConfig, webhookURL string)
 		syncConfig: syncCfg,
 		syncClient: &http.Client{
 			Timeout: 5 * time.Minute,
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				ForceAttemptHTTP2:     true,
+				MaxIdleConns:          100,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: 1 * time.Second,
+				MaxIdleConnsPerHost:   10,
+			},
 		},
 		webhookURL: webhookURL,
 	}, nil
@@ -921,7 +935,11 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 
 	seekKey := bucketPrefix
 	if startAfter != "" {
-		seekKey = bucketPrefix + startAfter + "\x00"
+		if input.Delimiter != "" && strings.HasSuffix(startAfter, input.Delimiter) {
+			seekKey = bucketPrefix + startAfter + "\xff"
+		} else {
+			seekKey = bucketPrefix + startAfter + "\x00"
+		}
 	} else if input.Prefix != "" {
 		seekKey = bucketPrefix + input.Prefix
 	}
@@ -1421,7 +1439,8 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 	// Calculate S3-compliant multipart ETag
 	var md5s []byte
 	for _, part := range parts {
-		b, err := hex.DecodeString(part.ETag)
+		trimmedETag := strings.Trim(part.ETag, `"`)
+		b, err := hex.DecodeString(trimmedETag)
 		if err == nil && len(b) == 16 {
 			md5s = append(md5s, b...)
 		}

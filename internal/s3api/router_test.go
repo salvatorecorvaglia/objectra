@@ -249,6 +249,39 @@ func TestS3API_Integration(t *testing.T) {
 		}
 	})
 
+	// 3c. Get Compressed Object Range (non-seekable stream)
+	t.Run("GetObjectRangeCompressed", func(t *testing.T) {
+		content := []byte("compressed alpha beta gamma delta epsilon")
+		putReq := httptest.NewRequest("PUT", "/testbucket/compressed.txt", bytes.NewReader(content))
+		putReq.Host = "localhost:9000"
+		putReq.Header.Set("Content-Type", "text/plain")
+		signTestRequest(putReq, accessKey, secretKey, "us-east-1", "s3", time.Now().UTC(), content)
+
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, putReq)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("failed to put compressed object: %v", rec.Body.String())
+		}
+
+		req := httptest.NewRequest("GET", "/testbucket/compressed.txt", nil)
+		req.Host = "localhost:9000"
+		req.Header.Set("Range", "bytes=11-20")
+		signTestRequest(req, accessKey, secretKey, "us-east-1", "s3", time.Now().UTC(), nil)
+
+		rec2 := httptest.NewRecorder()
+		router.ServeHTTP(rec2, req)
+
+		if rec2.Code != http.StatusPartialContent {
+			t.Errorf("expected status 206 for compressed range, got %d, body: %s", rec2.Code, rec2.Body.String())
+		}
+		if rec2.Body.String() != "alpha beta" {
+			t.Errorf("expected body 'alpha beta', got %q", rec2.Body.String())
+		}
+		if rec2.Header().Get("Content-Range") != "bytes 11-20/41" {
+			t.Errorf("expected Content-Range 'bytes 11-20/41', got %q", rec2.Header().Get("Content-Range"))
+		}
+	})
+
 	// 4. Delete Object
 	t.Run("DeleteObject", func(t *testing.T) {
 		req := httptest.NewRequest("DELETE", "/testbucket/hello.txt", nil)

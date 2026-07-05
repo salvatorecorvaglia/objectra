@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -338,5 +339,18 @@ func TestVerifySignaturePayloadMismatch(t *testing.T) {
 
 	if err := verifier.Verify(req2); err == nil {
 		t.Error("expected signature to fail when payload body is tampered")
+	}
+}
+
+func TestCanonicalQueryStringEncoding(t *testing.T) {
+	values := make(url.Values)
+	values.Set("key with space", "value with space")
+	values.Set("key/with/slash", "value/with/slash")
+
+	canonical := getCanonicalQueryString(values)
+
+	expected := "key%20with%20space=value%20with%20space&key%2Fwith%2Fslash=value%2Fwith%2Fslash"
+	if canonical != expected {
+		t.Errorf("expected canonical query string:\n%q\ngot:\n%q", expected, canonical)
 	}
 }
