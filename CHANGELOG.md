@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `OBJECTRA_METRICS_TOKEN` environment variable configuration to secure the `/metrics` Prometheus endpoint.
+- SPA client-side routing wildcard fallback support in the web console, preventing 404 errors on browser page reloads or deep-linked URL paths.
+- S3 `GetObject` range request support for compressed/non-seekable streams, dynamically buffering stream chunks and returning `206 Partial Content`.
+- Integration tests in `internal/s3api` for non-seekable compressed range request operations.
+
+### Changed
+
+- Consolidated cryptographic signature helpers: moved signature utilities to `internal/auth` (`auth.HmacSHA256`) and reuse them across S3 API verification and mirroring replication.
+- Optimized storage database retrieval inside `MetadataStore` to verify bucket registration in the global DB registry prior to instantiating per-bucket connection handlers, preventing automatic creation of deleted/dangling database files on disk.
+- Enhanced mirroring replication client by optimizing connection pooling parameters on `http.Transport` to prevent port and socket exhaustion under high loads.
+- Adjusted multipart upload completion to strip surrounding quotes from part ETags before validation.
+- Fixed S3 `ListObjects` key seek positioning when using delimiters and start-after parameters.
+
+### Security
+
+- Enforced console endpoint and WebSocket security by validating incoming `Origin` headers against the request host and local loopback addresses (`localhost`, `127.0.0.1`).
+
 ## [0.2.0] - 2026-06-22
 
 ### Added

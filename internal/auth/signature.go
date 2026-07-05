@@ -345,7 +345,7 @@ func awsPercentEncode(s string) string {
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '~' || c == '.' {
 			buf.WriteByte(c)
 		} else {
-			buf.WriteString(fmt.Sprintf("%%%02X", c))
+			fmt.Fprintf(&buf, "%%%02X", c)
 		}
 	}
 	return buf.String()

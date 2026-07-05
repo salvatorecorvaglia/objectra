@@ -171,7 +171,7 @@ func (h *Handler) setupRoutes() {
 		// If the file exists in staticFS, serve it
 		f, err := staticFS.Open(path)
 		if err == nil {
-			f.Close()
+			_ = f.Close()
 			fileServer.ServeHTTP(w, r)
 			return
 		}

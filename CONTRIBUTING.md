@@ -161,7 +161,9 @@ Lint rules are defined in [`.golangci.yml`](.golangci.yml).
   - `slog.Info`: High-level operational events (e.g., server started, port bound).
   - `slog.Warn`: Non-fatal issues (e.g., rate limits hit, configuration warnings).
   - `slog.Error`: Fatal issues or operations that failed.
-- **Constant-time Security Checks**: When performing cryptographic or security-sensitive comparisons (e.g., SSE-C MD5 checksums, token validation, password verification), always use constant-time functions (e.g., `subtle.ConstantTimeCompare`) to mitigate side-channel timing attacks.
+- **Constant-time Security Checks**: When performing cryptographic or security-sensitive comparisons (e.g., SSE-C MD5 checksums, token validation, password verification), always use constant-time comparisons (e.g., `subtle.ConstantTimeCompare`) to mitigate side-channel timing attacks.
+- **Console Request Origin Verification**: All custom web console APIs and WebSocket connection handshakes must validate the request's origin against the request host, local loopback (localhost/127.0.0.1), or explicitly allowed origins to prevent Cross-Site Request Forgery (CSRF) and unauthorized cross-origin requests.
+- **Consolidated Cryptographic Utilities**: Reuse central cryptographic implementation helpers in `internal/auth` rather than introducing duplicate verification blocks across different internal packages.
 
 ### Concurrency & Performance
 
@@ -172,7 +174,9 @@ Lint rules are defined in [`.golangci.yml`](.golangci.yml).
 - **Streaming I/O**: Keep streaming operations memory-efficient. Avoid buffering large S3 objects in memory. Stream bytes directly to/from disk where possible.
 - **HTTP Client Reuse**: Reuse `http.Client` instances across outbound requests (e.g., replication mirror syncing) to utilize TCP connection pooling and prevent system socket/port exhaustion under heavy request loads.
 - **HTTP Response Body Draining**: Always drain HTTP response bodies (e.g., via `io.Copy(io.Discard, resp.Body)`) before closing them. This allows the client transport layer to keep TCP connections alive and reuse them for subsequent requests.
+- **HTTP Transport Pooling & Timeouts**: When configuring long-lived `http.Client` instances (e.g. for replication/sync workers), configure explicit timeouts, enable HTTP/2 support, and customize the underlying `http.Transport` connection pool configuration parameters (such as `MaxIdleConns`, `IdleConnTimeout`, and `MaxIdleConnsPerHost`) to prevent connection leaks and TCP port exhaustion.
 - **Reference-Counted Initialization Mutexes**: For dynamic, on-demand resource setup (e.g., opening per-bucket metadata databases), protect critical paths with reference-counted mutexes. Ensure the lock metadata is removed from internal maps only when the reference count reaches zero.
+- **Global DB Registry Verification**: Before instantiating or initializing per-bucket dynamic database instances, verify that the bucket exists in the global metadata registry. This prevents dynamic tasks from unintentionally re-creating deleted database files on disk.
 - **LIFO Resource Teardown**: In closer wrappers handling multiple resources, invoke close operations in Last-In-First-Out (LIFO) order to guarantee dependencies are cleaned up in the correct sequence.
 
 ### Aesthetic & Design Principles
