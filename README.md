@@ -8,13 +8,14 @@ Objectra is a high-performance object storage server written in Go that implemen
 
 ## ✨ Key Features
 
-- **S3 API Compatibility**: Implements core bucket and object operations (Create, List, Delete, Check head, PUT/GET/DELETE, Multipart uploads).
-- **Built-in Web Console**: A sleek, responsive dashboard served directly from the binary (default port `9001`) to browse, create, and delete buckets and objects visually.
-- **Active-Passive Mirroring**: Asynchronous object replication to secondary S3 targets using AWS Signature V4 signing.
+- **S3 API Compatibility**: Implements core bucket and object operations (Create, List, Delete, Check head, PUT/GET/DELETE, Multipart uploads) along with standard S3 range requests (Partial Content `206`) for seekable and compressed/non-seekable streams.
+- **Built-in Web Console**: A sleek, responsive dashboard served directly from the binary (default port `9001`) with Single-Page Application (SPA) wildcard client-side routing fallback to prevent 404s on browser reloads or deep links.
+- **Active-Passive Mirroring**: Asynchronous object replication to secondary S3 targets using AWS Signature V4 signing and optimized HTTP connection pooling.
 - **Event Webhooks**: Dispatch event notifications (such as `s3:ObjectCreated` and `s3:ObjectRemoved`) to external webhook endpoints with built-in retries and exponential backoff.
-- **Robust Concurrency & Locking**: Granular bucket-level read/write locking to prevent race conditions without introducing bottleneck global mutexes.
+- **Robust Concurrency & Locking**: Granular bucket-level read/write locking to prevent race conditions without introducing bottleneck global mutexes, backed by reference-counted initialization mutexes.
 - **Highly Modular Storage**: Central metadata is tracked in `objectra.db` (BoltDB), while object records are stored in dedicated per-bucket databases (`metadata/<bucket_name>.db`) to ensure isolation and performance.
-- **Security-First**: Support for SSL/TLS encryption, Server-Side Encryption with Customer-provided Keys (SSE-C), persistent JWT session signing, and configurable login/API rate limits.
+- **Security-First**: Enforces SSL/TLS encryption, Server-Side Encryption with Customer-provided Keys (SSE-C), persistent JWT session signing, configurable login/API rate limits, and request origin verification for APIs and WebSockets.
+- **Prometheus Metrics**: Exposes operational telemetry via the `/metrics` endpoint, secured using `OBJECTRA_METRICS_TOKEN` or console session validation.
 - **Graceful Shutdown**: Intercepts `SIGINT`/`SIGTERM` to safely write pending queues, flush logs, and close database descriptors cleanly.
 
 ---
@@ -25,11 +26,11 @@ Objectra is structured logically to separate the core storage logic from HTTP en
 
 - **[`cmd/objectra/`](cmd/objectra)**: The entry point. Initializes runtime configurations, mounts databases, boots servers, and registers shutdown handlers.
 - **[`internal/storage/`](internal/storage)**: The storage engine. Handles direct-to-disk layout mapping, chunked multipart uploads, metadata bookkeeping, lifecycle sweeps, replication queues, and webhook dispatching.
-- **[`internal/s3api/`](internal/s3api)**: Exposes the AWS S3-compatible REST API endpoints.
-- **[`internal/console/`](internal/console)**: Implements the API routes and serves the Single-Page Web Console UI.
-- **[`internal/server/`](internal/server)**: Sets up the main HTTP/HTTPS server listeners, handles custom rate limiting, and configures TLS.
-- **[`internal/auth/`](internal/auth)**: AWS Signature V4 verification algorithms and console credentials checking.
-- **[`internal/config/`](internal/config)**: Server configuration binding and default value administration.
+- **[`internal/s3api/`](internal/s3api)**: Exposes the AWS S3-compatible REST API endpoints, handling authentication, CORS, multipart uploads, and range requests.
+- **[`internal/console/`](internal/console)**: Serves the Single-Page Web Console UI, handles CORS origin verification, WebSocket security checks, SPA wildcard fallback routing, and exposes Prometheus metrics.
+- **[`internal/server/`](internal/server)**: Orchestrates the HTTP/HTTPS listeners, configures TLS, and manages custom rate limiting.
+- **[`internal/auth/`](internal/auth)**: Houses consolidated cryptographic helper utilities (AWS Signature V4, HmacSHA256, token generation) and manages console session JWT validation.
+- **[`internal/config/`](internal/config)**: Declares configuration models, binds environment variables, and manages default profile values.
 
 ---
 

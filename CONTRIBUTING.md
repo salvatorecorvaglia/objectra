@@ -46,11 +46,11 @@ If you encounter any behavior that violates these principles, please see our [Se
 Objectra is written in Go and structured to separate core storage engine logic, API handling, and the built-in web console:
 
 - **[`cmd/objectra/`](cmd/objectra)**: The main entry point. Initializes configuration, storage backends, routers, and starts the S3 API and Console HTTP servers.
-- **[`internal/auth/`](internal/auth)**: Implements AWS Signature V4 authentication for the S3 API and JWT authentication/sessions for the web console.
-- **[`internal/config/`](internal/config)**: Defines configuration settings, handles environment variables, and parses `.env` profiles.
-- **[`internal/console/`](internal/console)**: Contains handlers, routers, and frontend/static assets for the built-in web browser console.
-- **[`internal/s3api/`](internal/s3api)**: Houses routers, middlewares, and controllers implementing the S3-compatible API endpoints (e.g., bucket/object operations, logging, lifecycles).
-- **[`internal/server/`](internal/server)**: Handles HTTP/HTTPS server orchestration, TLS configurations, and rate-limiting limits.
+- **[`internal/auth/`](internal/auth)**: Houses consolidated cryptographic helper utilities (AWS Signature V4, HmacSHA256, token generation) and manages console session JWT validation.
+- **[`internal/config/`](internal/config)**: Declares configuration models, binds environment variables, and manages default profile values.
+- **[`internal/console/`](internal/console)**: Serves the Single-Page Web Console UI, handles CORS origin verification, WebSocket security checks, SPA wildcard fallback routing, and exposes Prometheus metrics.
+- **[`internal/s3api/`](internal/s3api)**: Exposes the AWS S3-compatible REST API endpoints, handling authentication, CORS, multipart uploads, and range requests.
+- **[`internal/server/`](internal/server)**: Orchestrates the HTTP/HTTPS listeners, configures TLS, and manages custom rate limiting.
 - **[`internal/storage/`](internal/storage)**: The core storage abstraction. Implements local disk mapping, streaming I/O, bucket metadata management, lifecycle expiration execution, and bucket-level concurrency controls.
 
 ---
