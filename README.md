@@ -25,7 +25,13 @@ Objectra is a high-performance object storage server written in Go that implemen
 Objectra is structured logically to separate the core storage logic from HTTP endpoints and web interfaces:
 
 - **[`cmd/objectra/`](cmd/objectra)**: The entry point. Initializes runtime configurations, mounts databases, boots servers, and registers shutdown handlers.
-- **[`internal/storage/`](internal/storage)**: The storage engine. Handles direct-to-disk layout mapping, chunked multipart uploads, metadata bookkeeping, lifecycle sweeps, replication queues, and webhook dispatching.
+- **[`internal/storage/`](internal/storage)**: The storage engine. Handles direct-to-disk layout mapping, metadata bookkeeping, replication queues, and webhook dispatching. Decoupled into dedicated modules:
+  - [`multipart.go`](internal/storage/multipart.go) for chunked multipart uploads.
+  - [`lifecycle.go`](internal/storage/lifecycle.go) for bucket lifecycle rules and sweeps.
+  - [`paths.go`](internal/storage/paths.go) for path validation and safety checks.
+  - [`metadata.go`](internal/storage/metadata.go) for per-bucket BoltDB metadata stores.
+  - [`sync.go`](internal/storage/sync.go) for active-passive S3 mirroring replication.
+  - [`webhook.go`](internal/storage/webhook.go) for background event notifications.
 - **[`internal/s3api/`](internal/s3api)**: Exposes the AWS S3-compatible REST API endpoints, handling authentication, CORS, multipart uploads, and range requests.
 - **[`internal/console/`](internal/console)**: Serves the Single-Page Web Console UI, handles CORS origin verification, WebSocket security checks, SPA wildcard fallback routing, and exposes Prometheus metrics.
 - **[`internal/server/`](internal/server)**: Orchestrates the HTTP/HTTPS listeners, configures TLS, and manages custom rate limiting.

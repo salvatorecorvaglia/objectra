@@ -51,7 +51,16 @@ Objectra is written in Go and structured to separate core storage engine logic, 
 - **[`internal/console/`](internal/console)**: Serves the Single-Page Web Console UI, handles CORS origin verification, WebSocket security checks, SPA wildcard fallback routing, and exposes Prometheus metrics.
 - **[`internal/s3api/`](internal/s3api)**: Exposes the AWS S3-compatible REST API endpoints, handling authentication, CORS, multipart uploads, and range requests.
 - **[`internal/server/`](internal/server)**: Orchestrates the HTTP/HTTPS listeners, configures TLS, and manages custom rate limiting.
-- **[`internal/storage/`](internal/storage)**: The core storage abstraction. Implements local disk mapping, streaming I/O, bucket metadata management, lifecycle expiration execution, and bucket-level concurrency controls.
+- **[`internal/storage/`](internal/storage)**: The core storage abstraction. Implements local disk mapping, streaming I/O, bucket metadata management, replication mirroring, and webhook event dispatching. The engine is decoupled into separate specialized modules:
+  - [`engine.go`](internal/storage/engine.go): Defines core interfaces and shared storage types.
+  - [`filesystem.go`](internal/storage/filesystem.go): Implements the primary filesystem-backed S3 storage engine.
+  - [`multipart.go`](internal/storage/multipart.go): Handles multipart upload creation, parts tracking, and upload completion.
+  - [`lifecycle.go`](internal/storage/lifecycle.go): Runs background sweeps and cleans up expired bucket objects/multipart uploads according to rules.
+  - [`paths.go`](internal/storage/paths.go): Implements request path validation and handles security checks against path traversal.
+  - [`metadata.go`](internal/storage/metadata.go): Manages persistent bucket and object metadata using BoltDB databases.
+  - [`sync.go`](internal/storage/sync.go): Implements the active-passive mirroring/replication client and background queues.
+  - [`webhook.go`](internal/storage/webhook.go): Manages event notification webhooks and dispatch retry mechanisms.
+  - [`metrics.go`](internal/storage/metrics.go): Tracks operational S3 engine metrics for Prometheus telemetry.
 
 ---
 
@@ -164,12 +173,14 @@ Lint rules are defined in [`.golangci.yml`](.golangci.yml).
 - **Constant-time Security Checks**: When performing cryptographic or security-sensitive comparisons (e.g., SSE-C MD5 checksums, token validation, password verification), always use constant-time comparisons (e.g., `subtle.ConstantTimeCompare`) to mitigate side-channel timing attacks.
 - **Console Request Origin Verification**: All custom web console APIs and WebSocket connection handshakes must validate the request's origin against the request host, local loopback (localhost/127.0.0.1), or explicitly allowed origins to prevent Cross-Site Request Forgery (CSRF) and unauthorized cross-origin requests.
 - **Consolidated Cryptographic Utilities**: Reuse central cryptographic implementation helpers in `internal/auth` rather than introducing duplicate verification blocks across different internal packages.
+- **CORS Handling**: Streamline CORS preflight responses by returning HTTP status code `403 Forbidden` directly upon validation failure, rather than responding with structured S3 error payloads.
 
 ### Concurrency & Performance
 
 - **Bucket-Level Locking**: When reading or modifying bucket resources, acquire the corresponding bucket-level lock using the metadata store's locking mechanism (`acquireBucketLock`). Never use global package-level variables or raw mutexes for bucket operations to avoid race conditions.
 - **Asynchronous Execution & Queues**: Performance-critical async side-effects, such as triggering webhooks or replication mirroring tasks, should utilize the buffered dispatcher queues (e.g., `syncQueue` or `webhookQueue`) rather than spawning unmanaged goroutines. This prevents resource exhaustion under heavy loads.
-- **Bounded Access Logging Queue**: S3 API access logging must utilize a bounded worker pool queue (e.g., `logChan` with a capacity and a dedicated set of worker goroutines) to avoid goroutine explosion under high-load situations. Log events should be enqueued asynchronously, dropping them if the log queue is fully saturated.
+- **Aggregated Access Logging & Workers**: S3 API access logging must run on a single background worker thread instead of multiple concurrent workers to prevent write contention and excessive locking. It must utilize a buffered queue (`logChan`) and write logs in batches (up to 100 entries or every 5 seconds) to optimize disk I/O, enqueuing log tasks asynchronously and dropping them if the queue is fully saturated to avoid blocking request paths.
+- **Graceful Shutdown & Request Tracking**: All server endpoints and request routers must track active operations/requests using a sync mechanism (e.g., `sync.WaitGroup`). Ensure outstanding requests are gracefully completed and resources/queues flushed before closing background logging workers or shutting down database descriptors.
 - **Passive Map Cleanups**: Stateful in-memory maps (e.g., console rate limit trackers, active user session mappings) must implement a passive cleanup mechanism (e.g., periodically purging expired/stale entries inline during request handling paths) to ensure memory footprint remains bounded.
 - **Streaming I/O**: Keep streaming operations memory-efficient. Avoid buffering large S3 objects in memory. Stream bytes directly to/from disk where possible.
 - **HTTP Client Reuse**: Reuse `http.Client` instances across outbound requests (e.g., replication mirror syncing) to utilize TCP connection pooling and prevent system socket/port exhaustion under heavy request loads.

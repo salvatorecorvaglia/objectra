@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
+### Added
+
+- Aggregated and buffered access logging inside the S3 API router to optimize disk I/O, writing logs in batches (up to 100 entries or every 5 seconds).
+- Active request tracking with a `WaitGroup` to ensure graceful shutdown of all outstanding API requests before terminating router log workers.
+- Truncated text preview support in the console viewer for files larger than 256 KB using S3 `Range` requests.
+- Background silent auto-refresh mechanism (every 10 seconds) for the web console objects list.
+
+### Changed
+
+- Decoupled the monolithic storage engine inside `internal/storage/filesystem.go` into dedicated files: `multipart.go` (multipart uploads), `lifecycle.go` (lifecycle rules/expiration), and `paths.go` (path validation).
+- Refactored access log delivery to run on a single background worker thread instead of multiple concurrent workers.
+- Streamlined CORS preflight responses to return a forbidden status code (403) upon failure instead of structured S3 errors.
+- Updated documentation in `README.md` and `CONTRIBUTING.md` to reflect range requests, metrics, and internal package structure changes.
+- Updated `.gitignore` to exclude IDE/editor-specific directories (`.copilot`, `.codex`, `.cagent`).
+
 ## [0.3.0] - 2026-07-05
 
 ### Added
