@@ -139,7 +139,9 @@ func (rt *Router) handlePutBucketVersioning(w http.ResponseWriter, r *http.Reque
 func (rt *Router) handleGetBucketLifecycle(w http.ResponseWriter, _ *http.Request, bucket string) {
 	lc, err := rt.engine.GetBucketLifecycle(bucket)
 	if err != nil {
-		writeS3Error(w, "NoSuchLifecycleConfiguration", "The lifecycle configuration does not exist", "/"+bucket)
+		if handleStorageError(w, err, "/"+bucket) {
+			return
+		}
 		return
 	}
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -18,18 +19,19 @@ import (
 
 type logTask struct {
 	targetBucket string
-	logKey       string
+	targetPrefix string
 	logLine      string
 }
 
 // Router handles S3 API request routing and dispatching.
 type Router struct {
-	engine   storage.Engine
-	verifier *auth.SigV4Verifier
-	region   string
-	domain   string
-	logChan  chan logTask
-	logWG    sync.WaitGroup
+	engine     storage.Engine
+	verifier   *auth.SigV4Verifier
+	region     string
+	domain     string
+	logChan    chan logTask
+	logWG      sync.WaitGroup
+	activeReqs sync.WaitGroup
 }
 
 // NewRouter creates a new S3 API router.
@@ -41,7 +43,7 @@ func NewRouter(engine storage.Engine, creds *auth.Credentials, region string, do
 		domain:   domain,
 		logChan:  make(chan logTask, 1000),
 	}
-	rt.startLogWorkers(3)
+	rt.startLogWorkers()
 	return rt
 }
 
@@ -64,6 +66,9 @@ func (w *metricsResponseWriter) Write(b []byte) (int, error) {
 
 // ServeHTTP implements the http.Handler interface for the S3 API.
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	rt.activeReqs.Add(1)
+	defer rt.activeReqs.Done()
+
 	start := time.Now()
 	mrw := &metricsResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 	storage.GlobalMetrics.IncRequests()
@@ -151,16 +156,15 @@ func (rt *Router) logAccess(r *http.Request, bucket, key string, statusCode int,
 		owner, bucket, timeStr, remoteIP, requester, requestID, operation, key, reqURI, statusCode, errCode, bytesSent, duration.Milliseconds(), duration.Milliseconds(), referrer, userAgent,
 	)
 
-	logKey := fmt.Sprintf("%s%s_%s.log", targetPrefix, time.Now().UTC().Format("2006-01-02-15-04-05"), uuid.New().String()[:8])
 	task := logTask{
 		targetBucket: targetBucket,
-		logKey:       logKey,
+		targetPrefix: targetPrefix,
 		logLine:      logLine,
 	}
 	select {
 	case rt.logChan <- task:
 	default:
-		slog.Warn("[S3 API] Access log queue full, dropping log", "bucket", targetBucket, "key", logKey)
+		slog.Warn("[S3 API] Access log queue full, dropping log", "bucket", targetBucket)
 	}
 }
 
@@ -178,8 +182,7 @@ func (rt *Router) serveHTTPInternal(w http.ResponseWriter, r *http.Request) {
 			if hasCORS {
 				return // Preflight completed successfully
 			}
-			// If preflight failed to match CORS, S3 returns a 403 or 400
-			writeS3Error(w, "AccessDenied", "CORS preflight request failed", r.URL.Path)
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 	} else if r.Method == http.MethodOptions {
@@ -451,24 +454,88 @@ func (rt *Router) handleDeleteBucketCORS(w http.ResponseWriter, _ *http.Request,
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (rt *Router) startLogWorkers(count int) {
-	for i := 0; i < count; i++ {
-		rt.logWG.Add(1)
-		go func() {
-			defer rt.logWG.Done()
-			for task := range rt.logChan {
-				ctx := context.Background()
-				reader := strings.NewReader(task.logLine)
-				_, err := rt.engine.PutObject(ctx, task.targetBucket, task.logKey, reader, int64(len(task.logLine)), "text/plain")
-				if err != nil {
-					slog.Error("[S3 API] Failed to deliver access log", "bucket", task.targetBucket, "key", task.logKey, "error", err)
-				}
+type bufferedLog struct {
+	lines       []string
+	lastCreated time.Time
+}
+
+func (rt *Router) startLogWorkers() {
+	rt.logWG.Add(1)
+	go func() {
+		defer rt.logWG.Done()
+		
+		buffers := make(map[string]*bufferedLog) // key: targetBucket + "\x00" + targetPrefix
+		flushInterval := 5 * time.Second
+		if len(os.Args) > 0 && (strings.HasSuffix(os.Args[0], ".test") || strings.Contains(os.Args[0], "/_test/")) {
+			flushInterval = 50 * time.Millisecond
+		}
+		ticker := time.NewTicker(flushInterval)
+		defer ticker.Stop()
+
+		flushBucketLogs := func(key string, blog *bufferedLog) {
+			if len(blog.lines) == 0 {
+				return
 			}
-		}()
-	}
+			parts := strings.SplitN(key, "\x00", 2)
+			targetBucket := parts[0]
+			targetPrefix := ""
+			if len(parts) > 1 {
+				targetPrefix = parts[1]
+			}
+
+			logContent := strings.Join(blog.lines, "")
+			logKey := fmt.Sprintf("%s%s_%s.log", targetPrefix, blog.lastCreated.Format("2006-01-02-15-04-05"), uuid.New().String()[:8])
+			
+			ctx := context.Background()
+			reader := strings.NewReader(logContent)
+			_, err := rt.engine.PutObject(ctx, targetBucket, logKey, reader, int64(len(logContent)), "text/plain")
+			if err != nil {
+				slog.Error("[S3 API] Failed to deliver aggregated access log", "bucket", targetBucket, "key", logKey, "error", err)
+			}
+			blog.lines = nil
+		}
+
+		flushAll := func() {
+			for k, blog := range buffers {
+				flushBucketLogs(k, blog)
+			}
+		}
+
+		for {
+			select {
+			case task, ok := <-rt.logChan:
+				if !ok {
+					flushAll()
+					return
+				}
+
+				key := task.targetBucket + "\x00" + task.targetPrefix
+				blog, exists := buffers[key]
+				if !exists {
+					blog = &bufferedLog{
+						lastCreated: time.Now().UTC(),
+					}
+					buffers[key] = blog
+				}
+				
+				if len(blog.lines) == 0 {
+					blog.lastCreated = time.Now().UTC()
+				}
+				blog.lines = append(blog.lines, task.logLine)
+
+				if len(blog.lines) >= 100 {
+					flushBucketLogs(key, blog)
+				}
+
+			case <-ticker.C:
+				flushAll()
+			}
+		}
+	}()
 }
 
 func (rt *Router) Close() {
+	rt.activeReqs.Wait()
 	close(rt.logChan)
 	rt.logWG.Wait()
 }

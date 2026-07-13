@@ -62,6 +62,7 @@ func New(cfg *config.Config) (*Server, error) {
 	if jwtSecretEnv != "" {
 		jwtSecret = []byte(jwtSecretEnv)
 	} else {
+		slog.Warn("OBJECTRA_JWT_SECRET environment variable is not set. A random secret will be generated. For persistent console sessions across restarts, please set OBJECTRA_JWT_SECRET.")
 		storedSecret, err := engine.GetSystemValue("jwt_secret")
 		if err == nil && storedSecret != "" {
 			jwtSecret, _ = hex.DecodeString(storedSecret)

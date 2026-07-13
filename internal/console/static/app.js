@@ -365,17 +365,19 @@
 
     const itemsPerPage = 50;
 
-    async function loadObjects() {
+    async function loadObjects(silent = false) {
         updateBreadcrumb();
 
-        // Render 5 skeleton rows while loading
-        objectsEmpty.style.display = 'none';
-        objectsTableContainer.style.display = 'block';
-        objectsTbody.innerHTML = '';
-        for (let i = 0; i < 5; i++) {
-            objectsTbody.appendChild(createObjectSkeletonRow());
+        if (!silent) {
+            // Render 5 skeleton rows while loading
+            objectsEmpty.style.display = 'none';
+            objectsTableContainer.style.display = 'block';
+            objectsTbody.innerHTML = '';
+            for (let i = 0; i < 5; i++) {
+                objectsTbody.appendChild(createObjectSkeletonRow());
+            }
+            paginationContainer.style.display = 'none';
         }
-        paginationContainer.style.display = 'none';
 
         try {
             const params = new URLSearchParams({
@@ -412,10 +414,12 @@
                 paginationContainer.style.display = 'none';
             }
         } catch (err) {
-            objectsTbody.innerHTML = '';
-            objectsTableContainer.style.display = 'none';
-            objectsEmpty.style.display = 'block';
-            showToast('Failed to load objects', 'error');
+            if (!silent) {
+                objectsTbody.innerHTML = '';
+                objectsTableContainer.style.display = 'none';
+                objectsEmpty.style.display = 'block';
+                showToast('Failed to load objects', 'error');
+            }
         }
     }
 
@@ -1080,11 +1084,22 @@
             } else if (ext === '.pdf') {
                 previewContentContainer.innerHTML = `<iframe src="${presignedURL}" sandbox="allow-scripts" style="width: 100%; height: 60vh; border: none; border-radius: 6px; background: white;"></iframe>`;
             } else if (['.txt', '.json', '.js', '.ts', '.go', '.html', '.css', '.md', '.log', '.env', '.yml', '.yaml', '.xml', '.ini', '.conf', '.sh', '.py'].includes(ext)) {
-                const text = await fetch(presignedURL).then(r => {
+                const headers = {};
+                const isTruncated = size > 256 * 1024;
+                if (isTruncated) {
+                    headers['Range'] = 'bytes=0-262143';
+                }
+                let text = await fetch(presignedURL, { headers }).then(r => {
                     if (!r.ok) throw new Error('Failed to fetch text body');
                     return r.text();
                 });
-                const escapedText = escapeHtml(text);
+                if (text.length > 256 * 1024) {
+                    text = text.slice(0, 256 * 1024);
+                }
+                let escapedText = escapeHtml(text);
+                if (isTruncated) {
+                    escapedText += '\n\n--- [TRUNCATED] File is larger than 256 KB. Showing the first 256 KB. ---';
+                }
                 previewContentContainer.innerHTML = `
                     <pre style="width: 100%; text-align: left; padding: 1.25rem; background: var(--input-bg); border-radius: 6px; overflow: auto; max-height: 60vh; font-family: monospace; white-space: pre-wrap; font-size: 0.875rem; border: 1px solid var(--border); margin: 0; color: var(--text);">${escapedText}</pre>
                 `;
@@ -1308,6 +1323,19 @@
                 })
                 .catch(() => logout());
         }
+
+        // Auto-refresh objects list every 10 seconds silently
+        setInterval(() => {
+            if (token && currentBucket && document.visibilityState === 'visible') {
+                const openModal = document.querySelector('.modal.open, .modal.show, [style*="display: block"]');
+                const activeEl = document.activeElement;
+                const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+
+                if (!openModal && !isTyping) {
+                    loadObjects(true);
+                }
+            }
+        }, 10000);
     }
 
     init();
