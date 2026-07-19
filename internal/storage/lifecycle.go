@@ -110,6 +110,7 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 					key            string
 					versionID      string
 					isDeleteMarker bool
+					lastModified   time.Time
 				}
 				_ = fs.metadata.IterateObjectMetas(bInfo.Name, func(m *ObjectInfo) error {
 					if !strings.HasPrefix(m.Key, rule.Filter.Prefix) {
@@ -121,7 +122,8 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 							key            string
 							versionID      string
 							isDeleteMarker bool
-						}{key: m.Key, versionID: m.VersionID, isDeleteMarker: m.IsDeleteMarker})
+							lastModified   time.Time
+						}{key: m.Key, versionID: m.VersionID, isDeleteMarker: m.IsDeleteMarker, lastModified: m.LastModified})
 					}
 					return nil
 				})
@@ -144,7 +146,7 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 							_, _, _ = fs.DeleteObject(bInfo.Name, exp.key, exp.versionID)
 						}
 					} else {
-						slog.Info("[Storage] Expiring current version of key in bucket", "key", exp.key, "bucket", bInfo.Name, "age", now.Sub(now), "cutoff", cutoff)
+						slog.Info("[Storage] Expiring current version of key in bucket", "key", exp.key, "bucket", bInfo.Name, "age", now.Sub(exp.lastModified), "cutoff", cutoff)
 						_, _, _ = fs.DeleteObject(bInfo.Name, exp.key, "")
 					}
 				}

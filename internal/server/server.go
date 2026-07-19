@@ -80,7 +80,7 @@ func New(cfg *config.Config) (*Server, error) {
 	creds := auth.NewCredentials(cfg.AccessKey, cfg.SecretKey)
 
 	// S3 API server
-	s3Router := s3api.NewRouter(engine, creds, cfg.Region, cfg.Domain)
+	s3Router := s3api.NewRouter(engine, creds, cfg.Region, cfg.Domain, cfg.TrustProxy)
 	s3Server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.S3Port),
 		Handler:           s3Router,

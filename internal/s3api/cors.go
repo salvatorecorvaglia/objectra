@@ -103,7 +103,7 @@ func matchOrigin(origin string, allowedOrigins []string) bool {
 				if originURL.Scheme == allowedURL.Scheme {
 					if strings.HasPrefix(allowedURL.Host, "*.") {
 						suffix := allowedURL.Host[1:] // e.g. .example.com
-						if strings.HasSuffix(originURL.Host, suffix) {
+						if strings.HasSuffix(originURL.Hostname(), suffix) {
 							return true
 						}
 					}
@@ -114,8 +114,14 @@ func matchOrigin(origin string, allowedOrigins []string) bool {
 		// Fallback: Support simple subdomain wildcard match (e.g. *.example.com) without scheme
 		if strings.HasPrefix(allowed, "*.") {
 			suffix := strings.ToLower(allowed[1:]) // e.g. .example.com
-			if strings.HasSuffix(origin, suffix) {
-				return true
+			if hasParsedOrigin {
+				if strings.HasSuffix(originURL.Hostname(), suffix) {
+					return true
+				}
+			} else {
+				if strings.HasSuffix(origin, suffix) {
+					return true
+				}
 			}
 		}
 	}

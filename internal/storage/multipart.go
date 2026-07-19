@@ -88,11 +88,13 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 	}
 
 	// Brief lock to read and initialize metadata parameters
+	var meta *MultipartMeta
 	err := func() error {
 		unlock := fs.lockUpload(uploadID)
 		defer unlock()
 
-		meta, err := fs.metadata.GetMultipartMeta(bucket, key, uploadID)
+		var err error
+		meta, err = fs.metadata.GetMultipartMeta(bucket, key, uploadID)
 		if err != nil {
 			return err
 		}
@@ -107,20 +109,6 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 			}
 		}
 		return nil
-	}()
-	if err != nil {
-		return nil, &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}
-	}
-
-	// Read meta under brief lock for SSE-C validation
-	var meta *MultipartMeta
-	err = func() error {
-		unlock := fs.lockUpload(uploadID)
-		defer unlock()
-
-		var err error
-		meta, err = fs.metadata.GetMultipartMeta(bucket, key, uploadID)
-		return err
 	}()
 	if err != nil {
 		return nil, &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}

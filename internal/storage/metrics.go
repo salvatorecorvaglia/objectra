@@ -2,7 +2,9 @@ package storage
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // MetricsTracker holds thread-safe global statistics about the server operations.
@@ -12,6 +14,12 @@ type MetricsTracker struct {
 	BytesUploaded    uint64
 	BytesDownloaded  uint64
 	ActiveMultiparts int64
+
+	// Disk space caching
+	lastDiskCheck    time.Time
+	cachedTotal      uint64
+	cachedFree       uint64
+	diskMu           sync.Mutex
 }
 
 // GlobalMetrics is the singleton instance of the metrics tracker.
@@ -44,12 +52,18 @@ func (m *MetricsTracker) DecActiveMultiparts() {
 
 // FormatPrometheus generates a plain-text Prometheus-compliant metrics string.
 func (m *MetricsTracker) FormatPrometheus(dataDir string) string {
-	total, free, err := GetDiskSpace(dataDir)
-	var diskTotalVal, diskFreeVal uint64
-	if err == nil {
-		diskTotalVal = total
-		diskFreeVal = free
+	m.diskMu.Lock()
+	if time.Since(m.lastDiskCheck) > 30*time.Second {
+		total, free, err := GetDiskSpace(dataDir)
+		if err == nil {
+			m.cachedTotal = total
+			m.cachedFree = free
+			m.lastDiskCheck = time.Now()
+		}
 	}
+	diskTotalVal := m.cachedTotal
+	diskFreeVal := m.cachedFree
+	m.diskMu.Unlock()
 
 	reqs := atomic.LoadUint64(&m.RequestsTotal)
 	errs := atomic.LoadUint64(&m.RequestErrors)

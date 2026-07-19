@@ -480,8 +480,12 @@ type tempFileReadCloser struct {
 }
 
 func (t *tempFileReadCloser) Close() error {
+	if t.File == nil {
+		return nil
+	}
 	err := t.File.Close()
 	os.Remove(t.path)
+	t.File = nil
 	return err
 }
 
@@ -562,4 +566,94 @@ func PresignGetObject(accessKey, secretKey, region, bucket, key string, expires 
 	endpoint := strings.TrimSuffix(s3Endpoint, "/")
 
 	return endpoint + canonicalPath + "?" + query.Encode(), nil
+}
+
+// SignRequest signs an HTTP request with AWS Signature Version 4.
+func SignRequest(req *http.Request, accessKey, secretKey, region, service string) {
+	t := time.Now().UTC()
+	dateBasic := t.Format("20060102T150405Z")
+	dateDay := t.Format("20060102")
+
+	req.Header.Set("X-Amz-Date", dateBasic)
+
+	// Set Host header
+	host := req.URL.Host
+	if host == "" {
+		host = req.Host
+	}
+	if host == "" {
+		host = "localhost"
+	}
+	req.Header.Set("Host", host)
+
+	// For S3 compatibility with large stream requests, we sign with UNSIGNED-PAYLOAD.
+	req.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
+	hashedPayload := "UNSIGNED-PAYLOAD"
+
+	// Canonical headers to sign
+	headers := []string{"host", "x-amz-date", "x-amz-content-sha256"}
+	if req.Header.Get("Content-Type") != "" {
+		headers = append(headers, "content-type")
+	}
+	sort.Strings(headers)
+
+	var canonicalHeaders strings.Builder
+	for _, h := range headers {
+		canonicalHeaders.WriteString(h)
+		canonicalHeaders.WriteString(":")
+		canonicalHeaders.WriteString(strings.TrimSpace(req.Header.Get(h)))
+		canonicalHeaders.WriteString("\n")
+	}
+
+	signedHeaders := strings.Join(headers, ";")
+
+	// Escaping path correctly
+	escapedPath := req.URL.EscapedPath()
+	if escapedPath == "" {
+		escapedPath = "/"
+	}
+
+	canonicalQuery := req.URL.Query().Encode()
+
+	// Canonical Request
+	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
+		req.Method,
+		escapedPath,
+		canonicalQuery,
+		canonicalHeaders.String(),
+		signedHeaders,
+		hashedPayload,
+	)
+
+	hReq := sha256.Sum256([]byte(canonicalRequest))
+	hashedCanonicalRequest := hex.EncodeToString(hReq[:])
+
+	// Credential Scope
+	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", dateDay, region, service)
+
+	// String to Sign
+	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
+		dateBasic,
+		credentialScope,
+		hashedCanonicalRequest,
+	)
+
+	// Deriving Key
+	kDate := hmacSHA256([]byte("AWS4"+secretKey), []byte(dateDay))
+	kRegion := hmacSHA256(kDate, []byte(region))
+	kService := hmacSHA256(kRegion, []byte(service))
+	kSigning := hmacSHA256(kService, []byte("aws4_request"))
+
+	// Signature
+	signature := hex.EncodeToString(hmacSHA256(kSigning, []byte(stringToSign)))
+
+	// Auth Header
+	authHeader := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
+		accessKey,
+		credentialScope,
+		signedHeaders,
+		signature,
+	)
+
+	req.Header.Set("Authorization", authHeader)
 }

@@ -51,6 +51,8 @@ type Config struct {
 	WebhookURL string
 	// S3Endpoint is the public S3 endpoint URL for presigned links.
 	S3Endpoint string
+	// TrustProxy specifies whether to trust proxy headers like X-Forwarded-For.
+	TrustProxy bool
 }
 
 // Load reads configuration from environment variables, falling back to defaults.
@@ -77,6 +79,7 @@ func Load() *Config {
 		SyncRegion:     envOrDefault("OBJECTRA_SYNC_REGION", "us-east-1"),
 		WebhookURL:     envOrDefault("OBJECTRA_WEBHOOK_URL", ""),
 		S3Endpoint:     envOrDefault("OBJECTRA_S3_ENDPOINT", ""),
+		TrustProxy:     os.Getenv("OBJECTRA_TRUST_PROXY") == "true",
 	}
 }
 

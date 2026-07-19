@@ -24,6 +24,9 @@ func TestMatchOrigin(t *testing.T) {
 		{"https://sub.deep.example.com", []string{"https://*.example.com"}, true},
 		{"http://another.com", []string{"*.example.com"}, false},
 		{"http://another.com", []string{"https://*.example.com"}, false},
+		{"http://sub.example.com:8080", []string{"*.example.com"}, true},
+		{"http://sub.example.com:8080", []string{"http://*.example.com"}, true},
+		{"https://sub.example.com:3000", []string{"https://*.example.com"}, true},
 	}
 
 	for _, tc := range tests {

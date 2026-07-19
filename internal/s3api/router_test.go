@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/md5"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
 	"fmt"
@@ -32,63 +34,47 @@ func hashSHA256(data []byte) string {
 }
 
 func signTestRequest(r *http.Request, accessKey, secretKey string, region, service string, t time.Time, body []byte) {
-	datestamp := t.Format("20060102")
-	amzDate := t.Format("20060102T150405Z")
-
-	r.Header.Set("X-Amz-Date", amzDate)
-	r.Header.Set("Host", r.Host)
-
-	// Build canonical headers and signed headers
-	signedHeaders := []string{"host", "x-amz-date"}
-
-	var canonicalHeaders strings.Builder
-	fmt.Fprintf(&canonicalHeaders, "host:%s\n", r.Host)
-	fmt.Fprintf(&canonicalHeaders, "x-amz-date:%s\n", amzDate)
-
-	payloadHash := hashSHA256(body)
-	r.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	if time.Now().UTC().Sub(t).Abs() > 15*time.Minute {
+		// Manual signing for clock skew validation
+		datestamp := t.Format("20060102")
+		amzDate := t.Format("20060102T150405Z")
+		r.Header.Set("X-Amz-Date", amzDate)
+		r.Header.Set("Host", r.Host)
+		r.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
+		
+		var canonicalHeaders strings.Builder
+		fmt.Fprintf(&canonicalHeaders, "host:%s\n", r.Host)
+		fmt.Fprintf(&canonicalHeaders, "x-amz-date:%s\n", amzDate)
+		
+		canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\nhost;x-amz-date\nUNSIGNED-PAYLOAD",
+			r.Method, r.URL.Path, r.URL.RawQuery, canonicalHeaders.String())
+		
+		scope := fmt.Sprintf("%s/%s/%s/aws4_request", datestamp, region, service)
+		stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
+			amzDate, scope, hashSHA256([]byte(canonicalRequest)))
+		
+		kDate := hmacSHA256([]byte("AWS4"+secretKey), []byte(datestamp))
+		kRegion := hmacSHA256(kDate, []byte(region))
+		kService := hmacSHA256(kRegion, []byte(service))
+		kSigning := hmacSHA256(kService, []byte("aws4_request"))
+		
+		h := hmac.New(sha256.New, kSigning)
+		h.Write([]byte(stringToSign))
+		signature := hex.EncodeToString(h.Sum(nil))
+		
+		authHeader := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=host;x-amz-date, Signature=%s",
+			accessKey, scope, signature)
+		r.Header.Set("Authorization", authHeader)
+		if body != nil {
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		return
+	}
 
 	if body != nil {
 		r.Body = io.NopCloser(bytes.NewReader(body))
 	}
-
-	// Canonical request
-	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
-		r.Method,
-		r.URL.Path,
-		r.URL.RawQuery,
-		canonicalHeaders.String(),
-		strings.Join(signedHeaders, ";"),
-		payloadHash,
-	)
-
-	// String to sign
-	scope := fmt.Sprintf("%s/%s/%s/aws4_request", datestamp, region, service)
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
-		amzDate,
-		scope,
-		hashSHA256([]byte(canonicalRequest)),
-	)
-
-	// Derive signing key
-	kDate := hmacSHA256([]byte("AWS4"+secretKey), []byte(datestamp))
-	kRegion := hmacSHA256(kDate, []byte(region))
-	kService := hmacSHA256(kRegion, []byte(service))
-	kSigning := hmacSHA256(kService, []byte("aws4_request"))
-
-	// Sign
-	h := hmac.New(sha256.New, kSigning)
-	h.Write([]byte(stringToSign))
-	signature := hex.EncodeToString(h.Sum(nil))
-
-	// Build authorization header
-	authHeader := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
-		accessKey,
-		scope,
-		strings.Join(signedHeaders, ";"),
-		signature,
-	)
-	r.Header.Set("Authorization", authHeader)
+	auth.SignRequest(r, accessKey, secretKey, region, service)
 }
 
 func TestResolveBucketAndKey(t *testing.T) {
@@ -180,7 +166,7 @@ func TestS3API_Integration(t *testing.T) {
 	accessKey := "testaccess"
 	secretKey := "testsecret"
 	creds := auth.NewCredentials(accessKey, secretKey)
-	router := NewRouter(engine, creds, "us-east-1", "")
+	router := NewRouter(engine, creds, "us-east-1", "", false)
 
 	// 1. Create Bucket
 	t.Run("CreateBucket", func(t *testing.T) {
@@ -362,7 +348,7 @@ func TestS3AccessLogging(t *testing.T) {
 	accessKey := "testaccess"
 	secretKey := "testsecret"
 	creds := auth.NewCredentials(accessKey, secretKey)
-	router := NewRouter(engine, creds, "us-east-1", "")
+	router := NewRouter(engine, creds, "us-east-1", "", false)
 
 	// Create src-bucket and dest-bucket
 	engine.CreateBucket("src-bucket")
@@ -429,4 +415,79 @@ func TestS3AccessLogging(t *testing.T) {
 	if !strings.Contains(logStr, "REST.GET.BUCKET") {
 		t.Errorf("expected log to contain S3 operation 'REST.GET.BUCKET', got: %s", logStr)
 	}
+}
+
+func TestS3API_SSEC(t *testing.T) {
+	tempDir := t.TempDir()
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, "")
+	if err != nil {
+		t.Fatalf("Failed to create storage engine: %v", err)
+	}
+	defer engine.Close()
+
+	accessKey := "testaccess"
+	secretKey := "testsecret"
+	creds := auth.NewCredentials(accessKey, secretKey)
+	router := NewRouter(engine, creds, "us-east-1", "", false)
+
+	// Create test bucket
+	engine.CreateBucket("ssebucket")
+
+	key := []byte("0123456789abcdefghijklmnopqrstuv") // 32 bytes
+	keyBase64 := base64.StdEncoding.EncodeToString(key)
+	h := md5.New()
+	h.Write(key)
+	keyMD5 := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+	t.Run("PutObjectWithSSEC", func(t *testing.T) {
+		content := []byte("secret agent data")
+		req := httptest.NewRequest("PUT", "/ssebucket/secret.txt", bytes.NewReader(content))
+		req.Host = "localhost:9000"
+		req.Header.Set("x-amz-server-side-encryption-customer-algorithm", "AES256")
+		req.Header.Set("x-amz-server-side-encryption-customer-key", keyBase64)
+		req.Header.Set("x-amz-server-side-encryption-customer-key-MD5", keyMD5)
+
+		signTestRequest(req, accessKey, secretKey, "us-east-1", "s3", time.Now().UTC(), content)
+
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d, body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("GetObjectWithoutSSECShouldFail", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/ssebucket/secret.txt", nil)
+		req.Host = "localhost:9000"
+		signTestRequest(req, accessKey, secretKey, "us-east-1", "s3", time.Now().UTC(), nil)
+
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		// S3 returns 400 Bad Request when retrieving SSE-C encrypted object without headers
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("expected status 400, got %d, body: %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("GetObjectWithSSEC", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/ssebucket/secret.txt", nil)
+		req.Host = "localhost:9000"
+		req.Header.Set("x-amz-server-side-encryption-customer-algorithm", "AES256")
+		req.Header.Set("x-amz-server-side-encryption-customer-key", keyBase64)
+		req.Header.Set("x-amz-server-side-encryption-customer-key-MD5", keyMD5)
+
+		signTestRequest(req, accessKey, secretKey, "us-east-1", "s3", time.Now().UTC(), nil)
+
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d, body: %s", rec.Code, rec.Body.String())
+		}
+		if rec.Body.String() != "secret agent data" {
+			t.Errorf("expected content 'secret agent data', got %q", rec.Body.String())
+		}
+	})
 }

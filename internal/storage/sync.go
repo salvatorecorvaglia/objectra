@@ -3,18 +3,14 @@ package storage
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/salvatorecorvaglia/objectra/internal/auth"
 )
@@ -176,7 +172,7 @@ func performSync(fs *FilesystemEngine, client *http.Client, cfg *SyncConfig, buc
 	}
 
 	// Sign request
-	signRequest(req, cfg.AccessKey, cfg.SecretKey, cfg.Region, "s3")
+	auth.SignRequest(req, cfg.AccessKey, cfg.SecretKey, cfg.Region, "s3")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -195,89 +191,4 @@ func performSync(fs *FilesystemEngine, client *http.Client, cfg *SyncConfig, buc
 type bufferedReadCloser struct {
 	*bufio.Reader
 	io.Closer
-}
-
-
-
-func signRequest(req *http.Request, accessKey, secretKey, region, service string) {
-	t := time.Now().UTC()
-	dateBasic := t.Format("20060102T150405Z")
-	dateDay := t.Format("20060102")
-
-	req.Header.Set("X-Amz-Date", dateBasic)
-
-	// Set Host header
-	host := req.URL.Host
-	req.Header.Set("Host", host)
-
-	// For S3 compatibility with large stream requests, we sign with UNSIGNED-PAYLOAD.
-	req.Header.Set("X-Amz-Content-Sha256", "UNSIGNED-PAYLOAD")
-	hashedPayload := "UNSIGNED-PAYLOAD"
-
-	// Canonical headers to sign
-	headers := []string{"host", "x-amz-date", "x-amz-content-sha256"}
-	if req.Header.Get("Content-Type") != "" {
-		headers = append(headers, "content-type")
-	}
-	sort.Strings(headers)
-
-	var canonicalHeaders strings.Builder
-	for _, h := range headers {
-		canonicalHeaders.WriteString(h)
-		canonicalHeaders.WriteString(":")
-		canonicalHeaders.WriteString(strings.TrimSpace(req.Header.Get(h)))
-		canonicalHeaders.WriteString("\n")
-	}
-
-	signedHeaders := strings.Join(headers, ";")
-
-	// Escaping path correctly
-	escapedPath := req.URL.EscapedPath()
-	if escapedPath == "" {
-		escapedPath = "/"
-	}
-
-	canonicalQuery := req.URL.Query().Encode()
-
-	// Canonical Request
-	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
-		req.Method,
-		escapedPath,
-		canonicalQuery,
-		canonicalHeaders.String(),
-		signedHeaders,
-		hashedPayload,
-	)
-
-	hReq := sha256.Sum256([]byte(canonicalRequest))
-	hashedCanonicalRequest := hex.EncodeToString(hReq[:])
-
-	// Credential Scope
-	credentialScope := fmt.Sprintf("%s/%s/%s/aws4_request", dateDay, region, service)
-
-	// String to Sign
-	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
-		dateBasic,
-		credentialScope,
-		hashedCanonicalRequest,
-	)
-
-	// Deriving Key
-	kDate := auth.HmacSHA256([]byte("AWS4"+secretKey), []byte(dateDay))
-	kRegion := auth.HmacSHA256(kDate, []byte(region))
-	kService := auth.HmacSHA256(kRegion, []byte(service))
-	kSigning := auth.HmacSHA256(kService, []byte("aws4_request"))
-
-	// Signature
-	signature := hex.EncodeToString(auth.HmacSHA256(kSigning, []byte(stringToSign)))
-
-	// Auth Header
-	authHeader := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
-		accessKey,
-		credentialScope,
-		signedHeaders,
-		signature,
-	)
-
-	req.Header.Set("Authorization", authHeader)
 }

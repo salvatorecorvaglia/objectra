@@ -29,19 +29,21 @@ type Router struct {
 	verifier   *auth.SigV4Verifier
 	region     string
 	domain     string
+	trustProxy bool
 	logChan    chan logTask
 	logWG      sync.WaitGroup
 	activeReqs sync.WaitGroup
 }
 
 // NewRouter creates a new S3 API router.
-func NewRouter(engine storage.Engine, creds *auth.Credentials, region string, domain string) *Router {
+func NewRouter(engine storage.Engine, creds *auth.Credentials, region string, domain string, trustProxy bool) *Router {
 	rt := &Router{
-		engine:   engine,
-		verifier: auth.NewSigV4Verifier(creds),
-		region:   region,
-		domain:   domain,
-		logChan:  make(chan logTask, 1000),
+		engine:     engine,
+		verifier:   auth.NewSigV4Verifier(creds),
+		region:     region,
+		domain:     domain,
+		trustProxy: trustProxy,
+		logChan:    make(chan logTask, 1000),
 	}
 	rt.startLogWorkers()
 	return rt
@@ -107,8 +109,14 @@ func (rt *Router) logAccess(r *http.Request, bucket, key string, statusCode int,
 	if ip, _, err := net.SplitHostPort(remoteIP); err == nil {
 		remoteIP = ip
 	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		remoteIP = xff
+	if rt.trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if idx := strings.Index(xff, ","); idx != -1 {
+				remoteIP = strings.TrimSpace(xff[:idx])
+			} else {
+				remoteIP = strings.TrimSpace(xff)
+			}
+		}
 	}
 
 	requester := "-"
