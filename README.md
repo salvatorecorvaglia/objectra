@@ -97,13 +97,26 @@ You can spin up Objectra immediately via Docker Compose.
 docker compose up -d
 ```
 
-To run manually using the CLI, build the Docker image locally first:
+Alternatively, run the official pre-built image from GitHub Container Registry (GHCR):
+
+```bash
+# Run the container using the GHCR image
+docker run -d \
+  -p 9000:9000 \
+  -p 9001:9001 \
+  -v $(pwd)/data:/data \
+  -e OBJECTRA_ACCESS_KEY=myaccesskey \
+  -e OBJECTRA_SECRET_KEY=mysecretkey \
+  ghcr.io/salvatorecorvaglia/objectra:latest
+```
+
+To build and run the image locally instead:
 
 ```bash
 # Build the Docker image locally
 docker build -t objectra .
 
-# Run the container
+# Run the local container
 docker run -d \
   -p 9000:9000 \
   -p 9001:9001 \
@@ -133,7 +146,7 @@ Objectra can be configured entirely via environment variables.
 | **`OBJECTRA_TLS_KEY`** | *None* | Path to the SSL/TLS private key file (required if TLS is enabled). |
 | **`OBJECTRA_LOGIN_RATE_LIMIT`** | `5` | Maximum console login requests allowed per minute per IP. |
 | **`OBJECTRA_API_RATE_LIMIT`** | `60` | Maximum console API requests allowed per minute per IP. |
-| **`OBJECTRA_TRUST_PROXY`** | `false` | Set to `true` to trust `X-Forwarded-For` headers when behind a reverse proxy (e.g. Nginx). |
+| **`OBJECTRA_TRUST_PROXY`** | `false` | Set to `true` to trust proxy environments. Extracts the client IP from the first address in the `X-Forwarded-For` header. |
 | **`OBJECTRA_LOG_LEVEL`** | `info` | Output log verbosity (`debug`, `info`, `warn`, `error`). |
 | **`OBJECTRA_LOG_FORMAT`** | `text` | Logger format (`text` or `json`). |
 | **`OBJECTRA_JWT_SECRET`** | *None* | Explicit secret key for console JWT session tokens. (Generated randomly and stored in DB if omitted). |

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-19
+
+### Added
+
+- Multi-platform Docker image publishing (`linux/amd64`, `linux/arm64`) to GitHub Container Registry (GHCR) upon release tag pushes.
+- Concurrency controls (`cancel-in-progress`) to the CI workflow to automatically terminate redundant runs.
+- `OBJECTRA_TRUST_PROXY` configuration to support correct client IP extraction from proxy environments using the first address in the `X-Forwarded-For` header.
+
+### Changed
+
+- Centralized request signing logic inside the `internal/auth` package (`auth.SignRequest`), replacing duplicate inline implementations.
+- Optimized Prometheus `/metrics` endpoint by caching system disk space query responses for 30 seconds.
+- Refactored CORS origin matching to perform domain suffix checks directly against the parsed hostname, fixing wildcard matches on custom port combinations.
+- Hardened GitHub Actions release workflow permissions by restricting write permissions to the specific job level.
+- Cleaned up duplicate metadata store retrieval logic in `UploadPart` to optimize lock contention on multipart uploads.
+
+### Fixed
+
+- Expiration rule logic in bucket lifecycle management to correctly calculate object age based on its actual `LastModified` timestamp.
+
 ## [0.4.0] - 2026-07-13
 
 ### Added

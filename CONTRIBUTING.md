@@ -172,7 +172,7 @@ Lint rules are defined in [`.golangci.yml`](.golangci.yml).
   - `slog.Error`: Fatal issues or operations that failed.
 - **Constant-time Security Checks**: When performing cryptographic or security-sensitive comparisons (e.g., SSE-C MD5 checksums, token validation, password verification), always use constant-time comparisons (e.g., `subtle.ConstantTimeCompare`) to mitigate side-channel timing attacks.
 - **Console Request Origin Verification**: All custom web console APIs and WebSocket connection handshakes must validate the request's origin against the request host, local loopback (localhost/127.0.0.1), or explicitly allowed origins to prevent Cross-Site Request Forgery (CSRF) and unauthorized cross-origin requests.
-- **Consolidated Cryptographic Utilities**: Reuse central cryptographic implementation helpers in `internal/auth` rather than introducing duplicate verification blocks across different internal packages.
+- **Consolidated Cryptographic Utilities**: Reuse central cryptographic implementation helpers in `internal/auth` rather than introducing duplicate verification blocks across different internal packages. For signing outbound requests (e.g., active-passive replication), always use `auth.SignRequest` to prevent duplicate signing logic.
 - **CORS Handling**: Streamline CORS preflight responses by returning HTTP status code `403 Forbidden` directly upon validation failure, rather than responding with structured S3 error payloads.
 
 ### Concurrency & Performance
@@ -243,6 +243,29 @@ Common types include:
    - The approach taken.
    - Verification and manual testing steps.
 6. Address any feedback during code review and update the branch as needed.
+
+---
+
+## 🚀 CI/CD & Releases
+
+### CI/CD Pipeline
+
+Objectra uses GitHub Actions to automate linting, tests, and formatting checks on every push and pull request targeting the `main` branch.
+- The CI workflow enforces concurrency controls (`cancel-in-progress`) to automatically terminate redundant runs when new commits are pushed.
+- Pull requests require all checks (tests, race detection, and lints) to pass before they can be merged.
+
+### Releasing
+
+Releases are automatically triggered and packaged whenever a new semantic version tag (e.g., `v0.5.0`) is pushed to the repository.
+- **Workflow Permissions**: GitHub Actions release workflows are hardened, restricting write permissions exclusively to the specific release job.
+- **GoReleaser**: We use [GoReleaser](https://goreleaser.com/) to build release binaries, generate the changelog from commit messages, and create GitHub Releases.
+- **Docker Image Publishing**: Upon release, a multi-platform Docker image supporting both `linux/amd64` and `linux/arm64` architectures is automatically built and published to the GitHub Container Registry (GHCR) at `ghcr.io/salvatorecorvaglia/objectra`.
+
+---
+
+## 👥 Add Yourself to Contributors
+
+If you have made a contribution to Objectra, please add your name and GitHub profile link to the [CONTRIBUTORS.md](file:///Users/salvatorecorvaglia/github/objectra/CONTRIBUTORS.md) file in the root directory under the `## 🌟 Contributors` section! We appreciate your help!
 
 ---
 
