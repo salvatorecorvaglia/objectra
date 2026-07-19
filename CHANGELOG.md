@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactored CORS origin matching to perform domain suffix checks directly against the parsed hostname, fixing wildcard matches on custom port combinations.
 - Hardened GitHub Actions release workflow permissions by restricting write permissions to the specific job level.
 - Cleaned up duplicate metadata store retrieval logic in `UploadPart` to optimize lock contention on multipart uploads.
+- Updated Docker GitHub Actions in release workflow to support Node.js 24 (`setup-qemu-action@v4`, `login-action@v4`, `metadata-action@v6`).
 
 ### Fixed
 
