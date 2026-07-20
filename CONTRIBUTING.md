@@ -6,64 +6,6 @@ Whether you want to fix a bug, suggest an enhancement, improve documentation, or
 
 ---
 
-## 📖 Table of Contents
-
-- [Code of Conduct](#-code-of-conduct)
-- [Codebase Architecture](#-codebase-architecture)
-- [How Can I Contribute?](#-how-can-i-contribute)
-  - [Reporting Bugs](#reporting-bugs)
-  - [Suggesting Enhancements](#suggesting-enhancements)
-- [Setting Up Your Development Environment](#-setting-up-your-development-environment)
-  - [Prerequisites](#prerequisites)
-  - [Running Locally](#running-locally)
-  - [Running Tests](#running-tests)
-  - [Linting](#linting)
-- [Development & Design Guidelines](#-development--design-guidelines)
-  - [Go Conventions](#go-conventions)
-  - [Concurrency & Performance](#concurrency--performance)
-  - [Aesthetic & Design Principles](#aesthetic--design-principles)
-- [Submitting Your Changes](#-submitting-your-changes)
-  - [Branch Naming](#branch-naming)
-  - [Commit Message Guidelines](#commit-message-guidelines)
-  - [Pull Request Process](#pull-request-process)
-- [CI/CD & Releases](#-cicd--releases)
-  - [CI/CD Pipeline](#cicd-pipeline)
-  - [Releasing](#releasing)
-- [Add Yourself to Contributors](#-add-yourself-to-contributors)
-
----
-
-## 📄 Code of Conduct
-
-We are committed to fostering a welcoming, respectful, and inclusive community. By participating in this project, you agree to treat all contributors with respect, maintain constructive feedback, and keep discussions friendly and professional.
-
-If you encounter any behavior that violates these principles, please see our [Security Policy](SECURITY.md) or contact the maintainers.
-
----
-
-## 🏛️ Codebase Architecture
-
-Objectra is written in Go and structured to separate core storage engine logic, API handling, and the built-in web console:
-
-- **[`cmd/objectra/`](cmd/objectra)**: The main entry point. Initializes configuration, storage backends, routers, and starts the S3 API and Console HTTP servers.
-- **[`internal/auth/`](internal/auth)**: Houses consolidated cryptographic helper utilities (AWS Signature V4, HmacSHA256, token generation) and manages console session JWT validation.
-- **[`internal/config/`](internal/config)**: Declares configuration models, binds environment variables, and manages default profile values.
-- **[`internal/console/`](internal/console)**: Serves the Single-Page Web Console UI, handles CORS origin verification, WebSocket security checks, SPA wildcard fallback routing, and exposes Prometheus metrics.
-- **[`internal/s3api/`](internal/s3api)**: Exposes the AWS S3-compatible REST API endpoints, handling authentication, CORS, multipart uploads, and range requests.
-- **[`internal/server/`](internal/server)**: Orchestrates the HTTP/HTTPS listeners, configures TLS, and manages custom rate limiting.
-- **[`internal/storage/`](internal/storage)**: The core storage abstraction. Implements local disk mapping, streaming I/O, bucket metadata management, replication mirroring, and webhook event dispatching. The engine is decoupled into separate specialized modules:
-  - [`engine.go`](internal/storage/engine.go): Defines core interfaces and shared storage types.
-  - [`filesystem.go`](internal/storage/filesystem.go): Implements the primary filesystem-backed S3 storage engine.
-  - [`multipart.go`](internal/storage/multipart.go): Handles multipart upload creation, parts tracking, and upload completion.
-  - [`lifecycle.go`](internal/storage/lifecycle.go): Runs background sweeps and cleans up expired bucket objects/multipart uploads according to rules.
-  - [`paths.go`](internal/storage/paths.go): Implements request path validation and handles security checks against path traversal.
-  - [`metadata.go`](internal/storage/metadata.go): Manages persistent bucket and object metadata using BoltDB databases.
-  - [`sync.go`](internal/storage/sync.go): Implements the active-passive mirroring/replication client and background queues.
-  - [`webhook.go`](internal/storage/webhook.go): Manages event notification webhooks and dispatch retry mechanisms.
-  - [`metrics.go`](internal/storage/metrics.go): Tracks operational S3 engine metrics for Prometheus telemetry.
-
----
-
 ## 💡 How Can I Contribute?
 
 ### Reporting Bugs
@@ -243,29 +185,6 @@ Common types include:
    - The approach taken.
    - Verification and manual testing steps.
 6. Address any feedback during code review and update the branch as needed.
-
----
-
-## 🚀 CI/CD & Releases
-
-### CI/CD Pipeline
-
-Objectra uses GitHub Actions to automate linting, tests, and formatting checks on every push and pull request targeting the `main` branch.
-- The CI workflow enforces concurrency controls (`cancel-in-progress`) to automatically terminate redundant runs when new commits are pushed.
-- Pull requests require all checks (tests, race detection, and lints) to pass before they can be merged.
-
-### Releasing
-
-Releases are automatically triggered and packaged whenever a new semantic version tag (e.g., `v0.5.0`) is pushed to the repository.
-- **Workflow Permissions**: GitHub Actions release workflows are hardened, restricting write permissions exclusively to the specific release job.
-- **GoReleaser**: We use [GoReleaser](https://goreleaser.com/) to build release binaries, generate the changelog from commit messages, and create GitHub Releases.
-- **Docker Image Publishing**: Upon release, a multi-platform Docker image supporting both `linux/amd64` and `linux/arm64` architectures is automatically built and published to the GitHub Container Registry (GHCR) at `ghcr.io/salvatorecorvaglia/objectra`.
-
----
-
-## 👥 Add Yourself to Contributors
-
-If you have made a contribution to Objectra, please add your name and GitHub profile link to the [CONTRIBUTORS.md](file:///Users/salvatorecorvaglia/github/objectra/CONTRIBUTORS.md) file in the root directory under the `## 🌟 Contributors` section! We appreciate your help!
 
 ---
 

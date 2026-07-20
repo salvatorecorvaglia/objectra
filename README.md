@@ -6,107 +6,75 @@ Objectra is a high-performance object storage server written in Go that implemen
 
 ---
 
-## ✨ Key Features
+## ✨ Features
 
-- **S3 API Compatibility**: Implements core bucket and object operations (Create, List, Delete, Check head, PUT/GET/DELETE, Multipart uploads) along with standard S3 range requests (Partial Content `206`) for seekable and compressed/non-seekable streams.
-- **Built-in Web Console**: A sleek, responsive dashboard served directly from the binary (default port `9001`) with Single-Page Application (SPA) wildcard client-side routing fallback to prevent 404s on browser reloads or deep links.
-- **Active-Passive Mirroring**: Asynchronous object replication to secondary S3 targets using AWS Signature V4 signing and optimized HTTP connection pooling.
-- **Event Webhooks**: Dispatch event notifications (such as `s3:ObjectCreated` and `s3:ObjectRemoved`) to external webhook endpoints with built-in retries and exponential backoff.
-- **Robust Concurrency & Locking**: Granular bucket-level read/write locking to prevent race conditions without introducing bottleneck global mutexes, backed by reference-counted initialization mutexes.
-- **Highly Modular Storage**: Central metadata is tracked in `objectra.db` (BoltDB), while object records are stored in dedicated per-bucket databases (`metadata/<bucket_name>.db`) to ensure isolation and performance.
-- **Security-First**: Enforces SSL/TLS encryption, Server-Side Encryption with Customer-provided Keys (SSE-C), persistent JWT session signing, configurable login/API rate limits, and request origin verification for APIs and WebSockets.
-- **Prometheus Metrics**: Exposes operational telemetry via the `/metrics` endpoint, secured using `OBJECTRA_METRICS_TOKEN` or console session validation.
-- **Graceful Shutdown**: Intercepts `SIGINT`/`SIGTERM` to safely write pending queues, flush logs, and close database descriptors cleanly.
+### 📡 S3 API Compatibility
+*   **Core Bucket & Object Operations**: Full support for listing, creating, and deleting buckets, as well as putting, getting, and deleting objects.
+*   **Multipart Uploads**: High-performance concurrent multipart upload support, allowing you to upload large files in chunks with optimized lock contention.
+*   **Bucket Lifecycle Rules**: Automatic object expiration rules based on actual object age (`LastModified` timestamp checks).
+*   **Virtual-Host Routing**: Seamless virtual-host bucket resolution support based on custom base domain suffixes.
+*   **CORS (Cross-Origin Resource Sharing)**: Highly configurable CORS handlers supporting exact/wildcard domain matches with scheme and port validation.
+*   **SSE-C Encryption**: Server-Side Encryption with Customer-provided keys utilizing constant-time cryptographic checks.
+*   **Partial Content / Range Requests**: Seekable `GetObject` range requests supporting chunk buffering for compressed streams.
 
----
+### 🖥️ Built-In Web Admin Console
+*   **Stunning Dashboard UI**: Modern SPA dashboard built with vanilla HTML, CSS, and JS (zero heavy npm builds required).
+*   **Bucket Management**: Create and delete buckets directly from the UI.
+*   **Object Browser**: Interactive object navigation, supporting folder-like path hierarchies.
+*   **Drag & Drop Uploads**: Fast, intuitive file uploading directly to your S3 storage.
+*   **Rich Previews**: Instant browser previews for text, images, and sandboxed PDF files (with strict script-only iframe boundaries).
+*   **Presigned Links**: Generate temporary, shareable download links for objects with custom expiry windows.
 
-## 🏛️ Codebase Architecture
+### 🔄 Replication & Event Notifications
+*   **Active-Passive Mirroring**: Asynchronous replication dispatcher that automatically mirrors newly uploaded objects to a remote S3-compatible destination.
+*   **Webhook Events**: Lightweight JSON payload webhook dispatcher that POSTs notifications to target endpoints on object creation or deletion.
+*   **Prometheus Metrics**: High-performance `/metrics` endpoint presenting native storage metrics, secured with a custom token or Console session JWT.
 
-Objectra is structured logically to separate the core storage logic from HTTP endpoints and web interfaces:
-
-- **[`cmd/objectra/`](cmd/objectra)**: The entry point. Initializes runtime configurations, mounts databases, boots servers, and registers shutdown handlers.
-- **[`internal/storage/`](internal/storage)**: The storage engine. Handles direct-to-disk layout mapping, metadata bookkeeping, replication queues, and webhook dispatching. Decoupled into dedicated modules:
-  - [`multipart.go`](internal/storage/multipart.go) for chunked multipart uploads.
-  - [`lifecycle.go`](internal/storage/lifecycle.go) for bucket lifecycle rules and sweeps.
-  - [`paths.go`](internal/storage/paths.go) for path validation and safety checks.
-  - [`metadata.go`](internal/storage/metadata.go) for per-bucket BoltDB metadata stores.
-  - [`sync.go`](internal/storage/sync.go) for active-passive S3 mirroring replication.
-  - [`webhook.go`](internal/storage/webhook.go) for background event notifications.
-- **[`internal/s3api/`](internal/s3api)**: Exposes the AWS S3-compatible REST API endpoints, handling authentication, CORS, multipart uploads, and range requests.
-- **[`internal/console/`](internal/console)**: Serves the Single-Page Web Console UI, handles CORS origin verification, WebSocket security checks, SPA wildcard fallback routing, and exposes Prometheus metrics.
-- **[`internal/server/`](internal/server)**: Orchestrates the HTTP/HTTPS listeners, configures TLS, and manages custom rate limiting.
-- **[`internal/auth/`](internal/auth)**: Houses consolidated cryptographic helper utilities (AWS Signature V4, HmacSHA256, token generation) and manages console session JWT validation.
-- **[`internal/config/`](internal/config)**: Declares configuration models, binds environment variables, and manages default profile values.
+### 🛡️ Production Hardening & Reliability
+*   **Structured Logging**: Production-grade JSON or text structured logs via Go's native `log/slog`.
+*   **Access Log Buffering**: High-throughput access log worker that batches disk writes (up to 100 entries or every 5s) to reduce lock contention and I/O.
+*   **Graceful Shutdown**: Monitors shutdown signals (`SIGINT`/`SIGTERM`) and tracks active requests using a `sync.WaitGroup` to ensure no connection is dropped mid-flight.
+*   **Orphan Cleanups**: Automated startup sweep that identifies and deletes partial multipart/temporary files left over by unexpected system crashes.
 
 ---
 
-## 💻 Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
-
 - **Go 1.23 or higher** (to compile and run locally)
 - **Docker** and **Docker Compose** (for containerized deployments)
 
-### Running Locally
+---
 
-1. **Clone the Repository**
-   ```bash
-   git clone https://github.com/salvatorecorvaglia/objectra.git
-   cd objectra
-   ```
+### Method 1: Using Docker Compose (Recommended)
 
-2. **Configure Environment Variables**
+Objectra is distributed as a multi-arch container image. You can spin up Objectra with a persistent volume using `docker-compose.yml`:
+
+1. Copy the environment variables:
    ```bash
    cp .env.example .env
    ```
-   Modify `.env` to customize access credentials, ports, and directory locations.
-
-3. **Build and Run**
+2. Run Docker Compose:
    ```bash
-   # Build the binary
-   go build -o objectra ./cmd/objectra
-
-   # Run with configuration loaded
-   export $(grep -v '^#' .env | xargs) && ./objectra
+   docker compose up -d
    ```
+3. Access the services:
+   *   **S3 API**: `http://localhost:9000`
+   *   **Web Console**: `http://localhost:9001` (Default login credentials: Access Key: `objectra` / Secret Key: `objectra123`)
 
-Objectra will boot and print the operational banner:
-```text
-   ____  __     _           __            
-  / __ \/ /_   (_)__  _____/ /__________ _
- / / / / __ \ / / _ \/ ___/ __/ ___/ __  /
-/ /_/ / /_/ // /  __/ /__/ /_/ /  / /_/ / 
-\____/_.___// /\___/\___/\__/_/   \__,_/  
-         /___/                             
+---
 
-  S3-Compatible Object Storage Server (dev)
-─────────────────────────────────────────
-  S3 API:     http://0.0.0.0:9000
-  Console:    http://0.0.0.0:9001
-  Data Dir:   ./data
-  Access Key: objectra
-  Region:     us-east-1
-─────────────────────────────────────────
-```
-
-### Running with Docker
-
-You can spin up Objectra immediately via Docker Compose.
-
-```bash
-docker compose up -d
-```
+### Method 2: Running with Docker CLI
 
 Alternatively, run the official pre-built image from GitHub Container Registry (GHCR):
 
 ```bash
-# Run the container using the GHCR image
 docker run -d \
   -p 9000:9000 \
   -p 9001:9001 \
   -v $(pwd)/data:/data \
-  -e OBJECTRA_ACCESS_KEY=myaccesskey \
-  -e OBJECTRA_SECRET_KEY=mysecretkey \
+  -e OBJECTRA_ACCESS_KEY=objectra \
+  -e OBJECTRA_SECRET_KEY=objectra123 \
   ghcr.io/salvatorecorvaglia/objectra:latest
 ```
 
@@ -121,58 +89,74 @@ docker run -d \
   -p 9000:9000 \
   -p 9001:9001 \
   -v $(pwd)/data:/data \
-  -e OBJECTRA_ACCESS_KEY=myaccesskey \
-  -e OBJECTRA_SECRET_KEY=mysecretkey \
+  -e OBJECTRA_ACCESS_KEY=objectra \
+  -e OBJECTRA_SECRET_KEY=objectra123 \
   objectra
 ```
 
 ---
 
+### Method 3: Building from Source
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/salvatorecorvaglia/objectra.git
+   cd objectra
+   ```
+2. Configure your environment variables:
+   ```bash
+   cp .env.example .env
+   ```
+3. Build the binary:
+   ```bash
+   go build -ldflags="-w -s" -o objectra ./cmd/objectra
+   ```
+4. Run Objectra with environment configuration loaded:
+   ```bash
+   export $(grep -v '^#' .env | xargs) && ./objectra
+   ```
+
+---
+
 ## ⚙️ Configuration Reference
 
-Objectra can be configured entirely via environment variables.
+Objectra is configured exclusively via environment variables. You can find a baseline configuration file template in [.env.example](.env.example).
 
 | Environment Variable | Default Value | Description |
 | :--- | :--- | :--- |
-| **`OBJECTRA_ACCESS_KEY`** | `objectra` | Access key used for S3 clients and console login. |
-| **`OBJECTRA_SECRET_KEY`** | `objectra123` | Secret key used for S3 clients and console login. |
-| **`OBJECTRA_DATA_DIR`** | `/data` | Host directory to store buckets, object files, and metadata. |
-| **`OBJECTRA_S3_PORT`** | `9000` | Port the S3 compatibility API will listen on. |
-| **`OBJECTRA_CONSOLE_PORT`** | `9001` | Port the Admin Web Console will listen on. |
-| **`OBJECTRA_REGION`** | `us-east-1` | S3 region signature validation default. |
-| **`OBJECTRA_DOMAIN`** | *None* | Base domain used for virtual host S3 bucket routing (e.g. `bucket.domain.com`). |
-| **`OBJECTRA_TLS_ENABLED`** | `false` | Enable to serve S3 and Console over HTTPS. |
-| **`OBJECTRA_TLS_CERT`** | *None* | Path to the SSL/TLS certificate file (required if TLS is enabled). |
-| **`OBJECTRA_TLS_KEY`** | *None* | Path to the SSL/TLS private key file (required if TLS is enabled). |
-| **`OBJECTRA_LOGIN_RATE_LIMIT`** | `5` | Maximum console login requests allowed per minute per IP. |
-| **`OBJECTRA_API_RATE_LIMIT`** | `60` | Maximum console API requests allowed per minute per IP. |
-| **`OBJECTRA_TRUST_PROXY`** | `false` | Set to `true` to trust proxy environments. Extracts the client IP from the first address in the `X-Forwarded-For` header. |
-| **`OBJECTRA_LOG_LEVEL`** | `info` | Output log verbosity (`debug`, `info`, `warn`, `error`). |
-| **`OBJECTRA_LOG_FORMAT`** | `text` | Logger format (`text` or `json`). |
-| **`OBJECTRA_JWT_SECRET`** | *None* | Explicit secret key for console JWT session tokens. (Generated randomly and stored in DB if omitted). |
-| **`OBJECTRA_METRICS_TOKEN`** | *None* | Authentication token required to access the `/metrics` endpoint. If blank, falls back to Console JWT verification. |
-| **`OBJECTRA_DISABLE_MIN_PART_SIZE`**| `false` | Set to `true` to disable the S3 5MB minimum multipart size limitation (useful for testing). |
-| **`OBJECTRA_S3_ENDPOINT`** | *None* | Custom public S3 endpoint URL (e.g. `https://s3.example.com`) used when generating presigned object URLs in the Console. Overrides request-host based resolution. |
+| **`OBJECTRA_ACCESS_KEY`** | `objectra` | Access key used for S3 client credentials and Web Console login. |
+| **`OBJECTRA_SECRET_KEY`** | `objectra123` | Secret key used for S3 client credentials and Web Console login. |
+| **`OBJECTRA_DATA_DIR`** | `/data` (Docker) / `./data` (source) | Path to the directory where metadata and S3 objects are stored. |
+| **`OBJECTRA_S3_PORT`** | `9000` | Port the S3-compatible API server listens on. |
+| **`OBJECTRA_CONSOLE_PORT`**| `9001` | Port the Admin Web Console listens on. |
+| **`OBJECTRA_REGION`** | `us-east-1` | S3 region reported by the API. |
+| **`OBJECTRA_DOMAIN`** | *None* | Base domain for virtual-host style bucket requests (e.g., `mybucket.domain.com`). |
+| **`OBJECTRA_S3_ENDPOINT`** | *None* | Custom public S3 endpoint URL for generating presigned links in the console. |
+| **`OBJECTRA_TLS_ENABLED`** | `false` | Set to `true` to enable TLS/HTTPS for S3 API and Console. |
+| **`OBJECTRA_TLS_CERT`** | *None* | Absolute path to SSL/TLS certificate file. |
+| **`OBJECTRA_TLS_KEY`** | *None* | Absolute path to SSL/TLS private key file. |
+| **`OBJECTRA_JWT_SECRET`** | *Autogenerated* | Secret key for Console session signing. Recommended to set statically to preserve sessions. |
+| **`OBJECTRA_TRUST_PROXY`** | `false` | Trusts `X-Forwarded-For` proxy headers from reverse proxies (Nginx/Caddy/Cloudflare). |
+| **`OBJECTRA_LOGIN_RATE_LIMIT`**| `5` | Maximum console login attempts allowed per minute per IP address. |
+| **`OBJECTRA_API_RATE_LIMIT`**  | `60` | Maximum console API requests allowed per minute per IP address. |
+| **`OBJECTRA_METRICS_TOKEN`** | *None* | Bearer token required to scrape `/metrics`. If empty, requires a console JWT session. |
+| **`OBJECTRA_LOG_LEVEL`** | `info` | Logging verbosity level (`debug`, `info`, `warn`, `error`). |
+| **`OBJECTRA_LOG_FORMAT`** | `text` | Log presentation format (`text` or `json`). |
+| **`OBJECTRA_SYNC_ENDPOINT`** | *None* | Remote S3 API endpoint URL target for asynchronous replication. |
+| **`OBJECTRA_SYNC_BUCKET`** | *None* | Remote target bucket name for asynchronous replication. |
+| **`OBJECTRA_SYNC_ACCESS_KEY`**| *None* | Remote credentials Access Key. |
+| **`OBJECTRA_SYNC_SECRET_KEY`**| *None* | Remote credentials Secret Key. |
+| **`OBJECTRA_SYNC_REGION`** | `us-east-1` | Remote target region. |
+| **`OBJECTRA_WEBHOOK_URL`** | *None* | Destination HTTP POST endpoint URL to receive webhook event payloads. |
+| **`OBJECTRA_DISABLE_MIN_PART_SIZE`**| `false` | Disables S3 5MB minimum multipart part size requirement (highly useful for dev/testing). |
 
 ### 🔄 Active-Passive Replication Configuration
 
 Setting these variables enables automated, asynchronous background replication. Whenever objects are written (`PUT`) or deleted (`DELETE`) in Objectra, the operations are queue-dispatched to the replication target.
 
-| Environment Variable | Description |
-| :--- | :--- |
-| **`OBJECTRA_SYNC_ENDPOINT`** | Endpoint URL of the replication destination (e.g. `https://s3.eu-west-1.amazonaws.com`). |
-| **`OBJECTRA_SYNC_BUCKET`** | Target bucket name at the replication destination. |
-| **`OBJECTRA_SYNC_ACCESS_KEY`** | Access Key of the replication target credentials. |
-| **`OBJECTRA_SYNC_SECRET_KEY`** | Secret Key of the replication target credentials. |
-| **`OBJECTRA_SYNC_REGION`** | Region of the replication target credentials (defaults to `us-east-1`). |
-
 ### 🪝 Webhook Event Notifications Configuration
 
-Set the variable below to dispatch event JSON payloads to a webhook listener.
-
-| Environment Variable | Description |
-| :--- | :--- |
-| **`OBJECTRA_WEBHOOK_URL`** | Destination POST endpoint to receive webhook notifications (e.g., `http://my-service/events`). |
+Set the `OBJECTRA_WEBHOOK_URL` variable to dispatch event JSON payloads to a webhook listener.
 
 #### Example Webhook Event Payload:
 ```json
