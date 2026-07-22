@@ -378,8 +378,8 @@ func TestS3AccessLogging(t *testing.T) {
 		t.Fatalf("expected status 200, got %d, body: %s", rec.Code, rec.Body.String())
 	}
 
-	// Wait for async log delivery
-	time.Sleep(100 * time.Millisecond)
+	// Close router to wait for pending requests and flush log queue synchronously
+	router.Close()
 
 	// List objects in dest-bucket to find the log file
 	output, err := engine.ListObjects(&storage.ListObjectsInput{

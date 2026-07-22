@@ -3,6 +3,7 @@ package s3api
 import (
 	"context"
 	"encoding/xml"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -474,7 +475,7 @@ func (rt *Router) startLogWorkers() {
 		
 		buffers := make(map[string]*bufferedLog) // key: targetBucket + "\x00" + targetPrefix
 		flushInterval := 5 * time.Second
-		if len(os.Args) > 0 && (strings.HasSuffix(os.Args[0], ".test") || strings.Contains(os.Args[0], "/_test/")) {
+		if flag.Lookup("test.v") != nil || flag.Lookup("test.timeout") != nil || (len(os.Args) > 0 && (strings.Contains(os.Args[0], ".test") || strings.Contains(os.Args[0], "/_test/"))) {
 			flushInterval = 50 * time.Millisecond
 		}
 		ticker := time.NewTicker(flushInterval)
