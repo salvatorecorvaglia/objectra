@@ -236,6 +236,10 @@ go test -race ./...
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+## 📜 Changelog
+
+Detailed release history and version changes can be found in [CHANGELOG.md](CHANGELOG.md).
+
 ## 🔐 Security
 
 If you discover a security vulnerability, please see our [Security Policy](SECURITY.md).
