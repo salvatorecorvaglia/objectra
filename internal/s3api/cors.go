@@ -59,7 +59,17 @@ func EvaluateCORS(r *http.Request, cors *storage.CORSConfiguration) (map[string]
 		headers := make(map[string]string)
 		headers["Access-Control-Allow-Origin"] = origin
 		headers["Access-Control-Allow-Methods"] = strings.Join(rule.AllowedMethods, ", ")
-		headers["Access-Control-Allow-Credentials"] = "true"
+
+		hasWildcard := false
+		for _, o := range rule.AllowedOrigins {
+			if o == "*" {
+				hasWildcard = true
+				break
+			}
+		}
+		if !hasWildcard {
+			headers["Access-Control-Allow-Credentials"] = "true"
+		}
 
 		if r.Method == http.MethodOptions {
 			// Preflight-specific headers

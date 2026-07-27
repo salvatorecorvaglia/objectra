@@ -1160,6 +1160,16 @@
         });
     });
 
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            $$('.modal-overlay').forEach((overlay) => {
+                if (overlay.style.display === 'flex' || overlay.style.display === 'block') {
+                    overlay.style.display = 'none';
+                }
+            });
+        }
+    });
+
     // Enter key in modal inputs
     $('#new-bucket-name').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') {

@@ -72,6 +72,13 @@ type rateLimiter struct {
 
 		client, exists := rl.clients[ip]
 		if !exists {
+			if len(rl.clients) >= 10000 {
+				for k, v := range rl.clients {
+					if now.Sub(v.lastAccess) > 1*time.Minute {
+						delete(rl.clients, k)
+					}
+				}
+			}
 			client = &clientRateLimit{
 				tokens:     rl.burst,
 				lastAccess: now,

@@ -28,13 +28,14 @@ type initLock struct {
 
 // MetadataStore manages bucket and object metadata using per-bucket bbolt databases.
 type MetadataStore struct {
-	globalDB      *bolt.DB
-	activeBuckets map[string]*bolt.DB
-	mu            sync.RWMutex
-	bucketLocks   [32]*bucketLockSegment
-	dataDir       string
-	initLocks     map[string]*initLock
-	initMu        sync.Mutex
+	globalDB       *bolt.DB
+	activeBuckets  map[string]*bolt.DB
+	activeLastUsed map[string]time.Time
+	mu             sync.RWMutex
+	bucketLocks    [32]*bucketLockSegment
+	dataDir        string
+	initLocks      map[string]*initLock
+	initMu         sync.Mutex
 
 	bucketCache map[string]*BucketInfo
 	cacheMu     sync.RWMutex
@@ -122,10 +123,11 @@ func NewMetadataStore(dataDir string) (*MetadataStore, error) {
 	}
 
 	m := &MetadataStore{
-		globalDB:      globalDB,
-		activeBuckets: make(map[string]*bolt.DB),
-		dataDir:       dataDir,
-		bucketCache:   make(map[string]*BucketInfo),
+		globalDB:       globalDB,
+		activeBuckets:  make(map[string]*bolt.DB),
+		activeLastUsed: make(map[string]time.Time),
+		dataDir:        dataDir,
+		bucketCache:    make(map[string]*BucketInfo),
 	}
 	for i := 0; i < 32; i++ {
 		m.bucketLocks[i] = &bucketLockSegment{
@@ -153,6 +155,7 @@ func (m *MetadataStore) Close() error {
 		}
 	}
 	m.activeBuckets = make(map[string]*bolt.DB)
+	m.activeLastUsed = make(map[string]time.Time)
 
 	if err := m.globalDB.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("failed to close central metadata db: %w", err))
@@ -162,12 +165,13 @@ func (m *MetadataStore) Close() error {
 }
 
 func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
-	m.mu.RLock()
+	m.mu.Lock()
 	if db, ok := m.activeBuckets[bucket]; ok {
-		m.mu.RUnlock()
+		m.activeLastUsed[bucket] = time.Now()
+		m.mu.Unlock()
 		return db, nil
 	}
-	m.mu.RUnlock()
+	m.mu.Unlock()
 
 	// Verify bucket exists in global DB to prevent re-creation of deleted DB files (unless migrating)
 	if !m.inMigration {
@@ -212,12 +216,13 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 	}()
 
 	// Double check if already opened by another thread
-	m.mu.RLock()
+	m.mu.Lock()
 	if db, ok := m.activeBuckets[bucket]; ok {
-		m.mu.RUnlock()
+		m.activeLastUsed[bucket] = time.Now()
+		m.mu.Unlock()
 		return db, nil
 	}
-	m.mu.RUnlock()
+	m.mu.Unlock()
 
 	// Open the database file (blocking Disk I/O) without holding global locks!
 	dbPath := filepath.Join(m.dataDir, "metadata", bucket+".db")
@@ -240,9 +245,33 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 		return nil, fmt.Errorf("failed to initialize metadata db for bucket %s: %w", bucket, err)
 	}
 
-	// Cache the opened database under global write lock
+	// Cache the opened database under global write lock with LRU eviction (max 100 open DB handles)
 	m.mu.Lock()
+	if len(m.activeBuckets) >= 100 {
+		var oldestBucket string
+		var oldestTime time.Time
+		for b, last := range m.activeLastUsed {
+			if b == bucket {
+				continue
+			}
+			if oldestBucket == "" || last.Before(oldestTime) {
+				oldestBucket = b
+				oldestTime = last
+			}
+		}
+		if oldestBucket != "" {
+			if oldDB, ok := m.activeBuckets[oldestBucket]; ok {
+				_ = oldDB.Close()
+				delete(m.activeBuckets, oldestBucket)
+				delete(m.activeLastUsed, oldestBucket)
+			}
+		}
+	}
 	m.activeBuckets[bucket] = db
+	if m.activeLastUsed == nil {
+		m.activeLastUsed = make(map[string]time.Time)
+	}
+	m.activeLastUsed[bucket] = time.Now()
 	m.mu.Unlock()
 
 	return db, nil
@@ -256,6 +285,7 @@ func (m *MetadataStore) CloseAndRemoveBucketDB(bucket string) error {
 	if ok {
 		_ = db.Close()
 		delete(m.activeBuckets, bucket)
+		delete(m.activeLastUsed, bucket)
 	}
 
 	dbPath := filepath.Join(m.dataDir, "metadata", bucket+".db")

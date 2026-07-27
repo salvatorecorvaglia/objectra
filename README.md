@@ -1,8 +1,8 @@
 # Objectra 🖼️
 
-**Self-hosted, S3-compatible object storage with a built-in web console.**
+**Self-hosted, high-performance S3-compatible object storage server with web console**
 
-Objectra is a high-performance object storage server written in Go that implements the Amazon S3 API. It's designed for self-hosted environments where you need S3 compatibility without the complexity of a full distributed system.
+**Objectra** is a high-performance object storage server written in Go that implements the Amazon S3 API. It's designed for self-hosted environments where you need S3 compatibility without the complexity of a full distributed system.
 
 ---
 
