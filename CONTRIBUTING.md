@@ -115,11 +115,12 @@ Lint rules are defined in [`.golangci.yml`](.golangci.yml).
 - **Constant-time Security Checks**: When performing cryptographic or security-sensitive comparisons (e.g., SSE-C MD5 checksums, token validation, password verification), always use constant-time comparisons (e.g., `subtle.ConstantTimeCompare`) to mitigate side-channel timing attacks.
 - **Console Request Origin Verification**: All custom web console APIs and WebSocket connection handshakes must validate the request's origin against the request host, local loopback (localhost/127.0.0.1), or explicitly allowed origins to prevent Cross-Site Request Forgery (CSRF) and unauthorized cross-origin requests.
 - **Consolidated Cryptographic Utilities**: Reuse central cryptographic implementation helpers in `internal/auth` rather than introducing duplicate verification blocks across different internal packages. For signing outbound requests (e.g., active-passive replication), always use `auth.SignRequest` to prevent duplicate signing logic.
-- **CORS Handling**: Streamline CORS preflight responses by returning HTTP status code `403 Forbidden` directly upon validation failure, rather than responding with structured S3 error payloads.
+- **CORS Handling**: Streamline CORS preflight responses by returning HTTP status code `403 Forbidden` directly upon validation failure, rather than responding with structured S3 error payloads. Include `Access-Control-Allow-Credentials: true` when origin credentials are authorized.
 
 ### Concurrency & Performance
 
 - **Bucket-Level Locking**: When reading or modifying bucket resources, acquire the corresponding bucket-level lock using the metadata store's locking mechanism (`acquireBucketLock`). Never use global package-level variables or raw mutexes for bucket operations to avoid race conditions.
+- **LRU Database Connection Caching**: Manage per-bucket metadata database connection handles via an LRU cache (bounded capacity) inside `MetadataStore` to limit active file descriptors and optimize memory overhead across large numbers of buckets.
 - **Asynchronous Execution & Queues**: Performance-critical async side-effects, such as triggering webhooks or replication mirroring tasks, should utilize the buffered dispatcher queues (e.g., `syncQueue` or `webhookQueue`) rather than spawning unmanaged goroutines. This prevents resource exhaustion under heavy loads.
 - **Aggregated Access Logging & Workers**: S3 API access logging must run on a single background worker thread instead of multiple concurrent workers to prevent write contention and excessive locking. It must utilize a buffered queue (`logChan`) and write logs in batches (up to 100 entries or every 5 seconds) to optimize disk I/O, enqueuing log tasks asynchronously and dropping them if the queue is fully saturated to avoid blocking request paths.
 - **Graceful Shutdown & Request Tracking**: All server endpoints and request routers must track active operations/requests using a sync mechanism (e.g., `sync.WaitGroup`). Ensure outstanding requests are gracefully completed and resources/queues flushed before closing background logging workers or shutting down database descriptors.
@@ -134,7 +135,7 @@ Lint rules are defined in [`.golangci.yml`](.golangci.yml).
 
 ### Aesthetic & Design Principles
 
-- **Web Console**: The built-in web console should be responsive, modern, and provide a premium user experience. Avoid visual placeholders and implement clean user interaction flows.
+- **Web Console**: The built-in web console should be responsive, modern, and provide a premium user experience. Avoid visual placeholders and implement clean user interaction flows, keyboard accessibility (e.g. `ESC` key modal dismissal), and immediate user feedback for rate-limiting errors.
 
 ---
 

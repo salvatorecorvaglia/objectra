@@ -13,12 +13,12 @@
 *   **Multipart Uploads**: High-performance concurrent multipart upload support, allowing you to upload large files in chunks with optimized lock contention.
 *   **Bucket Lifecycle Rules**: Automatic object expiration rules based on actual object age (`LastModified` timestamp checks).
 *   **Virtual-Host Routing**: Seamless virtual-host bucket resolution support based on custom base domain suffixes.
-*   **CORS (Cross-Origin Resource Sharing)**: Highly configurable CORS handlers supporting exact/wildcard domain matches with scheme and port validation.
+*   **CORS (Cross-Origin Resource Sharing)**: Highly configurable CORS handlers supporting exact/wildcard domain matches with scheme, port, and credential header validation.
 *   **SSE-C Encryption**: Server-Side Encryption with Customer-provided keys utilizing constant-time cryptographic checks.
 *   **Partial Content / Range Requests**: Seekable `GetObject` range requests supporting chunk buffering for compressed streams.
 
 ### 🖥️ Built-In Web Admin Console
-*   **Stunning Dashboard UI**: Modern SPA dashboard built with vanilla HTML, CSS, and JS (zero heavy npm builds required).
+*   **Stunning Dashboard UI**: Modern SPA dashboard built with vanilla HTML, CSS, and JS (zero heavy npm builds required) featuring rate-limit feedback and ESC key modal closing shortcuts.
 *   **Bucket Management**: Create and delete buckets directly from the UI.
 *   **Object Browser**: Interactive object navigation, supporting folder-like path hierarchies.
 *   **Drag & Drop Uploads**: Fast, intuitive file uploading directly to your S3 storage.
@@ -32,6 +32,7 @@
 
 ### 🛡️ Production Hardening & Reliability
 *   **Structured Logging**: Production-grade JSON or text structured logs via Go's native `log/slog`.
+*   **LRU Database Caching**: Bounded LRU caching for per-bucket SQLite metadata connection handles to optimize file descriptor usage and memory footprint under multi-bucket workloads.
 *   **Access Log Buffering**: High-throughput access log worker that batches disk writes (up to 100 entries or every 5s) to reduce lock contention and I/O.
 *   **Graceful Shutdown**: Monitors shutdown signals (`SIGINT`/`SIGTERM`) and tracks active requests using a `sync.WaitGroup` to ensure no connection is dropped mid-flight.
 *   **Orphan Cleanups**: Automated startup sweep that identifies and deletes partial multipart/temporary files left over by unexpected system crashes.

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-27
+
+### Added
+
+- LRU connection cache (bounded capacity) for per-bucket metadata SQLite databases in `MetadataStore` to optimize open file descriptor usage and memory overhead.
+- CORS credential header support (`Access-Control-Allow-Credentials: true`) when cross-origin request credentials are enabled.
+- Modal dialog keyboard navigation (`ESC` key to dismiss) and rate-limiting error feedback in the Admin Web Console.
+
+### Changed
+
+- Upgraded minimum Go version requirement to Go 1.25 across project dependencies, Dockerfile, CI workflows, and documentation.
+- Refactored S3 API router test teardown to perform synchronous log flushing during server shutdown.
+- Optimized GitHub Actions CI workflows by enabling Go build caching and smart concurrency cancellation (`cancel-in-progress`).
+
+### Removed
+
+- Redundant `docker-publish` job from the GitHub Actions release workflow.
+
 ## [0.5.0] - 2026-07-19
 
 ### Added
