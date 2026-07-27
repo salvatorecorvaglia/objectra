@@ -41,7 +41,7 @@
 ## 🚀 Getting Started
 
 ### Prerequisites
-- **Go 1.23 or higher** (to compile and run locally)
+- **Go 1.25 or higher** (to compile and run locally)
 - **Docker** and **Docker Compose** (for containerized deployments)
 
 ---
