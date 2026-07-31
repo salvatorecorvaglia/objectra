@@ -82,7 +82,7 @@ jobs:
   docker:
     name: Docker Build & Push
     runs-on: ubuntu-latest
-    needs: test
+    needs: release
     permissions:
       contents: read
     steps:
