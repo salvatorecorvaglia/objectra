@@ -167,7 +167,7 @@ Common types include:
 - `perf`: Performance optimizations (e.g., `perf: optimize streaming I/O buffer allocation`)
 - `ci`: CI pipeline updates (e.g., `ci: update golangci-lint version`)
 
-> **Why this matters**: The release workflow uses [GoReleaser](https://goreleaser.com/) which auto-generates changelogs grouped by commit type (`feat`, `fix`, `docs`, `test`, `refactor`, `perf`). Commits prefixed with `chore:`, `ci:`, or `style:` are excluded from release notes.
+> **Why this matters**: The release workflow uses [GoReleaser](https://goreleaser.com/) to auto-generate changelogs grouped by commit type (`feat`, `fix`, `docs`, `test`, `refactor`, `perf`) and publish binary releases to GitHub, as well as pushing multi-architecture Docker images to Docker Hub. Commits prefixed with `chore:`, `ci:`, or `style:` are excluded from release notes.
 
 ### Pull Request Process
 

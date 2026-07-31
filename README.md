@@ -67,7 +67,7 @@ Stiva is distributed as a multi-arch container image. You can spin up Stiva with
 
 ### Method 2: Running with Docker CLI
 
-Alternatively, run the official pre-built image from GitHub Container Registry (GHCR):
+Alternatively, run the official pre-built image from Docker Hub:
 
 ```bash
 docker run -d \
@@ -76,7 +76,7 @@ docker run -d \
   -v $(pwd)/data:/data \
   -e STIVA_ACCESS_KEY=stiva \
   -e STIVA_SECRET_KEY=stiva123 \
-  ghcr.io/salvatorecorvaglia/stiva:latest
+  salvatorecorvaglia/stiva:latest
 ```
 
 To build and run the image locally instead:
