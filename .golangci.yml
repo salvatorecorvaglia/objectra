@@ -2,6 +2,7 @@
 # ================================================================
 # golangci-lint configuration for Stiva
 # ================================================================
+version: "2"
 
 linters:
   enable:
@@ -11,22 +12,24 @@ linters:
     - ineffassign
     - unused
 
-linters-settings:
-  errcheck:
-    exclude-functions:
-      - (*os.File).Close
-      - (io.Closer).Close
-      - os.Remove
-      - os.RemoveAll
-      - (*go.etcd.io/bbolt.DB).Close
-      - (net.Listener).Close
-      - (*net.TCPListener).Close
+  exclusions:
+    rules:
+      - linters:
+          - errcheck
+          - ineffassign
+        path: _test\.go
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+        - os.Remove
+        - os.RemoveAll
+        - (*go.etcd.io/bbolt.DB).Close
+        - (net.Listener).Close
+        - (*net.TCPListener).Close
 
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - ineffassign
