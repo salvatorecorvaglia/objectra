@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Renamed project from Objectra to Stiva across Go module path (`github.com/salvatorecorvaglia/stiva`), CLI entrypoint (`cmd/stiva`), environment variables (`STIVA_*`), Docker build manifests, configuration parameters, and documentation.
+- Renamed project from Objectra to Stiva.
 
 ## [0.6.0] - 2026-07-27
 
