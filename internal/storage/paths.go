@@ -16,7 +16,8 @@ func (fs *FilesystemEngine) validatePathSafety(bucket, key, versionID string) er
 	if !filepath.IsLocal(bucket) {
 		return errors.New(errInvalidBucketTraversal)
 	}
-	trimmedKey := strings.TrimLeft(key, "/\\")
+	normalizedKey := strings.ReplaceAll(key, "\\", "/")
+	trimmedKey := strings.TrimLeft(normalizedKey, "/")
 	if trimmedKey != "" {
 		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
 			return errors.New(errInvalidKeyTraversal)
@@ -40,11 +41,16 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 		return "", err
 	}
 
-	base := fs.bucketPath(bucket)
-	resolved := filepath.Join(base, filepath.FromSlash(key))
+	normalizedKey := strings.ReplaceAll(key, "\\", "/")
+	base := filepath.Clean(fs.bucketPath(bucket))
+	resolved := filepath.Clean(filepath.Join(base, filepath.FromSlash(normalizedKey)))
 	// Ensure the resolved path stays within the bucket directory
 	rel, err := filepath.Rel(base, resolved)
 	if err != nil || !isSafeRelPath(rel) {
+		return "", errors.New(errInvalidKeyTraversal)
+	}
+	basePrefix := base + string(filepath.Separator)
+	if resolved != base && !strings.HasPrefix(resolved, basePrefix) {
 		return "", errors.New(errInvalidKeyTraversal)
 	}
 	return resolved, nil
@@ -64,9 +70,13 @@ func (fs *FilesystemEngine) objectPathWithVersion(bucket, key, versionID string)
 	}
 	resolved = filepath.Clean(resolved)
 	// Ensure the resolved path stays within the bucket directory
-	bucketBase := fs.bucketPath(bucket)
+	bucketBase := filepath.Clean(fs.bucketPath(bucket))
 	rel, err := filepath.Rel(bucketBase, resolved)
 	if err != nil || !isSafeRelPath(rel) {
+		return "", fmt.Errorf("invalid object key or version: path traversal detected")
+	}
+	basePrefix := bucketBase + string(filepath.Separator)
+	if resolved != bucketBase && !strings.HasPrefix(resolved, basePrefix) {
 		return "", fmt.Errorf("invalid object key or version: path traversal detected")
 	}
 	return resolved, nil
@@ -76,25 +86,36 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 	if !filepath.IsLocal(bucket) {
 		return
 	}
-	bucketDir := fs.bucketPath(bucket)
-	rel, err := filepath.Rel(bucketDir, objPath)
+	bucketDir := filepath.Clean(fs.bucketPath(bucket))
+	cleanObjPath := filepath.Clean(objPath)
+	bucketPrefix := bucketDir + string(filepath.Separator)
+	if cleanObjPath != bucketDir && !strings.HasPrefix(cleanObjPath, bucketPrefix) {
+		return
+	}
+	rel, err := filepath.Rel(bucketDir, cleanObjPath)
 	if err != nil || !isSafeRelPath(rel) {
 		return
 	}
 
-	dir := filepath.Dir(objPath)
+	dir := filepath.Dir(cleanObjPath)
 	for dir != bucketDir {
-		checkRel, err := filepath.Rel(bucketDir, dir)
+		cleanDir := filepath.Clean(dir)
+		if cleanDir != bucketDir && !strings.HasPrefix(cleanDir, bucketPrefix) {
+			break
+		}
+		checkRel, err := filepath.Rel(bucketDir, cleanDir)
 		if err != nil || !isSafeRelPath(checkRel) {
 			break
 		}
 
-		entries, _ := os.ReadDir(dir)
-		if len(entries) > 0 {
+		entries, err := os.ReadDir(cleanDir)
+		if err != nil || len(entries) > 0 {
 			break
 		}
-		os.Remove(dir)
-		dir = filepath.Dir(dir)
+		if err := os.Remove(cleanDir); err != nil {
+			break
+		}
+		dir = filepath.Dir(cleanDir)
 	}
 }
 
@@ -108,11 +129,15 @@ func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string
 	if strings.ContainsAny(uploadID, "/\\") || strings.Contains(uploadID, "..") {
 		return "", errors.New(errInvalidUploadID)
 	}
-	base := filepath.Join(fs.dataDir, "multipart", bucket)
-	resolved := filepath.Join(base, uploadID)
+	base := filepath.Clean(filepath.Join(fs.dataDir, "multipart", bucket))
+	resolved := filepath.Clean(filepath.Join(base, uploadID))
 	// Ensure the resolved path stays within the bucket's multipart directory
 	rel, err := filepath.Rel(base, resolved)
 	if err != nil || !isSafeRelPath(rel) {
+		return "", errors.New(errInvalidUploadID)
+	}
+	basePrefix := base + string(filepath.Separator)
+	if resolved != base && !strings.HasPrefix(resolved, basePrefix) {
 		return "", errors.New(errInvalidUploadID)
 	}
 	return resolved, nil
@@ -137,10 +162,15 @@ func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, 
 	if err != nil {
 		return "", err
 	}
-	resolved := filepath.Join(uploadPath, filepath.FromSlash(key))
+	cleanUploadPath := filepath.Clean(uploadPath)
+	resolved := filepath.Clean(filepath.Join(cleanUploadPath, filepath.FromSlash(key)))
 	// Ensure the resolved path stays within the uploadPath directory
-	rel, err := filepath.Rel(uploadPath, resolved)
+	rel, err := filepath.Rel(cleanUploadPath, resolved)
 	if err != nil || !isSafeRelPath(rel) {
+		return "", errors.New(errInvalidKeyTraversal)
+	}
+	uploadPrefix := cleanUploadPath + string(filepath.Separator)
+	if resolved != cleanUploadPath && !strings.HasPrefix(resolved, uploadPrefix) {
 		return "", errors.New(errInvalidKeyTraversal)
 	}
 	return resolved, nil
@@ -150,35 +180,49 @@ func isSafeRelPath(rel string) bool {
 	if filepath.IsAbs(rel) {
 		return false
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") {
 		return false
 	}
 	return true
 }
 
 func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) error {
+	bucketDir := filepath.Clean(fs.bucketPath(bucket))
+	cleanObjPath := filepath.Clean(objPath)
+	bucketPrefix := bucketDir + string(filepath.Separator)
+	if cleanObjPath != bucketDir && !strings.HasPrefix(cleanObjPath, bucketPrefix) {
+		return errors.New(errInvalidKeyTraversal)
+	}
+	rel, err := filepath.Rel(bucketDir, cleanObjPath)
+	if err != nil || !isSafeRelPath(rel) {
+		return errors.New(errInvalidKeyTraversal)
+	}
+
 	// Check if the proposed object path is already a directory (file-directory conflict)
-	fi, err := os.Stat(objPath)
+	fi, err := os.Stat(cleanObjPath)
 	if err == nil && fi.IsDir() {
 		return &S3Error{Code: "InvalidRequest", Message: "Object key name conflicts with an existing directory path."}
 	}
 
 	// Check if any parent path is a regular file (directory-file conflict)
-	bucketDir := fs.bucketPath(bucket)
-	dir := filepath.Dir(objPath)
+	dir := filepath.Dir(cleanObjPath)
 	for dir != bucketDir {
-		checkRel, err := filepath.Rel(bucketDir, dir)
+		cleanDir := filepath.Clean(dir)
+		if cleanDir != bucketDir && !strings.HasPrefix(cleanDir, bucketPrefix) {
+			break
+		}
+		checkRel, err := filepath.Rel(bucketDir, cleanDir)
 		if err != nil || !isSafeRelPath(checkRel) {
 			break
 		}
 
-		s, err := os.Stat(dir)
+		s, err := os.Stat(cleanDir)
 		if err == nil && !s.IsDir() {
 			return &S3Error{Code: "InvalidRequest", Message: "Parent path conflicts with an existing object."}
 		}
 
-		parent := filepath.Dir(dir)
-		if parent == dir {
+		parent := filepath.Dir(cleanDir)
+		if parent == cleanDir {
 			break
 		}
 		dir = parent
