@@ -40,9 +40,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.64.6
+        run: go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.6 run ./...
 
   # ── Test ──────────────────────────────────────────────────────
   test:
