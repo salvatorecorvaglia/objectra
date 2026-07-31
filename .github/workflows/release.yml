@@ -118,7 +118,7 @@ jobs:
         with:
           images: |
             ghcr.io/${{ github.repository }}
-            ${{ env.DOCKERHUB_USERNAME != '' && 'salvatorecorvaglia/stiva' || '' }}
+            ${{ env.DOCKERHUB_USERNAME != '' && format('{0}/stiva', env.DOCKERHUB_USERNAME) || '' }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
