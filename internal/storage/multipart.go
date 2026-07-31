@@ -293,17 +293,28 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
 
+	bucketDir := filepath.Clean(fs.bucketPath(bucket))
+	rel, err := filepath.Rel(bucketDir, objPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") || filepath.IsAbs(rel) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
+	}
+	objDir := filepath.Dir(objPath)
+	relDir, err := filepath.Rel(bucketDir, objDir)
+	if err != nil || relDir == ".." || strings.HasPrefix(relDir, ".."+string(filepath.Separator)) || strings.HasPrefix(relDir, "../") || strings.HasPrefix(relDir, "..\\") || filepath.IsAbs(relDir) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
+	}
+
 	// Check for flat namespace directory/file path conflicts
 	if err := fs.checkPathConflict(objPath, bucket); err != nil {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(objPath), 0755); err != nil {
+	if err := os.MkdirAll(objDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create object directory: %w", err)
 	}
 
 	// Use atomic temp-file + rename for crash safety
-	tmpFile, err := os.CreateTemp(filepath.Dir(objPath), ".stiva-multipart-*")
+	tmpFile, err := os.CreateTemp(objDir, ".stiva-multipart-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
