@@ -1,16 +1,16 @@
 services:
-  objectra:
+  stiva:
     build: .
-    container_name: objectra
+    container_name: stiva
     ports:
-      - "${OBJECTRA_S3_PORT:-9000}:${OBJECTRA_S3_PORT:-9000}"   # S3 API
-      - "${OBJECTRA_CONSOLE_PORT:-9001}:${OBJECTRA_CONSOLE_PORT:-9001}"   # Web Console
+      - "${STIVA_S3_PORT:-9000}:${STIVA_S3_PORT:-9000}"   # S3 API
+      - "${STIVA_CONSOLE_PORT:-9001}:${STIVA_CONSOLE_PORT:-9001}"   # Web Console
     volumes:
       - ./data:/data
     environment:
-      - OBJECTRA_ACCESS_KEY=${OBJECTRA_ACCESS_KEY:-objectra}
-      - OBJECTRA_SECRET_KEY=${OBJECTRA_SECRET_KEY:-objectra123}
-      - OBJECTRA_DATA_DIR=${OBJECTRA_DATA_DIR:-/data}
-      - OBJECTRA_REGION=${OBJECTRA_REGION:-us-east-1}
+      - STIVA_ACCESS_KEY=${STIVA_ACCESS_KEY:-stiva}
+      - STIVA_SECRET_KEY=${STIVA_SECRET_KEY:-stiva123}
+      - STIVA_DATA_DIR=${STIVA_DATA_DIR:-/data}
+      - STIVA_REGION=${STIVA_REGION:-us-east-1}
     restart: unless-stopped
 

@@ -1,6 +1,6 @@
-# Contributing to Objectra 🖼️
+# Contributing to Stiva 🖼️
 
-First off, thank you for taking the time to contribute! Contributions from the community are what make open-source projects like Objectra better. 
+First off, thank you for taking the time to contribute! Contributions from the community are what make open-source projects like Stiva better. 
 
 Whether you want to fix a bug, suggest an enhancement, improve documentation, or implement a new S3 API feature, this guide will help you get started.
 
@@ -10,7 +10,7 @@ Whether you want to fix a bug, suggest an enhancement, improve documentation, or
 
 ### Reporting Bugs
 
-If you find a bug in Objectra, please open a GitHub Issue with the following details:
+If you find a bug in Stiva, please open a GitHub Issue with the following details:
 1. **Clear title** and description of the issue.
 2. **Steps to reproduce** the bug.
 3. **Expected vs. actual behavior**.
@@ -19,10 +19,10 @@ If you find a bug in Objectra, please open a GitHub Issue with the following det
 
 ### Suggesting Enhancements
 
-We are always looking for ways to make Objectra better! If you have a feature request or enhancement idea:
+We are always looking for ways to make Stiva better! If you have a feature request or enhancement idea:
 1. Search the open issues to see if the feature has already been suggested.
 2. Open a new issue detailing your proposal, explaining the use case and how it benefits the project.
-3. Keep in mind Objectra's goal of being a lightweight, high-performance, and self-hosted S3-compatible storage engine.
+3. Keep in mind Stiva's goal of being a lightweight, high-performance, and self-hosted S3-compatible storage engine.
 
 ---
 
@@ -40,8 +40,8 @@ We are always looking for ways to make Objectra better! If you have a feature re
 1. **Fork and Clone the Repository**
    Fork the repository on GitHub and clone it to your local machine:
    ```bash
-   git clone https://github.com/<your-username>/objectra.git
-   cd objectra
+   git clone https://github.com/<your-username>/stiva.git
+   cd stiva
    ```
 
 2. **Configure Environment Variables**
@@ -49,28 +49,28 @@ We are always looking for ways to make Objectra better! If you have a feature re
    ```bash
    cp .env.example .env
    ```
-   Modify the `.env` variables if you need to run ports on different addresses or change the default storage directory (`OBJECTRA_DATA_DIR`).
+   Modify the `.env` variables if you need to run ports on different addresses or change the default storage directory (`STIVA_DATA_DIR`).
 
 3. **Build the Server**
    To verify that everything compiles correctly, build the binary:
    ```bash
-   go build -o objectra ./cmd/objectra
+   go build -o stiva ./cmd/stiva
    ```
 
 4. **Run the Server**
-   Load your environment variables and start Objectra:
+   Load your environment variables and start Stiva:
    ```bash
-   export $(grep -v '^#' .env | xargs) && ./objectra
+   export $(grep -v '^#' .env | xargs) && ./stiva
    ```
    *Alternatively, run and compile in one step:*
    ```bash
-   export $(grep -v '^#' .env | xargs) && go run ./cmd/objectra
+   export $(grep -v '^#' .env | xargs) && go run ./cmd/stiva
    ```
    The S3 API will be available at `http://localhost:9000` and the web console at `http://localhost:9001`.
 
 ### Running Tests
 
-Objectra has unit and integration tests across the codebase. Make sure all tests pass before submitting a pull request:
+Stiva has unit and integration tests across the codebase. Make sure all tests pass before submitting a pull request:
 ```bash
 # Run all tests in the workspace
 go test -v ./...
@@ -180,7 +180,7 @@ Common types include:
    ```bash
    git push origin feature/your-feature-name
    ```
-4. Open a Pull Request against the `main` branch of the `salvatorecorvaglia/objectra` repository.
+4. Open a Pull Request against the `main` branch of the `salvatorecorvaglia/stiva` repository.
 5. Fill out the pull request template completely, detailing:
    - What problem is solved by the PR.
    - The approach taken.

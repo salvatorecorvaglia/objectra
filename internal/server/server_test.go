@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/salvatorecorvaglia/objectra/internal/config"
+	"github.com/salvatorecorvaglia/stiva/internal/config"
 )
 
 func TestServerStartSuccessAndShutdown(t *testing.T) {

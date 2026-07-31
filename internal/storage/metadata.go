@@ -107,7 +107,7 @@ func NewMetadataStore(dataDir string) (*MetadataStore, error) {
 		return nil, fmt.Errorf("failed to create metadata directory: %w", err)
 	}
 
-	globalPath := filepath.Join(dataDir, "objectra.db")
+	globalPath := filepath.Join(dataDir, "stiva.db")
 	globalDB, err := bolt.Open(globalPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open central metadata db: %w", err)

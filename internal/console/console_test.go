@@ -9,8 +9,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/salvatorecorvaglia/objectra/internal/auth"
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/auth"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 func TestConsoleEndpoints(t *testing.T) {

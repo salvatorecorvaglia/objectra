@@ -1,4 +1,4 @@
-// Package storage defines the storage engine interface and types for Objectra.
+// Package storage defines the storage engine interface and types for Stiva.
 package storage
 
 import (

@@ -1,5 +1,5 @@
 # ================================================================
-# Objectra — Release
+# Stiva — Release
 # ================================================================
 # Triggered when a version tag (v*.*.*) is pushed.
 # Jobs: test → release (GoReleaser)

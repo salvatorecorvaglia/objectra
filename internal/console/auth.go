@@ -1,4 +1,4 @@
-// Package console implements the built-in web management console for Objectra.
+// Package console implements the built-in web management console for Stiva.
 package console
 
 import (

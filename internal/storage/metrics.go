@@ -71,32 +71,32 @@ func (m *MetricsTracker) FormatPrometheus(dataDir string) string {
 	down := atomic.LoadUint64(&m.BytesDownloaded)
 	activeMP := atomic.LoadInt64(&m.ActiveMultiparts)
 
-	return fmt.Sprintf(`# HELP objectra_requests_total Total number of S3 requests processed.
-# TYPE objectra_requests_total counter
-objectra_requests_total %d
+	return fmt.Sprintf(`# HELP stiva_requests_total Total number of S3 requests processed.
+# TYPE stiva_requests_total counter
+stiva_requests_total %d
 
-# HELP objectra_request_errors_total Total number of S3 request errors.
-# TYPE objectra_request_errors_total counter
-objectra_request_errors_total %d
+# HELP stiva_request_errors_total Total number of S3 request errors.
+# TYPE stiva_request_errors_total counter
+stiva_request_errors_total %d
 
-# HELP objectra_bytes_uploaded_total Total bytes uploaded to Objectra.
-# TYPE objectra_bytes_uploaded_total counter
-objectra_bytes_uploaded_total %d
+# HELP stiva_bytes_uploaded_total Total bytes uploaded to Stiva.
+# TYPE stiva_bytes_uploaded_total counter
+stiva_bytes_uploaded_total %d
 
-# HELP objectra_bytes_downloaded_total Total bytes downloaded from Objectra.
-# TYPE objectra_bytes_downloaded_total counter
-objectra_bytes_downloaded_total %d
+# HELP stiva_bytes_downloaded_total Total bytes downloaded from Stiva.
+# TYPE stiva_bytes_downloaded_total counter
+stiva_bytes_downloaded_total %d
 
-# HELP objectra_active_multipart_uploads Number of active multipart uploads.
-# TYPE objectra_active_multipart_uploads gauge
-objectra_active_multipart_uploads %d
+# HELP stiva_active_multipart_uploads Number of active multipart uploads.
+# TYPE stiva_active_multipart_uploads gauge
+stiva_active_multipart_uploads %d
 
-# HELP objectra_disk_total_bytes Total disk space of the storage directory in bytes.
-# TYPE objectra_disk_total_bytes gauge
-objectra_disk_total_bytes %d
+# HELP stiva_disk_total_bytes Total disk space of the storage directory in bytes.
+# TYPE stiva_disk_total_bytes gauge
+stiva_disk_total_bytes %d
 
-# HELP objectra_disk_free_bytes Free disk space of the storage directory in bytes.
-# TYPE objectra_disk_free_bytes gauge
-objectra_disk_free_bytes %d
+# HELP stiva_disk_free_bytes Free disk space of the storage directory in bytes.
+# TYPE stiva_disk_free_bytes gauge
+stiva_disk_free_bytes %d
 `, reqs, errs, up, down, activeMP, diskTotalVal, diskFreeVal)
 }

@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/salvatorecorvaglia/objectra/internal/auth"
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/auth"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 func hmacSHA256(key, data []byte) []byte {
@@ -96,8 +96,8 @@ func TestResolveBucketAndKey(t *testing.T) {
 		},
 		{
 			name:           "Path style (with domain config)",
-			domain:         "objectra.local",
-			host:           "objectra.local:9000",
+			domain:         "stiva.local",
+			host:           "stiva.local:9000",
 			path:           "/mybucket/mykey/file.txt",
 			expectedBucket: "mybucket",
 			expectedKey:    "mykey/file.txt",
@@ -112,23 +112,23 @@ func TestResolveBucketAndKey(t *testing.T) {
 		},
 		{
 			name:           "Virtual Host style (custom domain)",
-			domain:         "objectra.local",
-			host:           "mybucket.objectra.local",
+			domain:         "stiva.local",
+			host:           "mybucket.stiva.local",
 			path:           "/mykey/file.txt",
 			expectedBucket: "mybucket",
 			expectedKey:    "mykey/file.txt",
 		},
 		{
 			name:           "Virtual Host style root path",
-			domain:         "objectra.local",
-			host:           "mybucket.objectra.local",
+			domain:         "stiva.local",
+			host:           "mybucket.stiva.local",
 			path:           "/",
 			expectedBucket: "mybucket",
 			expectedKey:    "",
 		},
 		{
 			name:           "Fallback on domain mismatch",
-			domain:         "objectra.local",
+			domain:         "stiva.local",
 			host:           "mybucket.different.com:9000",
 			path:           "/anotherbucket/key.txt",
 			expectedBucket: "anotherbucket",

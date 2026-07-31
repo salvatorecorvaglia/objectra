@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 // handleListObjectsV2 handles GET /<bucket>?list-type=2 (ListObjectsV2).

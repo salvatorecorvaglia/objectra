@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 func TestMatchOrigin(t *testing.T) {

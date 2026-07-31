@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 // handleCreateMultipartUpload handles POST /<bucket>/<key>?uploads (CreateMultipartUpload).

@@ -25,7 +25,7 @@ import (
 // setupTestEngine creates a temporary FilesystemEngine for testing.
 func setupTestEngine(t *testing.T) *FilesystemEngine {
 	t.Helper()
-	t.Setenv("OBJECTRA_DISABLE_MIN_PART_SIZE", "true")
+	t.Setenv("STIVA_DISABLE_MIN_PART_SIZE", "true")
 	tmpDir := t.TempDir()
 	engine, err := NewFilesystemEngine(tmpDir, nil, "")
 	if err != nil {
@@ -159,7 +159,7 @@ func TestPutAndGetObject(t *testing.T) {
 	engine := setupTestEngine(t)
 	engine.CreateBucket("my-bucket")
 
-	content := []byte("Hello, Objectra!")
+	content := []byte("Hello, Stiva!")
 	info, err := engine.PutObject(context.Background(), "my-bucket", "greeting.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
 	if err != nil {
 		t.Fatalf("PutObject failed: %v", err)
@@ -1100,13 +1100,13 @@ func TestPrometheusMetrics(t *testing.T) {
 
 	// Verify formatting
 	res := GlobalMetrics.FormatPrometheus(engine.DataDir())
-	if !strings.Contains(res, "objectra_bytes_uploaded_total 13") {
+	if !strings.Contains(res, "stiva_bytes_uploaded_total 13") {
 		t.Errorf("expected prometheus payload to contain uploaded bytes 13, got:\n%s", res)
 	}
-	if !strings.Contains(res, "objectra_bytes_downloaded_total 13") {
+	if !strings.Contains(res, "stiva_bytes_downloaded_total 13") {
 		t.Errorf("expected prometheus payload to contain downloaded bytes 13, got:\n%s", res)
 	}
-	if !strings.Contains(res, "objectra_disk_total_bytes") {
+	if !strings.Contains(res, "stiva_disk_total_bytes") {
 		t.Errorf("expected prometheus payload to contain disk metrics, got:\n%s", res)
 	}
 }
@@ -1135,20 +1135,20 @@ func TestOutboundMirroring(t *testing.T) {
 	defer server.Close()
 
 	// Configure environment variables for replication
-	os.Setenv("OBJECTRA_SYNC_ENDPOINT", server.URL)
-	os.Setenv("OBJECTRA_SYNC_BUCKET", "backup-bucket")
-	os.Setenv("OBJECTRA_SYNC_ACCESS_KEY", "accesskey")
-	os.Setenv("OBJECTRA_SYNC_SECRET_KEY", "secretkey")
-	os.Setenv("OBJECTRA_SYNC_REGION", "us-east-1")
+	os.Setenv("STIVA_SYNC_ENDPOINT", server.URL)
+	os.Setenv("STIVA_SYNC_BUCKET", "backup-bucket")
+	os.Setenv("STIVA_SYNC_ACCESS_KEY", "accesskey")
+	os.Setenv("STIVA_SYNC_SECRET_KEY", "secretkey")
+	os.Setenv("STIVA_SYNC_REGION", "us-east-1")
 	defer func() {
-		os.Unsetenv("OBJECTRA_SYNC_ENDPOINT")
-		os.Unsetenv("OBJECTRA_SYNC_BUCKET")
-		os.Unsetenv("OBJECTRA_SYNC_ACCESS_KEY")
-		os.Unsetenv("OBJECTRA_SYNC_SECRET_KEY")
-		os.Unsetenv("OBJECTRA_SYNC_REGION")
+		os.Unsetenv("STIVA_SYNC_ENDPOINT")
+		os.Unsetenv("STIVA_SYNC_BUCKET")
+		os.Unsetenv("STIVA_SYNC_ACCESS_KEY")
+		os.Unsetenv("STIVA_SYNC_SECRET_KEY")
+		os.Unsetenv("STIVA_SYNC_REGION")
 	}()
 
-	t.Setenv("OBJECTRA_DISABLE_MIN_PART_SIZE", "true")
+	t.Setenv("STIVA_DISABLE_MIN_PART_SIZE", "true")
 	tmpDir := t.TempDir()
 	syncCfg := LoadSyncConfig()
 	engine, err := NewFilesystemEngine(tmpDir, syncCfg, "")
@@ -1433,7 +1433,7 @@ func TestFlatNamespacePathConflicts(t *testing.T) {
 func TestMultipartConstraintsValidation(t *testing.T) {
 	engine := setupTestEngine(t)
 	// Clear the disable flag to force enforcement
-	t.Setenv("OBJECTRA_DISABLE_MIN_PART_SIZE", "false")
+	t.Setenv("STIVA_DISABLE_MIN_PART_SIZE", "false")
 
 	bucket := "multipart-validation-bucket"
 	engine.CreateBucket(bucket)
@@ -1820,9 +1820,9 @@ func TestGracefulShutdown(t *testing.T) {
 	engine.CreateBucket("shutdown-bucket")
 
 	// Set webhook URL and sync endpoint env variables to force initialization of dispatchers
-	t.Setenv("OBJECTRA_WEBHOOK_URL", "http://localhost:12345/webhook")
-	t.Setenv("OBJECTRA_SYNC_ENDPOINT", "http://localhost:12345")
-	t.Setenv("OBJECTRA_SYNC_BUCKET", "backup-bucket")
+	t.Setenv("STIVA_WEBHOOK_URL", "http://localhost:12345/webhook")
+	t.Setenv("STIVA_SYNC_ENDPOINT", "http://localhost:12345")
+	t.Setenv("STIVA_SYNC_BUCKET", "backup-bucket")
 
 	ctx := context.Background()
 	info, err := engine.PutObject(ctx, "shutdown-bucket", "test.txt", strings.NewReader("content"), 7, "text/plain")

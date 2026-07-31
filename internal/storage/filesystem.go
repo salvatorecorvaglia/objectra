@@ -342,7 +342,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	}
 
 	// Write to a temp file first, then rename for atomicity
-	tmpFile, err := os.CreateTemp(filepath.Dir(objPath), ".objectra-tmp-*")
+	tmpFile, err := os.CreateTemp(filepath.Dir(objPath), ".stiva-tmp-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -1036,7 +1036,7 @@ func cleanupOrphanedTempFiles(dataDir string) {
 			}
 			if !d.IsDir() {
 				name := d.Name()
-				if strings.HasPrefix(name, ".objectra-tmp-") || strings.HasPrefix(name, ".part-tmp-") || strings.HasPrefix(name, ".objectra-multipart-") || strings.HasPrefix(name, "objectra-body-") {
+				if strings.HasPrefix(name, ".stiva-tmp-") || strings.HasPrefix(name, ".part-tmp-") || strings.HasPrefix(name, ".stiva-multipart-") || strings.HasPrefix(name, "stiva-body-") {
 					_ = os.Remove(path)
 				}
 			}

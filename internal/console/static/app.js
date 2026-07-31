@@ -1,12 +1,12 @@
 // ================================================================
-// Objectra Console — Application Logic
+// Stiva Console — Application Logic
 // ================================================================
 
 (function () {
     'use strict';
 
     // ---- State ----
-    let token = localStorage.getItem('objectra_token') || '';
+    let token = localStorage.getItem('stiva_token') || '';
     let currentBucket = '';
     let currentPrefix = '';
     let searchPrefix = '';
@@ -134,7 +134,7 @@
 
             if (resp.ok) {
                 token = data.token;
-                localStorage.setItem('objectra_token', token);
+                localStorage.setItem('stiva_token', token);
                 showDashboard();
             } else {
                 loginError.textContent = data.error || 'Invalid credentials';
@@ -176,7 +176,7 @@
 
     function logout() {
         token = '';
-        localStorage.removeItem('objectra_token');
+        localStorage.removeItem('stiva_token');
         dashboardScreen.classList.remove('active');
         loginScreen.classList.add('active');
         loginForm.reset();
@@ -969,7 +969,7 @@
         // Create a "folder" by uploading a zero-byte object with a trailing slash
         const formData = new FormData();
         formData.append('file', new Blob(['']), '.keep');
-        formData.append('key', key + '.objectra_folder');
+        formData.append('key', key + '.stiva_folder');
 
         try {
             const resp = await api('POST', `/api/buckets/${currentBucket}/objects/upload`, formData, true);

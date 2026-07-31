@@ -1,4 +1,4 @@
-module github.com/salvatorecorvaglia/objectra
+module github.com/salvatorecorvaglia/stiva
 
 go 1.25.0
 

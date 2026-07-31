@@ -1,6 +1,6 @@
 # Contributors 👥
 
-A huge thank you to everyone who has contributed to **Objectra**!
+A huge thank you to everyone who has contributed to **Stiva**!
 
 ## ✨ Lead Maintainer
 

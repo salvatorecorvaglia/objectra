@@ -1,6 +1,6 @@
-// Objectra — Self-hosted S3-compatible Object Storage
+// Stiva — Self-hosted S3-compatible Object Storage
 //
-// Objectra is a high-performance, S3-compatible object storage server
+// Stiva is a high-performance, S3-compatible object storage server
 // with a built-in web console for bucket and object management.
 package main
 
@@ -14,8 +14,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/salvatorecorvaglia/objectra/internal/config"
-	"github.com/salvatorecorvaglia/objectra/internal/server"
+	"github.com/salvatorecorvaglia/stiva/internal/config"
+	"github.com/salvatorecorvaglia/stiva/internal/server"
 )
 
 var (
@@ -28,7 +28,7 @@ func main() {
 	// Parse version flags
 	for _, arg := range os.Args[1:] {
 		if arg == "-v" || arg == "--version" || arg == "-version" || arg == "version" {
-			fmt.Printf("Objectra version %s (commit %s, built at %s)\n", version, commit, date)
+			fmt.Printf("Stiva version %s (commit %s, built at %s)\n", version, commit, date)
 			os.Exit(0)
 		}
 	}
@@ -57,15 +57,15 @@ func main() {
 	}
 	slog.SetDefault(slog.New(handler))
 
-	if cfg.AccessKey == "objectra" && cfg.SecretKey == "objectra123" {
-		slog.Warn("WARNING: Running Objectra with default credentials! Please set OBJECTRA_ACCESS_KEY and OBJECTRA_SECRET_KEY in production.")
+	if cfg.AccessKey == "stiva" && cfg.SecretKey == "stiva123" {
+		slog.Warn("WARNING: Running Stiva with default credentials! Please set STIVA_ACCESS_KEY and STIVA_SECRET_KEY in production.")
 	}
 
 	printBanner(cfg)
 
 	srv, err := server.New(cfg)
 	if err != nil {
-		slog.Error("Failed to start Objectra", "error", err)
+		slog.Error("Failed to start Stiva", "error", err)
 		os.Exit(1)
 	}
 
@@ -89,17 +89,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("[Server] Objectra stopped")
+	slog.Info("[Server] Stiva stopped")
 }
 
 func printBanner(cfg *config.Config) {
 	banner := fmt.Sprintf(`
-   ____  __     _           __            
-  / __ \/ /_   (_)__  _____/ /__________ _
- / / / / __ \ / / _ \/ ___/ __/ ___/ __  /
-/ /_/ / /_/ // /  __/ /__/ /_/ /  / /_/ / 
-\____/_.___// /\___/\___/\__/_/   \__,_/  
-         /___/                             
+  ____  _   _             
+ / ___|| |_(_)_   ____ _  
+ \___ \| __| \ \ / / _` + "`" + `| 
+  ___) | |_| |\ V / (_| | 
+ |____/ \__|_| \_/ \__,_| 
 
   S3-Compatible Object Storage Server (%s)
 `, version)

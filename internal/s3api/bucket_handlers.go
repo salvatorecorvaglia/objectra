@@ -4,7 +4,7 @@ import (
 	"encoding/xml"
 	"net/http"
 
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 // handleListBuckets handles GET / (ListBuckets).
@@ -26,8 +26,8 @@ func (rt *Router) handleListBuckets(w http.ResponseWriter, _ *http.Request) {
 	result := ListAllMyBucketsResult{
 		Xmlns: s3XmlNamespace,
 		Owner: Owner{
-			ID:          "objectra",
-			DisplayName: "objectra",
+			ID:          "stiva",
+			DisplayName: "stiva",
 		},
 		Buckets: BucketsList{
 			Bucket: bucketList,

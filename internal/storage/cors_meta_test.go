@@ -4,11 +4,11 @@ import (
 	"os"
 	"testing"
 
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 func TestBucketCORSSupport(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "objectra-cors-test-*")
+	tempDir, err := os.MkdirTemp("", "stiva-cors-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}

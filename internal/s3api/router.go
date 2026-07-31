@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/salvatorecorvaglia/objectra/internal/auth"
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/auth"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 type logTask struct {
@@ -104,7 +104,7 @@ func (rt *Router) logAccess(r *http.Request, bucket, key string, statusCode int,
 		return // Skip to avoid infinite loop
 	}
 
-	owner := "objectra"
+	owner := "stiva"
 	timeStr := time.Now().Format("02/Jan/2006:15:04:05 -0700")
 	remoteIP := r.RemoteAddr
 	if ip, _, err := net.SplitHostPort(remoteIP); err == nil {
@@ -136,7 +136,7 @@ func (rt *Router) logAccess(r *http.Request, bucket, key string, statusCode int,
 		}
 	}
 
-	requestID := "objectra"
+	requestID := "stiva"
 	var operation string
 	if key != "" {
 		operation = "REST." + r.Method + ".OBJECT"
@@ -179,8 +179,8 @@ func (rt *Router) logAccess(r *http.Request, bucket, key string, statusCode int,
 
 func (rt *Router) serveHTTPInternal(w http.ResponseWriter, r *http.Request) {
 	// Set common S3 response headers
-	w.Header().Set("Server", "Objectra")
-	w.Header().Set("x-amz-request-id", "objectra")
+	w.Header().Set("Server", "Stiva")
+	w.Header().Set("x-amz-request-id", "stiva")
 
 	bucket, key := rt.resolveBucketAndKey(r)
 

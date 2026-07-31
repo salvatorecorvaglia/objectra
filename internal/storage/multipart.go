@@ -250,7 +250,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		uploadedParts[p.PartNumber] = p
 	}
 
-	disableMinSize := os.Getenv("OBJECTRA_DISABLE_MIN_PART_SIZE") == "true"
+	disableMinSize := os.Getenv("STIVA_DISABLE_MIN_PART_SIZE") == "true"
 
 	for i, part := range parts {
 		uPart, exists := uploadedParts[part.PartNumber]
@@ -303,7 +303,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 	}
 
 	// Use atomic temp-file + rename for crash safety
-	tmpFile, err := os.CreateTemp(filepath.Dir(objPath), ".objectra-multipart-*")
+	tmpFile, err := os.CreateTemp(filepath.Dir(objPath), ".stiva-multipart-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp file: %w", err)
 	}

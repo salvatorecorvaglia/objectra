@@ -1,4 +1,4 @@
-// Package config provides configuration management for Objectra.
+// Package config provides configuration management for Stiva.
 // All settings are read from environment variables with sensible defaults.
 package config
 
@@ -7,7 +7,7 @@ import (
 	"strconv"
 )
 
-// Config holds all runtime configuration for the Objectra server.
+// Config holds all runtime configuration for the Stiva server.
 type Config struct {
 	// AccessKey is the S3 access key used for authentication.
 	AccessKey string
@@ -58,28 +58,28 @@ type Config struct {
 // Load reads configuration from environment variables, falling back to defaults.
 func Load() *Config {
 	return &Config{
-		AccessKey:      envOrDefault("OBJECTRA_ACCESS_KEY", "objectra"),
-		SecretKey:      envOrDefault("OBJECTRA_SECRET_KEY", "objectra123"),
-		DataDir:        envOrDefault("OBJECTRA_DATA_DIR", "/data"),
-		S3Port:         envIntOrDefault("OBJECTRA_S3_PORT", 9000),
-		ConsolePort:    envIntOrDefault("OBJECTRA_CONSOLE_PORT", 9001),
-		Region:         envOrDefault("OBJECTRA_REGION", "us-east-1"),
-		Domain:         envOrDefault("OBJECTRA_DOMAIN", ""),
-		TLSEnabled:     os.Getenv("OBJECTRA_TLS_ENABLED") == "true",
-		TLSCert:        envOrDefault("OBJECTRA_TLS_CERT", ""),
-		TLSKey:         envOrDefault("OBJECTRA_TLS_KEY", ""),
-		LoginRateLimit: envIntOrDefault("OBJECTRA_LOGIN_RATE_LIMIT", 5),
-		APIRateLimit:   envIntOrDefault("OBJECTRA_API_RATE_LIMIT", 60),
-		LogLevel:       envOrDefault("OBJECTRA_LOG_LEVEL", "info"),
-		LogFormat:      envOrDefault("OBJECTRA_LOG_FORMAT", "text"),
-		SyncEndpoint:   envOrDefault("OBJECTRA_SYNC_ENDPOINT", ""),
-		SyncBucket:     envOrDefault("OBJECTRA_SYNC_BUCKET", ""),
-		SyncAccessKey:  envOrDefault("OBJECTRA_SYNC_ACCESS_KEY", ""),
-		SyncSecretKey:  envOrDefault("OBJECTRA_SYNC_SECRET_KEY", ""),
-		SyncRegion:     envOrDefault("OBJECTRA_SYNC_REGION", "us-east-1"),
-		WebhookURL:     envOrDefault("OBJECTRA_WEBHOOK_URL", ""),
-		S3Endpoint:     envOrDefault("OBJECTRA_S3_ENDPOINT", ""),
-		TrustProxy:     os.Getenv("OBJECTRA_TRUST_PROXY") == "true",
+		AccessKey:      envOrDefault("STIVA_ACCESS_KEY", "stiva"),
+		SecretKey:      envOrDefault("STIVA_SECRET_KEY", "stiva123"),
+		DataDir:        envOrDefault("STIVA_DATA_DIR", "/data"),
+		S3Port:         envIntOrDefault("STIVA_S3_PORT", 9000),
+		ConsolePort:    envIntOrDefault("STIVA_CONSOLE_PORT", 9001),
+		Region:         envOrDefault("STIVA_REGION", "us-east-1"),
+		Domain:         envOrDefault("STIVA_DOMAIN", ""),
+		TLSEnabled:     os.Getenv("STIVA_TLS_ENABLED") == "true",
+		TLSCert:        envOrDefault("STIVA_TLS_CERT", ""),
+		TLSKey:         envOrDefault("STIVA_TLS_KEY", ""),
+		LoginRateLimit: envIntOrDefault("STIVA_LOGIN_RATE_LIMIT", 5),
+		APIRateLimit:   envIntOrDefault("STIVA_API_RATE_LIMIT", 60),
+		LogLevel:       envOrDefault("STIVA_LOG_LEVEL", "info"),
+		LogFormat:      envOrDefault("STIVA_LOG_FORMAT", "text"),
+		SyncEndpoint:   envOrDefault("STIVA_SYNC_ENDPOINT", ""),
+		SyncBucket:     envOrDefault("STIVA_SYNC_BUCKET", ""),
+		SyncAccessKey:  envOrDefault("STIVA_SYNC_ACCESS_KEY", ""),
+		SyncSecretKey:  envOrDefault("STIVA_SYNC_SECRET_KEY", ""),
+		SyncRegion:     envOrDefault("STIVA_SYNC_REGION", "us-east-1"),
+		WebhookURL:     envOrDefault("STIVA_WEBHOOK_URL", ""),
+		S3Endpoint:     envOrDefault("STIVA_S3_ENDPOINT", ""),
+		TrustProxy:     os.Getenv("STIVA_TRUST_PROXY") == "true",
 	}
 }
 

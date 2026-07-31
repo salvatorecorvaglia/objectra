@@ -29,7 +29,7 @@ func GenerateSelfSignedCert() (tls.Certificate, error) {
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
-			Organization: []string{"Objectra Development"},
+			Organization: []string{"Stiva Development"},
 			CommonName:   "localhost",
 		},
 		NotBefore:             time.Now().Add(-1 * time.Hour),

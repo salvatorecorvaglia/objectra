@@ -123,7 +123,7 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "Objectra-Webhook-Dispatcher")
+		req.Header.Set("User-Agent", "Stiva-Webhook-Dispatcher")
 
 		resp, err := webhookClient.Do(req)
 		if err == nil {

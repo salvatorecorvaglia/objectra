@@ -1,5 +1,5 @@
 # ================================================================
-# Objectra — Multi-stage Docker Build
+# Stiva — Multi-stage Docker Build
 # ================================================================
 # Stage 1: Build the Go binary
 # Stage 2: Package into a minimal runtime image
@@ -22,8 +22,8 @@ COPY . .
 # Build a statically-linked binary
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-w -s" \
-    -o objectra \
-    ./cmd/objectra
+    -o stiva \
+    ./cmd/stiva
 
 # --- Runtime Stage ---
 FROM alpine:3.20
@@ -31,21 +31,21 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
 
 # Create non-root user
-RUN addgroup -S objectra && adduser -S objectra -G objectra
+RUN addgroup -S stiva && adduser -S stiva -G stiva
 
 # Create data directory
-RUN mkdir -p /data && chown objectra:objectra /data
+RUN mkdir -p /data && chown stiva:stiva /data
 
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /build/objectra .
+COPY --from=builder /build/stiva .
 
 # Set default environment variables
-ENV OBJECTRA_DATA_DIR=/data \
-    OBJECTRA_S3_PORT=9000 \
-    OBJECTRA_CONSOLE_PORT=9001 \
-    OBJECTRA_REGION=us-east-1
+ENV STIVA_DATA_DIR=/data \
+    STIVA_S3_PORT=9000 \
+    STIVA_CONSOLE_PORT=9001 \
+    STIVA_REGION=us-east-1
 
 # Expose ports
 EXPOSE 9000 9001
@@ -54,6 +54,6 @@ EXPOSE 9000 9001
 VOLUME ["/data"]
 
 # Run as non-root user
-USER objectra
+USER stiva
 
-ENTRYPOINT ["./objectra"]
+ENTRYPOINT ["./stiva"]

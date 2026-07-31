@@ -1,21 +1,21 @@
 # ================================================================
-# GoReleaser configuration for Objectra
+# GoReleaser configuration for Stiva
 # ================================================================
 # Docs: https://goreleaser.com/customization/
 # ================================================================
 
 version: 2
 
-project_name: objectra
+project_name: stiva
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: objectra
-    main: ./cmd/objectra
-    binary: objectra
+  - id: stiva
+    main: ./cmd/stiva
+    binary: stiva
     env:
       - CGO_ENABLED=0
     ldflags:
@@ -80,7 +80,7 @@ changelog:
 release:
   github:
     owner: salvatorecorvaglia
-    name: objectra
+    name: stiva
   draft: false
   prerelease: auto
-  name_template: "Objectra v{{ .Version }}"
+  name_template: "Stiva v{{ .Version }}"

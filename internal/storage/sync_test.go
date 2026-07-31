@@ -37,11 +37,11 @@ func TestMirrorSync_Integration(t *testing.T) {
 	defer server.Close()
 
 	// Set env config for sync replication
-	t.Setenv("OBJECTRA_SYNC_ENDPOINT", server.URL)
-	t.Setenv("OBJECTRA_SYNC_BUCKET", "backup-bucket")
-	t.Setenv("OBJECTRA_SYNC_ACCESS_KEY", "backupaccess")
-	t.Setenv("OBJECTRA_SYNC_SECRET_KEY", "backupsecret")
-	t.Setenv("OBJECTRA_SYNC_REGION", "us-west-2")
+	t.Setenv("STIVA_SYNC_ENDPOINT", server.URL)
+	t.Setenv("STIVA_SYNC_BUCKET", "backup-bucket")
+	t.Setenv("STIVA_SYNC_ACCESS_KEY", "backupaccess")
+	t.Setenv("STIVA_SYNC_SECRET_KEY", "backupsecret")
+	t.Setenv("STIVA_SYNC_REGION", "us-west-2")
 
 	tempDir := t.TempDir()
 	engine, err := NewFilesystemEngine(tempDir, LoadSyncConfig(), "")

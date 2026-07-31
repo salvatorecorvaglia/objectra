@@ -433,7 +433,7 @@ func HashPayload(r *http.Request) (string, error) {
 	if tempDir == "" {
 		tempDir = os.TempDir()
 	}
-	tmpFile, err := os.CreateTemp(tempDir, "objectra-body-*")
+	tmpFile, err := os.CreateTemp(tempDir, "stiva-body-*")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file for request body: %w", err)
 	}

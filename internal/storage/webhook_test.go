@@ -40,7 +40,7 @@ func TestWebhook_Integration(t *testing.T) {
 	defer server.Close()
 
 	// Set env
-	t.Setenv("OBJECTRA_WEBHOOK_URL", server.URL)
+	t.Setenv("STIVA_WEBHOOK_URL", server.URL)
 
 	tempDir := t.TempDir()
 	engine, err := NewFilesystemEngine(tempDir, nil, server.URL)

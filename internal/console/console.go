@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/salvatorecorvaglia/objectra/internal/auth"
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/auth"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 const (
@@ -100,7 +100,7 @@ type rateLimiter struct {
 		return false
 	}
 
-var trustProxy = os.Getenv("OBJECTRA_TRUST_PROXY") == "true"
+var trustProxy = os.Getenv("STIVA_TRUST_PROXY") == "true"
 
 func getClientIP(r *http.Request) string {
 	if trustProxy {
@@ -778,7 +778,7 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 }
 
 func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	metricsToken := os.Getenv("OBJECTRA_METRICS_TOKEN")
+	metricsToken := os.Getenv("STIVA_METRICS_TOKEN")
 	authorized := false
 
 	authHeader := r.Header.Get("Authorization")

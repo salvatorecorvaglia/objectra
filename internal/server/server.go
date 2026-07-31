@@ -16,11 +16,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/salvatorecorvaglia/objectra/internal/auth"
-	"github.com/salvatorecorvaglia/objectra/internal/config"
-	"github.com/salvatorecorvaglia/objectra/internal/console"
-	"github.com/salvatorecorvaglia/objectra/internal/s3api"
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/auth"
+	"github.com/salvatorecorvaglia/stiva/internal/config"
+	"github.com/salvatorecorvaglia/stiva/internal/console"
+	"github.com/salvatorecorvaglia/stiva/internal/s3api"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 // Server holds both the S3 API server and the web console server, plus background workers.
@@ -57,12 +57,12 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// Setup persistent JWT secret for Console session tracking
-	jwtSecretEnv := os.Getenv("OBJECTRA_JWT_SECRET")
+	jwtSecretEnv := os.Getenv("STIVA_JWT_SECRET")
 	var jwtSecret []byte
 	if jwtSecretEnv != "" {
 		jwtSecret = []byte(jwtSecretEnv)
 	} else {
-		slog.Warn("OBJECTRA_JWT_SECRET environment variable is not set. A random secret will be generated. For persistent console sessions across restarts, please set OBJECTRA_JWT_SECRET.")
+		slog.Warn("STIVA_JWT_SECRET environment variable is not set. A random secret will be generated. For persistent console sessions across restarts, please set STIVA_JWT_SECRET.")
 		storedSecret, err := engine.GetSystemValue("jwt_secret")
 		if err == nil && storedSecret != "" {
 			jwtSecret, _ = hex.DecodeString(storedSecret)
@@ -107,7 +107,7 @@ func New(cfg *config.Config) (*Server, error) {
 				return nil, fmt.Errorf("failed to load TLS certificate and key: %w", err)
 			}
 		} else {
-			slog.Warn("[Server] OBJECTRA_TLS_ENABLED=true but no cert/key files provided. Generating self-signed certificate in memory...")
+			slog.Warn("[Server] STIVA_TLS_ENABLED=true but no cert/key files provided. Generating self-signed certificate in memory...")
 			cert, err = GenerateSelfSignedCert()
 			if err != nil {
 				return nil, fmt.Errorf("failed to generate self-signed certificate: %w", err)

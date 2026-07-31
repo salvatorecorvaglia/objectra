@@ -15,7 +15,7 @@ func TestMetadataMigration(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// 1. Manually build a legacy database with all metadata in one file
-	legacyPath := filepath.Join(tmpDir, "objectra.db")
+	legacyPath := filepath.Join(tmpDir, "stiva.db")
 	db, err := bolt.Open(legacyPath, 0600, nil)
 	if err != nil {
 		t.Fatalf("failed to open legacy db: %v", err)

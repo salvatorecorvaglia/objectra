@@ -1,5 +1,5 @@
 # ================================================================
-# Objectra — Continuous Integration
+# Stiva — Continuous Integration
 # ================================================================
 # Runs on every push to main and on pull requests targeting main.
 # Jobs: lint, test, build, docker
@@ -89,7 +89,7 @@ jobs:
           cache-dependency-path: go.sum
 
       - name: Build binary
-        run: CGO_ENABLED=0 go build -ldflags="-w -s" -o objectra ./cmd/objectra
+        run: CGO_ENABLED=0 go build -ldflags="-w -s" -o stiva ./cmd/stiva
 
   # ── Docker ────────────────────────────────────────────────────
   docker:
@@ -107,6 +107,6 @@ jobs:
         with:
           context: .
           push: false
-          tags: objectra:ci
+          tags: stiva:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/salvatorecorvaglia/objectra/internal/storage"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 const (

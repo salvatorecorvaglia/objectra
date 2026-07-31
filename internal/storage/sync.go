@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/salvatorecorvaglia/objectra/internal/auth"
+	"github.com/salvatorecorvaglia/stiva/internal/auth"
 )
 
 // SyncConfig holds S3 replication target credentials and endpoint.
@@ -26,14 +26,14 @@ type SyncConfig struct {
 
 // LoadSyncConfig loads sync configuration from environment variables.
 func LoadSyncConfig() *SyncConfig {
-	endpoint := os.Getenv("OBJECTRA_SYNC_ENDPOINT")
+	endpoint := os.Getenv("STIVA_SYNC_ENDPOINT")
 	if endpoint == "" {
 		return nil
 	}
-	bucket := os.Getenv("OBJECTRA_SYNC_BUCKET")
-	accessKey := os.Getenv("OBJECTRA_SYNC_ACCESS_KEY")
-	secretKey := os.Getenv("OBJECTRA_SYNC_SECRET_KEY")
-	region := os.Getenv("OBJECTRA_SYNC_REGION")
+	bucket := os.Getenv("STIVA_SYNC_BUCKET")
+	accessKey := os.Getenv("STIVA_SYNC_ACCESS_KEY")
+	secretKey := os.Getenv("STIVA_SYNC_SECRET_KEY")
+	region := os.Getenv("STIVA_SYNC_REGION")
 	if region == "" {
 		region = "us-east-1"
 	}
