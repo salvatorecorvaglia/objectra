@@ -227,6 +227,9 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 }
 
 func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string, parts []CompletePart) (*ObjectInfo, error) {
+	if strings.Contains(key, "..") || strings.Contains(bucket, "..") || strings.Contains(uploadID, "..") {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
+	}
 	if err := fs.validateBucketName(bucket); err != nil {
 		return nil, err
 	}
@@ -295,12 +298,12 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
 	rel, err := filepath.Rel(bucketDir, objPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") || filepath.IsAbs(rel) {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "..") || strings.Contains(rel, "..") || filepath.IsAbs(rel) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 	objDir := filepath.Dir(objPath)
 	relDir, err := filepath.Rel(bucketDir, objDir)
-	if err != nil || relDir == ".." || strings.HasPrefix(relDir, ".."+string(filepath.Separator)) || strings.HasPrefix(relDir, "../") || strings.HasPrefix(relDir, "..\\") || filepath.IsAbs(relDir) {
+	if err != nil || relDir == ".." || strings.HasPrefix(relDir, "..") || strings.Contains(relDir, "..") || filepath.IsAbs(relDir) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 

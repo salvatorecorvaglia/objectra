@@ -13,23 +13,23 @@ func (fs *FilesystemEngine) bucketPath(name string) string {
 }
 
 func (fs *FilesystemEngine) validatePathSafety(bucket, key, versionID string) error {
-	if !filepath.IsLocal(bucket) {
+	if !filepath.IsLocal(bucket) || strings.Contains(bucket, "..") {
 		return errors.New(errInvalidBucketTraversal)
+	}
+	if strings.Contains(key, "..") {
+		return errors.New(errInvalidKeyTraversal)
 	}
 	normalizedKey := strings.ReplaceAll(key, "\\", "/")
 	trimmedKey := strings.TrimLeft(normalizedKey, "/")
 	if trimmedKey != "" {
-		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
+		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) || strings.Contains(trimmedKey, "..") {
 			return errors.New(errInvalidKeyTraversal)
 		}
 	} else if key != "" {
 		return errors.New(errInvalidKeyTraversal)
 	}
 	if versionID != "" {
-		if !filepath.IsLocal(versionID) {
-			return fmt.Errorf("invalid version ID: path traversal detected")
-		}
-		if strings.ContainsAny(versionID, "/\\") || strings.Contains(versionID, "..") {
+		if !filepath.IsLocal(versionID) || strings.Contains(versionID, "..") || strings.ContainsAny(versionID, "/\\") {
 			return fmt.Errorf("invalid version ID: path traversal detected")
 		}
 	}
@@ -46,7 +46,7 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 	resolved := filepath.Clean(filepath.Join(base, filepath.FromSlash(normalizedKey)))
 	// Ensure the resolved path stays within the bucket directory
 	rel, err := filepath.Rel(base, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") || filepath.IsAbs(rel) {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "..") || strings.Contains(rel, "..") || filepath.IsAbs(rel) {
 		return "", errors.New(errInvalidKeyTraversal)
 	}
 	basePrefix := base + string(filepath.Separator)
@@ -72,7 +72,7 @@ func (fs *FilesystemEngine) objectPathWithVersion(bucket, key, versionID string)
 	// Ensure the resolved path stays within the bucket directory
 	bucketBase := filepath.Clean(fs.bucketPath(bucket))
 	rel, err := filepath.Rel(bucketBase, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") || filepath.IsAbs(rel) {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "..") || strings.Contains(rel, "..") || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("invalid object key or version: path traversal detected")
 	}
 	basePrefix := bucketBase + string(filepath.Separator)
@@ -83,7 +83,7 @@ func (fs *FilesystemEngine) objectPathWithVersion(bucket, key, versionID string)
 }
 
 func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
-	if !filepath.IsLocal(bucket) {
+	if !filepath.IsLocal(bucket) || strings.Contains(bucket, "..") {
 		return
 	}
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
@@ -93,7 +93,7 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 		return
 	}
 	rel, err := filepath.Rel(bucketDir, cleanObjPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") || filepath.IsAbs(rel) {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "..") || strings.Contains(rel, "..") || filepath.IsAbs(rel) {
 		return
 	}
 
@@ -104,7 +104,7 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 			break
 		}
 		checkRel, err := filepath.Rel(bucketDir, cleanDir)
-		if err != nil || checkRel == ".." || strings.HasPrefix(checkRel, ".."+string(filepath.Separator)) || strings.HasPrefix(checkRel, "../") || strings.HasPrefix(checkRel, "..\\") || filepath.IsAbs(checkRel) {
+		if err != nil || checkRel == ".." || strings.HasPrefix(checkRel, "..") || strings.Contains(checkRel, "..") || filepath.IsAbs(checkRel) {
 			break
 		}
 
@@ -120,20 +120,17 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 }
 
 func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string, error) {
-	if !filepath.IsLocal(bucket) {
+	if !filepath.IsLocal(bucket) || strings.Contains(bucket, "..") {
 		return "", errors.New(errInvalidBucketTraversal)
 	}
-	if !filepath.IsLocal(uploadID) {
-		return "", errors.New(errInvalidUploadID)
-	}
-	if strings.ContainsAny(uploadID, "/\\") || strings.Contains(uploadID, "..") {
+	if !filepath.IsLocal(uploadID) || strings.Contains(uploadID, "..") || strings.ContainsAny(uploadID, "/\\") {
 		return "", errors.New(errInvalidUploadID)
 	}
 	base := filepath.Clean(filepath.Join(fs.dataDir, "multipart", bucket))
 	resolved := filepath.Clean(filepath.Join(base, uploadID))
 	// Ensure the resolved path stays within the bucket's multipart directory
 	rel, err := filepath.Rel(base, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") || filepath.IsAbs(rel) {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "..") || strings.Contains(rel, "..") || filepath.IsAbs(rel) {
 		return "", errors.New(errInvalidUploadID)
 	}
 	basePrefix := base + string(filepath.Separator)
@@ -144,18 +141,21 @@ func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string
 }
 
 func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, error) {
-	if !filepath.IsLocal(bucket) {
+	if !filepath.IsLocal(bucket) || strings.Contains(bucket, "..") {
 		return "", errors.New(errInvalidBucketTraversal)
+	}
+	if strings.Contains(key, "..") {
+		return "", errors.New(errInvalidKeyTraversal)
 	}
 	trimmedKey := strings.TrimLeft(key, "/\\")
 	if trimmedKey != "" {
-		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) {
+		if !filepath.IsLocal(filepath.FromSlash(trimmedKey)) || strings.Contains(trimmedKey, "..") {
 			return "", errors.New(errInvalidKeyTraversal)
 		}
 	} else if key != "" {
 		return "", errors.New(errInvalidKeyTraversal)
 	}
-	if !filepath.IsLocal(uploadID) {
+	if !filepath.IsLocal(uploadID) || strings.Contains(uploadID, "..") {
 		return "", errors.New(errInvalidUploadID)
 	}
 	uploadPath, err := fs.multipartUploadPath(bucket, uploadID)
@@ -166,7 +166,7 @@ func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, 
 	resolved := filepath.Clean(filepath.Join(cleanUploadPath, filepath.FromSlash(key)))
 	// Ensure the resolved path stays within the uploadPath directory
 	rel, err := filepath.Rel(cleanUploadPath, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") || filepath.IsAbs(rel) {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "..") || strings.Contains(rel, "..") || filepath.IsAbs(rel) {
 		return "", errors.New(errInvalidKeyTraversal)
 	}
 	uploadPrefix := cleanUploadPath + string(filepath.Separator)
@@ -176,7 +176,6 @@ func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, 
 	return resolved, nil
 }
 
-
 func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) error {
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
 	cleanObjPath := filepath.Clean(objPath)
@@ -185,7 +184,7 @@ func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) err
 		return errors.New(errInvalidKeyTraversal)
 	}
 	rel, err := filepath.Rel(bucketDir, cleanObjPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") || filepath.IsAbs(rel) {
+	if err != nil || rel == ".." || strings.HasPrefix(rel, "..") || strings.Contains(rel, "..") || filepath.IsAbs(rel) {
 		return errors.New(errInvalidKeyTraversal)
 	}
 
@@ -203,7 +202,7 @@ func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) err
 			break
 		}
 		checkRel, err := filepath.Rel(bucketDir, cleanDir)
-		if err != nil || checkRel == ".." || strings.HasPrefix(checkRel, ".."+string(filepath.Separator)) || strings.HasPrefix(checkRel, "../") || strings.HasPrefix(checkRel, "..\\") || filepath.IsAbs(checkRel) {
+		if err != nil || checkRel == ".." || strings.HasPrefix(checkRel, "..") || strings.Contains(checkRel, "..") || filepath.IsAbs(checkRel) {
 			break
 		}
 
