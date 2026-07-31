@@ -56,7 +56,7 @@ func (fs *FilesystemEngine) objectPath(bucket, key string) (string, error) {
 	resolved := filepath.Clean(filepath.Join(base, filepath.FromSlash(normalizedKey)))
 	// Ensure the resolved path stays within the bucket directory
 	rel, err := filepath.Rel(base, resolved)
-	if err != nil || hasPathTraversal(rel) || filepath.IsAbs(rel) {
+	if err != nil || filepath.IsAbs(rel) || isRelTraversal(rel) {
 		return "", errors.New(errInvalidKeyTraversal)
 	}
 	basePrefix := base + string(filepath.Separator)
@@ -82,7 +82,7 @@ func (fs *FilesystemEngine) objectPathWithVersion(bucket, key, versionID string)
 	// Ensure the resolved path stays within the bucket directory
 	bucketBase := filepath.Clean(fs.bucketPath(bucket))
 	rel, err := filepath.Rel(bucketBase, resolved)
-	if err != nil || hasPathTraversal(rel) || filepath.IsAbs(rel) {
+	if err != nil || filepath.IsAbs(rel) || isRelTraversal(rel) {
 		return "", fmt.Errorf("invalid object key or version: path traversal detected")
 	}
 	basePrefix := bucketBase + string(filepath.Separator)
@@ -103,7 +103,7 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 		return
 	}
 	rel, err := filepath.Rel(bucketDir, cleanObjPath)
-	if err != nil || hasPathTraversal(rel) || filepath.IsAbs(rel) {
+	if err != nil || filepath.IsAbs(rel) || isRelTraversal(rel) {
 		return
 	}
 
@@ -114,7 +114,7 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 			break
 		}
 		checkRel, err := filepath.Rel(bucketDir, cleanDir)
-		if err != nil || hasPathTraversal(checkRel) || filepath.IsAbs(checkRel) {
+		if err != nil || filepath.IsAbs(checkRel) || isRelTraversal(checkRel) {
 			break
 		}
 
@@ -140,7 +140,7 @@ func (fs *FilesystemEngine) multipartUploadPath(bucket, uploadID string) (string
 	resolved := filepath.Clean(filepath.Join(base, uploadID))
 	// Ensure the resolved path stays within the bucket's multipart directory
 	rel, err := filepath.Rel(base, resolved)
-	if err != nil || hasPathTraversal(rel) || filepath.IsAbs(rel) {
+	if err != nil || filepath.IsAbs(rel) || isRelTraversal(rel) {
 		return "", errors.New(errInvalidUploadID)
 	}
 	basePrefix := base + string(filepath.Separator)
@@ -176,7 +176,7 @@ func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, 
 	resolved := filepath.Clean(filepath.Join(cleanUploadPath, filepath.FromSlash(key)))
 	// Ensure the resolved path stays within the uploadPath directory
 	rel, err := filepath.Rel(cleanUploadPath, resolved)
-	if err != nil || hasPathTraversal(rel) || filepath.IsAbs(rel) {
+	if err != nil || filepath.IsAbs(rel) || isRelTraversal(rel) {
 		return "", errors.New(errInvalidKeyTraversal)
 	}
 	uploadPrefix := cleanUploadPath + string(filepath.Separator)
