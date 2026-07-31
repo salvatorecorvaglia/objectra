@@ -6,7 +6,10 @@
 # ================================================================
 
 # --- Builder Stage ---
-FROM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN apk add --no-cache git ca-certificates
 
@@ -19,8 +22,8 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build a statically-linked binary
-RUN CGO_ENABLED=0 GOOS=linux go build \
+# Build a statically-linked binary with native cross-compilation
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-w -s" \
     -o stiva \
     ./cmd/stiva
