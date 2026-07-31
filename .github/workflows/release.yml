@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   # ── Test ──────────────────────────────────────────────────────
   test:
@@ -70,7 +73,7 @@ jobs:
     name: Docker Build & Push
     runs-on: ubuntu-latest
     needs: release
-    if: env.DOCKERHUB_USERNAME != ''
+    if: secrets.DOCKERHUB_USERNAME != ''
     permissions:
       contents: read
     env:

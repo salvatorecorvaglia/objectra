@@ -1,8 +1,6 @@
-# yaml-language-server: $schema=https://gist.githubusercontent.com/sargunv/c2ca41a08391cd06feaad97aece309e4/raw/empty-json-schema.json
 # ================================================================
 # golangci-lint configuration for Stiva
 # ================================================================
-version: "2"
 
 linters:
   enable:
@@ -12,24 +10,23 @@ linters:
     - ineffassign
     - unused
 
-  exclusions:
-    rules:
-      - linters:
-          - errcheck
-          - ineffassign
-        path: _test\.go
-
-  settings:
-    errcheck:
-      exclude-functions:
-        - (*os.File).Close
-        - (io.Closer).Close
-        - os.Remove
-        - os.RemoveAll
-        - (*go.etcd.io/bbolt.DB).Close
-        - (net.Listener).Close
-        - (*net.TCPListener).Close
+linters-settings:
+  errcheck:
+    exclude-functions:
+      - (*os.File).Close
+      - (io.Closer).Close
+      - os.Remove
+      - os.RemoveAll
+      - (*go.etcd.io/bbolt.DB).Close
+      - (net.Listener).Close
+      - (*net.TCPListener).Close
 
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - ineffassign
+
