@@ -301,7 +301,7 @@ func (fs *FilesystemEngine) CountObjects(bucket string) (int, error) {
 
 // PutObject stores an object, streaming data directly to disk.
 func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, reader io.Reader, size int64, contentType string) (*ObjectInfo, error) {
-	if strings.Contains(key, "..") || strings.Contains(bucket, "..") {
+	if hasPathTraversal(key) || hasPathTraversal(bucket) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 	if err := fs.validateBucketName(bucket); err != nil {
@@ -336,12 +336,12 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
 	rel, err := filepath.Rel(bucketDir, objPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, "..") || strings.Contains(rel, "..") || filepath.IsAbs(rel) {
+	if err != nil || hasPathTraversal(rel) || filepath.IsAbs(rel) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 	objDir := filepath.Dir(objPath)
 	relDir, err := filepath.Rel(bucketDir, objDir)
-	if err != nil || relDir == ".." || strings.HasPrefix(relDir, "..") || strings.Contains(relDir, "..") || filepath.IsAbs(relDir) {
+	if err != nil || hasPathTraversal(relDir) || filepath.IsAbs(relDir) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 
