@@ -176,15 +176,6 @@ func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, 
 	return resolved, nil
 }
 
-func isSafeRelPath(rel string) bool {
-	if filepath.IsAbs(rel) {
-		return false
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") {
-		return false
-	}
-	return true
-}
 
 func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) error {
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
