@@ -39,6 +39,9 @@ jobs:
           cache: true
           cache-dependency-path: go.sum
 
+      - name: Download Go modules
+        run: go mod download
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
