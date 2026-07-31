@@ -186,6 +186,10 @@ func (fs *FilesystemEngine) multipartDir(bucket, key, uploadID string) (string, 
 	return resolved, nil
 }
 
+func isRelTraversal(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, "../") || strings.HasPrefix(rel, "..\\") || hasPathTraversal(rel)
+}
+
 func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) error {
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
 	cleanObjPath := filepath.Clean(objPath)
@@ -194,7 +198,7 @@ func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) err
 		return errors.New(errInvalidKeyTraversal)
 	}
 	rel, err := filepath.Rel(bucketDir, cleanObjPath)
-	if err != nil || hasPathTraversal(rel) || filepath.IsAbs(rel) {
+	if err != nil || filepath.IsAbs(rel) || isRelTraversal(rel) {
 		return errors.New(errInvalidKeyTraversal)
 	}
 
@@ -212,7 +216,7 @@ func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) err
 			break
 		}
 		checkRel, err := filepath.Rel(bucketDir, cleanDir)
-		if err != nil || hasPathTraversal(checkRel) || filepath.IsAbs(checkRel) {
+		if err != nil || filepath.IsAbs(checkRel) || isRelTraversal(checkRel) {
 			break
 		}
 

@@ -298,12 +298,12 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
 	rel, err := filepath.Rel(bucketDir, objPath)
-	if err != nil || hasPathTraversal(rel) || filepath.IsAbs(rel) {
+	if err != nil || filepath.IsAbs(rel) || isRelTraversal(rel) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 	objDir := filepath.Dir(objPath)
 	relDir, err := filepath.Rel(bucketDir, objDir)
-	if err != nil || hasPathTraversal(relDir) || filepath.IsAbs(relDir) {
+	if err != nil || filepath.IsAbs(relDir) || isRelTraversal(relDir) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 
