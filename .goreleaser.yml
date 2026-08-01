@@ -52,21 +52,22 @@ checksum:
 
 changelog:
   sort: asc
-  use: github
+  use: git
+  format: "{{ .Message }}"
   groups:
-    - title: "🚀 Features"
+    - title: "Features"
       regexp: '^.*?feat(\(.+\))?\!?:.+$'
       order: 0
-    - title: "🐛 Bug Fixes"
+    - title: "Fixed"
       regexp: '^.*?fix(\(.+\))?\!?:.+$'
       order: 1
-    - title: "📚 Documentation"
+    - title: "Documentation"
       regexp: '^.*?docs(\(.+\))?\!?:.+$'
       order: 2
-    - title: "🧪 Tests"
+    - title: "Tests"
       regexp: '^.*?test(\(.+\))?\!?:.+$'
       order: 3
-    - title: "🔧 Maintenance"
+    - title: "Maintenance"
       regexp: '^.*?(refactor|perf|build)(\(.+\))?\!?:.+$'
       order: 4
     - title: "Other"
