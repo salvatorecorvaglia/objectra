@@ -9,15 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - 2026-08-06
 
-### Added
+### Chore
 
-- Multi-architecture Docker Hub image publishing (`salvatorecorvaglia/stiva:1.0.0`, `latest`) alongside GitHub Container Registry (GHCR).
-
-### Changed
-
-- Renamed project from Stiva to Stiva across Go module path (`github.com/salvatorecorvaglia/stiva`), CLI entrypoint (`cmd/stiva`), environment variables (`STIVA_*`), Docker build manifests, configuration parameters, and documentation.
-- Refactored storage path validation logic to use `isRelTraversal` helper for strict path traversal protection across object and bucket operations.
-- Updated Go build and test workflows for Go 1.25 and modernized `golangci-lint` v2 configuration.
+- Promoted package version to 1.0.0 for initial official Docker Hub release.
 
 ## [0.6.0] - 2026-07-27
 
