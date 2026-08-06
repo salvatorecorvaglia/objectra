@@ -7,8 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-07-31
-
 ### Added
 
 - Multi-architecture Docker Hub image publishing (`salvatorecorvaglia/stiva:1.0.0`, `latest`) alongside GitHub Container Registry (GHCR).
