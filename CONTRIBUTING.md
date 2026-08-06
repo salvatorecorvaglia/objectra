@@ -99,46 +99,6 @@ Lint rules are defined in [`.golangci.yml`](.golangci.yml).
 
 ---
 
-## 🛠️ Development & Design Guidelines
-
-### Go Conventions
-
-- **Idiomatic Code**: Follow standard Go idioms and style conventions.
-- **Formatting**: All Go files must be formatted using `gofmt` (or `go fmt ./...`).
-- **Dependencies**: Avoid adding unnecessary external dependencies to keep the project lightweight.
-- **Error Handling**: Always check and handle errors explicitly. Return errors to callers instead of ignoring them, and wrap errors with context where appropriate (e.g., `fmt.Errorf("error doing x: %w", err)`).
-- **Structured slog Logging**: Always use the structured logger `log/slog` rather than standard `log` or print statements. Include key-value context attributes where appropriate:
-  - `slog.Debug`: Highly verbose details helpful for trace diagnostics.
-  - `slog.Info`: High-level operational events (e.g., server started, port bound).
-  - `slog.Warn`: Non-fatal issues (e.g., rate limits hit, configuration warnings).
-  - `slog.Error`: Fatal issues or operations that failed.
-- **Constant-time Security Checks**: When performing cryptographic or security-sensitive comparisons (e.g., SSE-C MD5 checksums, token validation, password verification), always use constant-time comparisons (e.g., `subtle.ConstantTimeCompare`) to mitigate side-channel timing attacks.
-- **Console Request Origin Verification**: All custom web console APIs and WebSocket connection handshakes must validate the request's origin against the request host, local loopback (localhost/127.0.0.1), or explicitly allowed origins to prevent Cross-Site Request Forgery (CSRF) and unauthorized cross-origin requests.
-- **Consolidated Cryptographic Utilities**: Reuse central cryptographic implementation helpers in `internal/auth` rather than introducing duplicate verification blocks across different internal packages. For signing outbound requests (e.g., active-passive replication), always use `auth.SignRequest` to prevent duplicate signing logic.
-- **CORS Handling**: Streamline CORS preflight responses by returning HTTP status code `403 Forbidden` directly upon validation failure, rather than responding with structured S3 error payloads. Include `Access-Control-Allow-Credentials: true` when origin credentials are authorized.
-
-### Concurrency & Performance
-
-- **Bucket-Level Locking**: When reading or modifying bucket resources, acquire the corresponding bucket-level lock using the metadata store's locking mechanism (`acquireBucketLock`). Never use global package-level variables or raw mutexes for bucket operations to avoid race conditions.
-- **LRU Database Connection Caching**: Manage per-bucket metadata database connection handles via an LRU cache (bounded capacity) inside `MetadataStore` to limit active file descriptors and optimize memory overhead across large numbers of buckets.
-- **Asynchronous Execution & Queues**: Performance-critical async side-effects, such as triggering webhooks or replication mirroring tasks, should utilize the buffered dispatcher queues (e.g., `syncQueue` or `webhookQueue`) rather than spawning unmanaged goroutines. This prevents resource exhaustion under heavy loads.
-- **Aggregated Access Logging & Workers**: S3 API access logging must run on a single background worker thread instead of multiple concurrent workers to prevent write contention and excessive locking. It must utilize a buffered queue (`logChan`) and write logs in batches (up to 100 entries or every 5 seconds) to optimize disk I/O, enqueuing log tasks asynchronously and dropping them if the queue is fully saturated to avoid blocking request paths.
-- **Graceful Shutdown & Request Tracking**: All server endpoints and request routers must track active operations/requests using a sync mechanism (e.g., `sync.WaitGroup`). Ensure outstanding requests are gracefully completed and resources/queues flushed before closing background logging workers or shutting down database descriptors.
-- **Passive Map Cleanups**: Stateful in-memory maps (e.g., console rate limit trackers, active user session mappings) must implement a passive cleanup mechanism (e.g., periodically purging expired/stale entries inline during request handling paths) to ensure memory footprint remains bounded.
-- **Streaming I/O**: Keep streaming operations memory-efficient. Avoid buffering large S3 objects in memory. Stream bytes directly to/from disk where possible.
-- **HTTP Client Reuse**: Reuse `http.Client` instances across outbound requests (e.g., replication mirror syncing) to utilize TCP connection pooling and prevent system socket/port exhaustion under heavy request loads.
-- **HTTP Response Body Draining**: Always drain HTTP response bodies (e.g., via `io.Copy(io.Discard, resp.Body)`) before closing them. This allows the client transport layer to keep TCP connections alive and reuse them for subsequent requests.
-- **HTTP Transport Pooling & Timeouts**: When configuring long-lived `http.Client` instances (e.g. for replication/sync workers), configure explicit timeouts, enable HTTP/2 support, and customize the underlying `http.Transport` connection pool configuration parameters (such as `MaxIdleConns`, `IdleConnTimeout`, and `MaxIdleConnsPerHost`) to prevent connection leaks and TCP port exhaustion.
-- **Reference-Counted Initialization Mutexes**: For dynamic, on-demand resource setup (e.g., opening per-bucket metadata databases), protect critical paths with reference-counted mutexes. Ensure the lock metadata is removed from internal maps only when the reference count reaches zero.
-- **Global DB Registry Verification**: Before instantiating or initializing per-bucket dynamic database instances, verify that the bucket exists in the global metadata registry. This prevents dynamic tasks from unintentionally re-creating deleted database files on disk.
-- **LIFO Resource Teardown**: In closer wrappers handling multiple resources, invoke close operations in Last-In-First-Out (LIFO) order to guarantee dependencies are cleaned up in the correct sequence.
-
-### Aesthetic & Design Principles
-
-- **Web Console**: The built-in web console should be responsive, modern, and provide a premium user experience. Avoid visual placeholders and implement clean user interaction flows, keyboard accessibility (e.g. `ESC` key modal dismissal), and immediate user feedback for rate-limiting errors.
-
----
-
 ## 🚀 Submitting Your Changes
 
 ### Branch Naming
