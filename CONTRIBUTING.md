@@ -1,8 +1,6 @@
 # Contributing to Stiva 🖼️
 
-First off, thank you for taking the time to contribute! Contributions from the community are what make open-source projects like Stiva better. 
-
-Whether you want to fix a bug, suggest an enhancement, improve documentation, or implement a new S3 API feature, this guide will help you get started.
+Thank you for your interest in contributing to **Stiva**! We welcome contributions, bug reports, feature requests, and security improvements from the community.
 
 ---
 
