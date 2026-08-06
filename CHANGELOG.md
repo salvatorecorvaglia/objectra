@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Renamed project from Objectra to Stiva across Go module path (`github.com/salvatorecorvaglia/stiva`), CLI entrypoint (`cmd/stiva`), environment variables (`STIVA_*`), Docker build manifests, configuration parameters, and documentation.
+- Renamed project from Stiva to Stiva across Go module path (`github.com/salvatorecorvaglia/stiva`), CLI entrypoint (`cmd/stiva`), environment variables (`STIVA_*`), Docker build manifests, configuration parameters, and documentation.
 - Refactored storage path validation logic to use `isRelTraversal` helper for strict path traversal protection across object and bucket operations.
 - Updated Go build and test workflows for Go 1.25 and modernized `golangci-lint` v2 configuration.
 
@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Multi-platform Docker image publishing (`linux/amd64`, `linux/arm64`) to GitHub Container Registry (GHCR) upon release tag pushes.
 - Concurrency controls (`cancel-in-progress`) to the CI workflow to automatically terminate redundant runs.
-- `OBJECTRA_TRUST_PROXY` configuration to support correct client IP extraction from proxy environments using the first address in the `X-Forwarded-For` header.
+- `STIVA_TRUST_PROXY` configuration to support correct client IP extraction from proxy environments using the first address in the `X-Forwarded-For` header.
 
 ### Changed
 
@@ -77,7 +77,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `OBJECTRA_METRICS_TOKEN` environment variable configuration to secure the `/metrics` Prometheus endpoint.
+- `STIVA_METRICS_TOKEN` environment variable configuration to secure the `/metrics` Prometheus endpoint.
 - SPA client-side routing wildcard fallback support in the web console, preventing 404 errors on browser page reloads or deep-linked URL paths.
 - S3 `GetObject` range request support for compressed/non-seekable streams, dynamically buffering stream chunks and returning `206 Partial Content`.
 - Integration tests in `internal/s3api` for non-seekable compressed range request operations.
@@ -98,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `OBJECTRA_S3_ENDPOINT` environment variable configuration to customize public S3 endpoint URLs for console presigned links.
+- `STIVA_S3_ENDPOINT` environment variable configuration to customize public S3 endpoint URLs for console presigned links.
 - Skeleton loading shimmers to the Admin Web Console for buckets and objects loading states.
 - Concurrency integration tests for MetadataStore `initLocks` reference counting.
 
@@ -122,9 +122,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multipart upload support for Server-Side Encryption with Customer-provided Keys (SSE-C).
 - GitHub Issue and PR templates for standardized community contributions.
 - Bounded access log worker pool inside the S3 API Router to queue logs and prevent goroutine explosion under load.
-- `OBJECTRA_TRUST_PROXY` environment variable option to respect proxy headers (like `X-Forwarded-For`) for rate limiting console access.
-- Startup security warning if default S3 credentials (`objectra` / `objectra123`) are detected.
-- Storage engine startup sweep that cleans orphaned temporary/multipart files (`.objectra-tmp-`, etc.) left by previous crashes.
+- `STIVA_TRUST_PROXY` environment variable option to respect proxy headers (like `X-Forwarded-For`) for rate limiting console access.
+- Startup security warning if default S3 credentials (`stiva` / `stiva123`) are detected.
+- Storage engine startup sweep that cleans orphaned temporary/multipart files (`.stiva-tmp-`, etc.) left by previous crashes.
 - Webhook and replication mirroring test suites (`webhook_test.go` and `sync_test.go`) covering asynchronous events.
 
 ### Changed
@@ -146,7 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Deadlock and race conditions in webhook and mirror sync dispatchers by unlocking locks prior to closing queues during shutdown.
 - Lock leak in metadata store initialization by ensuring lock cleanup runs via `defer` on errors.
 - Flaky integration test assertions in webhook and mirror sync tests by replacing sleep-based waits with polling logic.
-- Cleaned up orphaned temporary body files (`objectra-body-*`) in the `tmp` data directory during startup.
+- Cleaned up orphaned temporary body files (`stiva-body-*`) in the `tmp` data directory during startup.
 - Bucket stripe locking around database scans in `CleanExpiredMultipartUploads` to prevent race conditions during concurrent bucket deletions.
 - S3 `DeleteBucketLifecycle` API handler to correctly validate bucket existence before returning `204 No Content`.
 - Safely handled GET object errors to avoid potential nil pointer dereference on readers.
@@ -166,4 +166,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- First implementation of Objectra.
+- First implementation of Stiva.
