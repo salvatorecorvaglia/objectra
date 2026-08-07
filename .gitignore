@@ -1,10 +1,12 @@
-# Binaries
+# Binaries & Go build output
 /stiva
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+/bin/
+/dist/
 
 # Test binary & output
 *.test
@@ -12,28 +14,40 @@
 coverage.html
 coverage.txt
 
-# Go build output
-/bin/
-/dist/
-
-# Go workspace
+# Go workspace & Tool caches
 go.work
 go.work.sum
+.golangci-cache/
 
 # Vendor (if not committed)
 # vendor/
 
-# OS files
-.DS_Store
-.DS_Store?
-._*
-Thumbs.db
-ehthumbs.db
-Desktop.ini
+# Data directory & Databases
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Temp files & Logs
+*.tmp
+*.bak
+*.log
+*.pid
+
+# Environment
+.env
+.env.*
+.env.local
+!env.example
+!.env.example
+
+# GitHub Actions local runner
+.act
 
 # IDE / Editor files
 .idea/
 .vscode/
+.zed/
 *.swp
 *.swo
 *~
@@ -43,29 +57,15 @@ Desktop.ini
 .classpath
 .settings/
 
-# Environment
-.env
-.env.*
-.env.local
-!env.example
-!.env.example
-
-# Data directory (runtime)
-data/
-
-# Temp files
-*.tmp
-*.bak
-*.log
-
-# GoReleaser
-/dist/
-
-# Docker
-*.pid
-
-# GitHub Actions local runner
-.act
+# OS files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.Spotlight-V100
+.Trashes
 
 # AI Tools & Agents
 .openai/
@@ -86,4 +86,6 @@ claude-settings.json
 .codex/
 .cagent/
 .cursor/
+.windsurf/
+.cline/
 CLAUDE.md
