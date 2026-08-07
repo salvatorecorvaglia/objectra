@@ -2,31 +2,41 @@
 # golangci-lint configuration for Stiva
 # ================================================================
 
+version: "2"
 linters:
-  enable:
-    - govet
-    - staticcheck
-    - errcheck
-    - ineffassign
-    - unused
-
-linters-settings:
-  errcheck:
-    exclude-functions:
-      - (*os.File).Close
-      - (io.Closer).Close
-      - os.Remove
-      - os.RemoveAll
-      - (*go.etcd.io/bbolt.DB).Close
-      - (net.Listener).Close
-      - (*net.TCPListener).Close
-
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+        - os.Remove
+        - os.RemoveAll
+        - (*go.etcd.io/bbolt.DB).Close
+        - (net.Listener).Close
+        - (*net.TCPListener).Close
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - ineffassign
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - ineffassign
-
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
