@@ -1,10 +1,11 @@
-package auth
+package auth_test
 
 import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,10 +13,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/salvatorecorvaglia/stiva/internal/auth"
 )
 
 // signRequest is a test helper that signs an HTTP request using AWS SigV4.
-func signRequest(r *http.Request, creds *Credentials, region, service string, t time.Time) {
+func signRequest(r *http.Request, creds *auth.Credentials, region, service string, t time.Time) {
 	datestamp := t.Format("20060102")
 	amzDate := t.Format("20060102T150405Z")
 
@@ -29,7 +32,7 @@ func signRequest(r *http.Request, creds *Credentials, region, service string, t 
 	fmt.Fprintf(&canonicalHeaders, "host:%s\n", r.Host)
 	fmt.Fprintf(&canonicalHeaders, "x-amz-date:%s\n", amzDate)
 
-	payloadHash := hashSHA256([]byte(""))
+	payloadHash := auth.HashSHA256([]byte(""))
 	r.Header.Set("X-Amz-Content-Sha256", payloadHash)
 
 	// Canonical request
@@ -47,14 +50,14 @@ func signRequest(r *http.Request, creds *Credentials, region, service string, t 
 	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
 		amzDate,
 		scope,
-		hashSHA256([]byte(canonicalRequest)),
+		auth.HashSHA256([]byte(canonicalRequest)),
 	)
 
 	// Derive signing key
-	kDate := hmacSHA256([]byte("AWS4"+creds.SecretKey), []byte(datestamp))
-	kRegion := hmacSHA256(kDate, []byte(region))
-	kService := hmacSHA256(kRegion, []byte(service))
-	kSigning := hmacSHA256(kService, []byte("aws4_request"))
+	kDate := auth.HmacSHA256([]byte("AWS4"+creds.SecretKey), []byte(datestamp))
+	kRegion := auth.HmacSHA256(kDate, []byte(region))
+	kService := auth.HmacSHA256(kRegion, []byte(service))
+	kSigning := auth.HmacSHA256(kService, []byte("aws4_request"))
 
 	// Sign
 	h := hmac.New(sha256.New, kSigning)
@@ -72,8 +75,8 @@ func signRequest(r *http.Request, creds *Credentials, region, service string, t 
 }
 
 func TestVerifyValidSignature(t *testing.T) {
-	creds := NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-	verifier := NewSigV4Verifier(creds)
+	creds := auth.NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	verifier := auth.NewSigV4Verifier(creds)
 
 	req, _ := http.NewRequest("GET", "http://localhost:9000/", nil)
 	req.Host = "localhost:9000"
@@ -87,9 +90,9 @@ func TestVerifyValidSignature(t *testing.T) {
 }
 
 func TestVerifyInvalidAccessKey(t *testing.T) {
-	creds := NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-	wrongCreds := NewCredentials("WRONGACCESSKEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-	verifier := NewSigV4Verifier(creds)
+	creds := auth.NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	wrongCreds := auth.NewCredentials("WRONGACCESSKEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	verifier := auth.NewSigV4Verifier(creds)
 
 	req, _ := http.NewRequest("GET", "http://localhost:9000/", nil)
 	req.Host = "localhost:9000"
@@ -102,9 +105,10 @@ func TestVerifyInvalidAccessKey(t *testing.T) {
 		t.Error("expected error for invalid access key")
 	}
 	if err != nil {
-		authErr, ok := err.(*AuthError)
+		var authErr *auth.AuthError
+		ok := errors.As(err, &authErr)
 		if !ok {
-			t.Errorf("expected *AuthError, got %T", err)
+			t.Errorf("expected *auth.AuthError, got %T", err)
 		} else if authErr.Code != "InvalidAccessKeyId" {
 			t.Errorf("expected Code 'InvalidAccessKeyId', got %q", authErr.Code)
 		}
@@ -112,9 +116,9 @@ func TestVerifyInvalidAccessKey(t *testing.T) {
 }
 
 func TestVerifyWrongSecretKey(t *testing.T) {
-	creds := NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-	wrongCreds := NewCredentials("AKIAIOSFODNN7EXAMPLE", "WRONGSECRETKEYWRONGSECRETKEYWRONGKEY")
-	verifier := NewSigV4Verifier(creds)
+	creds := auth.NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	wrongCreds := auth.NewCredentials("AKIAIOSFODNN7EXAMPLE", "WRONGSECRETKEYWRONGSECRETKEYWRONGKEY")
+	verifier := auth.NewSigV4Verifier(creds)
 
 	req, _ := http.NewRequest("GET", "http://localhost:9000/", nil)
 	req.Host = "localhost:9000"
@@ -127,9 +131,10 @@ func TestVerifyWrongSecretKey(t *testing.T) {
 		t.Error("expected error for wrong secret key")
 	}
 	if err != nil {
-		authErr, ok := err.(*AuthError)
+		var authErr *auth.AuthError
+		ok := errors.As(err, &authErr)
 		if !ok {
-			t.Errorf("expected *AuthError, got %T", err)
+			t.Errorf("expected *auth.AuthError, got %T", err)
 		} else if authErr.Code != "SignatureDoesNotMatch" {
 			t.Errorf("expected Code 'SignatureDoesNotMatch', got %q", authErr.Code)
 		}
@@ -137,8 +142,8 @@ func TestVerifyWrongSecretKey(t *testing.T) {
 }
 
 func TestVerifyMissingAuthHeader(t *testing.T) {
-	creds := NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-	verifier := NewSigV4Verifier(creds)
+	creds := auth.NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	verifier := auth.NewSigV4Verifier(creds)
 
 	req, _ := http.NewRequest("GET", "http://localhost:9000/", nil)
 	req.Host = "localhost:9000"
@@ -150,8 +155,8 @@ func TestVerifyMissingAuthHeader(t *testing.T) {
 }
 
 func TestVerifyMissingDateHeader(t *testing.T) {
-	creds := NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-	verifier := NewSigV4Verifier(creds)
+	creds := auth.NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	verifier := auth.NewSigV4Verifier(creds)
 
 	req, _ := http.NewRequest("GET", "http://localhost:9000/", nil)
 	req.Host = "localhost:9000"
@@ -164,8 +169,8 @@ func TestVerifyMissingDateHeader(t *testing.T) {
 }
 
 func TestVerifyPutRequest(t *testing.T) {
-	creds := NewCredentials("myaccesskey", "mysecretkey")
-	verifier := NewSigV4Verifier(creds)
+	creds := auth.NewCredentials("myaccesskey", "mysecretkey")
+	verifier := auth.NewSigV4Verifier(creds)
 
 	req, _ := http.NewRequest("PUT", "http://localhost:9000/test-bucket/test-key.txt", nil)
 	req.Host = "localhost:9000"
@@ -193,7 +198,7 @@ func TestCredentialsIsValid(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			creds := NewCredentials(tt.accessKey, tt.secretKey)
+			creds := auth.NewCredentials(tt.accessKey, tt.secretKey)
 			if creds.IsValid() != tt.valid {
 				t.Errorf("expected IsValid=%v for (%q, %q)", tt.valid, tt.accessKey, tt.secretKey)
 			}
@@ -202,24 +207,24 @@ func TestCredentialsIsValid(t *testing.T) {
 }
 
 func TestDeriveSigningKeyConsistency(t *testing.T) {
-	creds := NewCredentials("access", "secret")
-	verifier := NewSigV4Verifier(creds)
+	creds := auth.NewCredentials("access", "secret")
+	verifier := auth.NewSigV4Verifier(creds)
 
-	key1 := verifier.deriveSigningKey("20260101", "us-east-1", "s3")
-	key2 := verifier.deriveSigningKey("20260101", "us-east-1", "s3")
+	key1 := verifier.DeriveSigningKey("20260101", "us-east-1", "s3")
+	key2 := verifier.DeriveSigningKey("20260101", "us-east-1", "s3")
 
 	if !hmac.Equal(key1, key2) {
 		t.Error("same inputs should produce same signing key")
 	}
 
 	// Different date should produce different key
-	key3 := verifier.deriveSigningKey("20260102", "us-east-1", "s3")
+	key3 := verifier.DeriveSigningKey("20260102", "us-east-1", "s3")
 	if hmac.Equal(key1, key3) {
 		t.Error("different dates should produce different signing keys")
 	}
 }
 
-func signRequestWithBody(r *http.Request, creds *Credentials, region, service string, t time.Time, body []byte, customHash string) {
+func signRequestWithBody(r *http.Request, creds *auth.Credentials, region, service string, t time.Time, body []byte, customHash string) {
 	datestamp := t.Format("20060102")
 	amzDate := t.Format("20060102T150405Z")
 
@@ -235,7 +240,7 @@ func signRequestWithBody(r *http.Request, creds *Credentials, region, service st
 
 	payloadHash := customHash
 	if payloadHash == "" {
-		payloadHash = hashSHA256(body)
+		payloadHash = auth.HashSHA256(body)
 	}
 	r.Header.Set("X-Amz-Content-Sha256", payloadHash)
 
@@ -259,14 +264,14 @@ func signRequestWithBody(r *http.Request, creds *Credentials, region, service st
 	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
 		amzDate,
 		scope,
-		hashSHA256([]byte(canonicalRequest)),
+		auth.HashSHA256([]byte(canonicalRequest)),
 	)
 
 	// Derive signing key
-	kDate := hmacSHA256([]byte("AWS4"+creds.SecretKey), []byte(datestamp))
-	kRegion := hmacSHA256(kDate, []byte(region))
-	kService := hmacSHA256(kRegion, []byte(service))
-	kSigning := hmacSHA256(kService, []byte("aws4_request"))
+	kDate := auth.HmacSHA256([]byte("AWS4"+creds.SecretKey), []byte(datestamp))
+	kRegion := auth.HmacSHA256(kDate, []byte(region))
+	kService := auth.HmacSHA256(kRegion, []byte(service))
+	kSigning := auth.HmacSHA256(kService, []byte("aws4_request"))
 
 	// Sign
 	h := hmac.New(sha256.New, kSigning)
@@ -284,8 +289,8 @@ func signRequestWithBody(r *http.Request, creds *Credentials, region, service st
 }
 
 func TestVerifySignatureTimeDrift(t *testing.T) {
-	creds := NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-	verifier := NewSigV4Verifier(creds)
+	creds := auth.NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	verifier := auth.NewSigV4Verifier(creds)
 
 	// Request from 20 minutes in the past
 	req1, _ := http.NewRequest("GET", "http://localhost:9000/", nil)
@@ -316,8 +321,8 @@ func TestVerifySignatureTimeDrift(t *testing.T) {
 }
 
 func TestVerifySignaturePayloadMismatch(t *testing.T) {
-	creds := NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-	verifier := NewSigV4Verifier(creds)
+	creds := auth.NewCredentials("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+	verifier := auth.NewSigV4Verifier(creds)
 
 	body := []byte("expected body content")
 
@@ -347,7 +352,7 @@ func TestCanonicalQueryStringEncoding(t *testing.T) {
 	values.Set("key with space", "value with space")
 	values.Set("key/with/slash", "value/with/slash")
 
-	canonical := getCanonicalQueryString(values)
+	canonical := auth.GetCanonicalQueryString(values)
 
 	expected := "key%20with%20space=value%20with%20space&key%2Fwith%2Fslash=value%2Fwith%2Fslash"
 	if canonical != expected {

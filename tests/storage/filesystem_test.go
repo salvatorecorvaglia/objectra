@@ -1,4 +1,8 @@
-package storage
+package storage_test
+
+import (
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
+)
 
 import (
 	"bytes"
@@ -7,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,11 +28,11 @@ import (
 )
 
 // setupTestEngine creates a temporary FilesystemEngine for testing.
-func setupTestEngine(t *testing.T) *FilesystemEngine {
+func setupTestEngine(t *testing.T) *storage.FilesystemEngine {
 	t.Helper()
 	t.Setenv("STIVA_DISABLE_MIN_PART_SIZE", "true")
 	tmpDir := t.TempDir()
-	engine, err := NewFilesystemEngine(tmpDir, nil, "")
+	engine, err := storage.NewFilesystemEngine(tmpDir, nil, "")
 	if err != nil {
 		t.Fatalf("failed to create engine: %v", err)
 	}
@@ -54,7 +59,7 @@ func TestCreateBucket(t *testing.T) {
 	}
 
 	// Verify directory was created
-	bucketDir := filepath.Join(engine.dataDir, "buckets", "test-bucket")
+	bucketDir := filepath.Join(engine.DataDir(), "buckets", "test-bucket")
 	if _, err := os.Stat(bucketDir); os.IsNotExist(err) {
 		t.Error("expected bucket directory to exist on disk")
 	}
@@ -71,7 +76,8 @@ func TestCreateBucketDuplicate(t *testing.T) {
 	if err == nil {
 		t.Error("expected error when creating duplicate bucket")
 	}
-	s3Err, ok := err.(*S3Error)
+	var s3Err *storage.S3Error
+	ok := errors.As(err, &s3Err)
 	if !ok {
 		t.Fatalf("expected S3Error, got %T", err)
 	}
@@ -215,7 +221,8 @@ func TestGetObjectNotFound(t *testing.T) {
 	if err == nil {
 		t.Error("expected error when getting non-existent object")
 	}
-	s3Err, ok := err.(*S3Error)
+	var s3Err *storage.S3Error
+	ok := errors.As(err, &s3Err)
 	if !ok {
 		t.Fatalf("expected S3Error, got %T", err)
 	}
@@ -267,7 +274,8 @@ func TestCopyObject(t *testing.T) {
 	content := []byte("copy this content")
 	engine.PutObject(context.Background(), "src-bucket", "original.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
 
-	info, err := engine.CopyObject("src-bucket", "original.txt", "dst-bucket", "copy.txt")
+	info, err := engine.CopyObject(context.Background(),
+		storage.CopySource{Bucket: "src-bucket", Key: "original.txt"}, "dst-bucket", "copy.txt")
 	if err != nil {
 		t.Fatalf("CopyObject failed: %v", err)
 	}
@@ -333,7 +341,7 @@ func TestListObjects(t *testing.T) {
 	}
 
 	// List all
-	output, err := engine.ListObjects(&ListObjectsInput{
+	output, err := engine.ListObjects(&storage.ListObjectsInput{
 		Bucket:  "list-bucket",
 		MaxKeys: 1000,
 	})
@@ -354,7 +362,7 @@ func TestListObjectsWithDelimiter(t *testing.T) {
 		engine.PutObject(context.Background(), "delim-bucket", key, bytes.NewReader([]byte("x")), 1, "text/plain")
 	}
 
-	output, err := engine.ListObjects(&ListObjectsInput{
+	output, err := engine.ListObjects(&storage.ListObjectsInput{
 		Bucket:    "delim-bucket",
 		Delimiter: "/",
 		MaxKeys:   1000,
@@ -383,7 +391,7 @@ func TestListObjectsPagination(t *testing.T) {
 	}
 
 	// Paginate with maxKeys=2
-	output, err := engine.ListObjects(&ListObjectsInput{
+	output, err := engine.ListObjects(&storage.ListObjectsInput{
 		Bucket:  "page-bucket",
 		MaxKeys: 2,
 	})
@@ -401,7 +409,7 @@ func TestListObjectsPagination(t *testing.T) {
 	}
 
 	// Get page 2
-	output2, err := engine.ListObjects(&ListObjectsInput{
+	output2, err := engine.ListObjects(&storage.ListObjectsInput{
 		Bucket:            "page-bucket",
 		MaxKeys:           2,
 		ContinuationToken: output.NextContinuationToken,
@@ -414,7 +422,7 @@ func TestListObjectsPagination(t *testing.T) {
 	}
 
 	// Get page 3 (last page)
-	output3, err := engine.ListObjects(&ListObjectsInput{
+	output3, err := engine.ListObjects(&storage.ListObjectsInput{
 		Bucket:            "page-bucket",
 		MaxKeys:           2,
 		ContinuationToken: output2.NextContinuationToken,
@@ -479,20 +487,20 @@ func TestMultipartUpload(t *testing.T) {
 		bytes.Repeat([]byte("C"), 150),
 	}
 
-	var completeParts []CompletePart
+	var completeParts []storage.CompletePart
 	for i, data := range partData {
 		partInfo, err := engine.UploadPart(context.Background(), "multi-bucket", "large-file.bin", upload.UploadID, i+1, bytes.NewReader(data), int64(len(data)))
 		if err != nil {
 			t.Fatalf("UploadPart %d failed: %v", i+1, err)
 		}
-		completeParts = append(completeParts, CompletePart{
+		completeParts = append(completeParts, storage.CompletePart{
 			PartNumber: i + 1,
 			ETag:       partInfo.ETag,
 		})
 	}
 
 	// Complete the upload
-	info, err := engine.CompleteMultipartUpload("multi-bucket", "large-file.bin", upload.UploadID, completeParts)
+	info, err := engine.CompleteMultipartUpload(context.Background(), "multi-bucket", "large-file.bin", upload.UploadID, completeParts)
 	if err != nil {
 		t.Fatalf("CompleteMultipartUpload failed: %v", err)
 	}
@@ -669,7 +677,7 @@ func TestConcurrentUploadPartLocking(t *testing.T) {
 	wg.Wait()
 
 	// Retrieve the multipart metadata and check that all parts are present
-	meta, err := engine.metadata.GetMultipartMeta("concurrency-bucket", "concurrent.bin", upload.UploadID)
+	meta, err := engine.Metadata().GetMultipartMeta("concurrency-bucket", "concurrent.bin", upload.UploadID)
 	if err != nil {
 		t.Fatalf("GetMultipartMeta failed: %v", err)
 	}
@@ -704,16 +712,18 @@ func TestMultipartUploadETagFormat(t *testing.T) {
 	// Concatenate parts' raw binary MD5s
 	h1, _ := hex.DecodeString(p1.ETag)
 	h2, _ := hex.DecodeString(p2.ETag)
-	concat := append(h1, h2...)
+	concat := make([]byte, 0, len(h1)+len(h2))
+	concat = append(concat, h1...)
+	concat = append(concat, h2...)
 	hFinal := md5.Sum(concat)
 	expectedETag := fmt.Sprintf("%s-2", hex.EncodeToString(hFinal[:]))
 
-	parts := []CompletePart{
+	parts := []storage.CompletePart{
 		{PartNumber: 1, ETag: p1.ETag},
 		{PartNumber: 2, ETag: p2.ETag},
 	}
 
-	info, err := engine.CompleteMultipartUpload("etag-bucket", "file.bin", upload.UploadID, parts)
+	info, err := engine.CompleteMultipartUpload(context.Background(), "etag-bucket", "file.bin", upload.UploadID, parts)
 	if err != nil {
 		t.Fatalf("CompleteMultipartUpload failed: %v", err)
 	}
@@ -739,7 +749,7 @@ func TestCleanExpiredMultipartUploads(t *testing.T) {
 	}
 
 	// Verify temp directory exists
-	partDir, err := engine.multipartDir("cleanup-bucket", "file.bin", upload.UploadID)
+	partDir, err := engine.MultipartDir("cleanup-bucket", "file.bin", upload.UploadID)
 	if err != nil {
 		t.Fatalf("multipartDir failed: %v", err)
 	}
@@ -748,12 +758,12 @@ func TestCleanExpiredMultipartUploads(t *testing.T) {
 	}
 
 	// Manually set creation date in metadata to be 25 hours ago
-	meta, err := engine.metadata.GetMultipartMeta("cleanup-bucket", "file.bin", upload.UploadID)
+	meta, err := engine.Metadata().GetMultipartMeta("cleanup-bucket", "file.bin", upload.UploadID)
 	if err != nil {
 		t.Fatalf("GetMultipartMeta failed: %v", err)
 	}
 	meta.Created = time.Now().UTC().Add(-25 * time.Hour)
-	err = engine.metadata.PutMultipartMeta(meta)
+	err = engine.Metadata().PutMultipartMeta(meta)
 	if err != nil {
 		t.Fatalf("PutMultipartMeta failed: %v", err)
 	}
@@ -770,7 +780,7 @@ func TestCleanExpiredMultipartUploads(t *testing.T) {
 	}
 
 	// Verify metadata is deleted
-	_, err = engine.metadata.GetMultipartMeta("cleanup-bucket", "file.bin", upload.UploadID)
+	_, err = engine.Metadata().GetMultipartMeta("cleanup-bucket", "file.bin", upload.UploadID)
 	if err == nil {
 		t.Error("expected metadata to be deleted from database")
 	}
@@ -942,13 +952,13 @@ func TestSSEC(t *testing.T) {
 	hash := md5.Sum(key)
 	keyMD5 := base64.StdEncoding.EncodeToString(hash[:])
 
-	params := &SSECParams{
+	params := &storage.SSECParams{
 		Algorithm: "AES256",
 		Key:       key,
 		KeyMD5:    keyMD5,
 	}
 
-	ctx := context.WithValue(context.Background(), SSECContextKey, params)
+	ctx := context.WithValue(context.Background(), storage.SSECContextKey, params)
 
 	content := []byte("secret payload")
 	info, err := engine.PutObject(ctx, bucket, "secret.txt", bytes.NewReader(content), int64(len(content)), "text/plain")
@@ -973,12 +983,12 @@ func TestSSEC(t *testing.T) {
 	wrongKey := []byte("wrongwrongwrongwrongwrongwrongwr")
 	wrongHash := md5.Sum(wrongKey)
 	wrongKeyMD5 := base64.StdEncoding.EncodeToString(wrongHash[:])
-	wrongParams := &SSECParams{
+	wrongParams := &storage.SSECParams{
 		Algorithm: "AES256",
 		Key:       wrongKey,
 		KeyMD5:    wrongKeyMD5,
 	}
-	wrongCtx := context.WithValue(context.Background(), SSECContextKey, wrongParams)
+	wrongCtx := context.WithValue(context.Background(), storage.SSECContextKey, wrongParams)
 	_, _, err = engine.GetObject(wrongCtx, bucket, "secret.txt", "")
 	if err == nil {
 		t.Error("expected error getting SSE-C object with incorrect key")
@@ -1044,7 +1054,7 @@ func TestStorageCompression(t *testing.T) {
 	}
 
 	// Verify that the file size on disk is actually smaller than the original size (or at least compressed)
-	path, err := engine.objectPath(bucket, "compressed.txt")
+	path, err := engine.ObjectPath(bucket, "compressed.txt")
 	if err != nil {
 		t.Fatalf("failed to resolve path: %v", err)
 	}
@@ -1066,11 +1076,11 @@ func TestPrometheusMetrics(t *testing.T) {
 	}
 
 	// Reset metrics before test run to isolate counters
-	atomic.StoreUint64(&GlobalMetrics.RequestsTotal, 0)
-	atomic.StoreUint64(&GlobalMetrics.RequestErrors, 0)
-	atomic.StoreUint64(&GlobalMetrics.BytesUploaded, 0)
-	atomic.StoreUint64(&GlobalMetrics.BytesDownloaded, 0)
-	atomic.StoreInt64(&GlobalMetrics.ActiveMultiparts, 0)
+	atomic.StoreUint64(&storage.GlobalMetrics.RequestsTotal, 0)
+	atomic.StoreUint64(&storage.GlobalMetrics.RequestErrors, 0)
+	atomic.StoreUint64(&storage.GlobalMetrics.BytesUploaded, 0)
+	atomic.StoreUint64(&storage.GlobalMetrics.BytesDownloaded, 0)
+	atomic.StoreInt64(&storage.GlobalMetrics.ActiveMultiparts, 0)
 
 	// Upload object to trigger metrics
 	content := []byte("hello metrics")
@@ -1079,8 +1089,8 @@ func TestPrometheusMetrics(t *testing.T) {
 		t.Fatalf("PutObject failed: %v", err)
 	}
 
-	if atomic.LoadUint64(&GlobalMetrics.BytesUploaded) != uint64(len(content)) {
-		t.Errorf("expected BytesUploaded to be %d, got %d", len(content), atomic.LoadUint64(&GlobalMetrics.BytesUploaded))
+	if atomic.LoadUint64(&storage.GlobalMetrics.BytesUploaded) != uint64(len(content)) {
+		t.Errorf("expected BytesUploaded to be %d, got %d", len(content), atomic.LoadUint64(&storage.GlobalMetrics.BytesUploaded))
 	}
 
 	// Download object to trigger metrics
@@ -1094,12 +1104,12 @@ func TestPrometheusMetrics(t *testing.T) {
 		t.Fatalf("failed to read object: %v", err)
 	}
 
-	if atomic.LoadUint64(&GlobalMetrics.BytesDownloaded) != uint64(len(content)) {
-		t.Errorf("expected BytesDownloaded to be %d, got %d", len(content), atomic.LoadUint64(&GlobalMetrics.BytesDownloaded))
+	if atomic.LoadUint64(&storage.GlobalMetrics.BytesDownloaded) != uint64(len(content)) {
+		t.Errorf("expected BytesDownloaded to be %d, got %d", len(content), atomic.LoadUint64(&storage.GlobalMetrics.BytesDownloaded))
 	}
 
 	// Verify formatting
-	res := GlobalMetrics.FormatPrometheus(engine.DataDir())
+	res := storage.GlobalMetrics.FormatPrometheus(engine.DataDir())
 	if !strings.Contains(res, "stiva_bytes_uploaded_total 13") {
 		t.Errorf("expected prometheus payload to contain uploaded bytes 13, got:\n%s", res)
 	}
@@ -1150,8 +1160,8 @@ func TestOutboundMirroring(t *testing.T) {
 
 	t.Setenv("STIVA_DISABLE_MIN_PART_SIZE", "true")
 	tmpDir := t.TempDir()
-	syncCfg := LoadSyncConfig()
-	engine, err := NewFilesystemEngine(tmpDir, syncCfg, "")
+	syncCfg := syncConfigFromEnv()
+	engine, err := storage.NewFilesystemEngine(tmpDir, syncCfg, "")
 	if err != nil {
 		t.Fatalf("failed to create engine: %v", err)
 	}
@@ -1276,7 +1286,7 @@ func TestPathTraversalProtectionExtended(t *testing.T) {
 			t.Errorf("expected path traversal error for upload ID %q in UploadPart, got nil", badUploadID)
 		}
 
-		_, err = engine.CompleteMultipartUpload(bucket, "test.txt", badUploadID, []CompletePart{{PartNumber: 1, ETag: "some-etag"}})
+		_, err = engine.CompleteMultipartUpload(context.Background(), bucket, "test.txt", badUploadID, []storage.CompletePart{{PartNumber: 1, ETag: "some-etag"}})
 		if err == nil {
 			t.Errorf("expected path traversal error for upload ID %q in CompleteMultipartUpload, got nil", badUploadID)
 		}
@@ -1319,7 +1329,7 @@ func TestDoubleDotPrefixedKeys(t *testing.T) {
 func TestDeleteBucketVersionedEmptiness(t *testing.T) {
 	engine := setupTestEngine(t)
 	bucket := "version-delete-bucket"
-	
+
 	if err := engine.CreateBucket(bucket); err != nil {
 		t.Fatalf("CreateBucket failed: %v", err)
 	}
@@ -1340,7 +1350,7 @@ func TestDeleteBucketVersionedEmptiness(t *testing.T) {
 	}
 
 	// ListAllObjectMetas will return 1 object because the latest pointer is a delete marker
-	objects, err := engine.metadata.ListAllObjectMetas(bucket)
+	objects, err := engine.Metadata().ListAllObjectMetas(bucket)
 	if err != nil {
 		t.Fatalf("ListAllObjectMetas failed: %v", err)
 	}
@@ -1362,15 +1372,16 @@ func TestDeleteBucketVersionedEmptiness(t *testing.T) {
 	// Get latest delete marker to delete it
 	// Actually, let's delete the delete marker using its version ID
 	// Let's find it in history
-	db, err := engine.metadata.getBucketDB(bucket)
+	db, releasedb, err := engine.Metadata().AcquireBucketDB(bucket)
 	if err == nil {
+		defer releasedb()
 		var delMarkerID string
 		db.View(func(tx *bolt.Tx) error {
 			b := tx.Bucket([]byte("objects"))
 			c := b.Cursor()
 			prefix := []byte(bucket + "\x00")
 			for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
-				var info ObjectInfo
+				var info storage.ObjectInfo
 				if json.Unmarshal(v, &info) == nil && info.IsDeleteMarker {
 					delMarkerID = info.VersionID
 					break
@@ -1405,7 +1416,8 @@ func TestFlatNamespacePathConflicts(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected conflict error when uploading 'a/b' because 'a' is a file")
 	}
-	s3Err, ok := err.(*S3Error)
+	var s3Err *storage.S3Error
+	ok := errors.As(err, &s3Err)
 	if !ok || s3Err.Code != "InvalidRequest" {
 		t.Errorf("expected S3Error with code 'InvalidRequest', got %v", err)
 	}
@@ -1424,7 +1436,7 @@ func TestFlatNamespacePathConflicts(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected conflict error when uploading 'a' because 'a/b' exists as a sub-path")
 	}
-	s3Err, ok = err.(*S3Error)
+	ok = errors.As(err, &s3Err)
 	if !ok || s3Err.Code != "InvalidRequest" {
 		t.Errorf("expected S3Error with code 'InvalidRequest', got %v", err)
 	}
@@ -1457,17 +1469,18 @@ func TestMultipartConstraintsValidation(t *testing.T) {
 		t.Fatalf("UploadPart 2 failed: %v", err)
 	}
 
-	parts := []CompletePart{
+	parts := []storage.CompletePart{
 		{PartNumber: 1, ETag: p1.ETag},
 		{PartNumber: 2, ETag: p2.ETag},
 	}
 
 	// Completing should fail because Part 1 is < 5MB and is not the last part
-	_, err = engine.CompleteMultipartUpload(bucket, "large.bin", upload.UploadID, parts)
+	_, err = engine.CompleteMultipartUpload(context.Background(), bucket, "large.bin", upload.UploadID, parts)
 	if err == nil {
 		t.Fatal("expected EntityTooSmall error, got nil")
 	}
-	s3Err, ok := err.(*S3Error)
+	var s3Err *storage.S3Error
+	ok := errors.As(err, &s3Err)
 	if !ok || s3Err.Code != "EntityTooSmall" {
 		t.Errorf("expected EntityTooSmall, got %v", err)
 	}
@@ -1485,19 +1498,19 @@ func TestBucketLifecycleAndLogging(t *testing.T) {
 	}
 
 	// 1. Test Put/Get/Delete Lifecycle
-	lc := &LifecycleConfiguration{
-		Rules: []LifecycleRule{
+	lc := &storage.LifecycleConfiguration{
+		Rules: []storage.LifecycleRule{
 			{
-				ID:     "expire-logs",
-				Status: "Enabled",
-				Filter: LifecycleFilter{Prefix: "logs/"},
-				Expiration: &LifecycleExpiration{Days: 1},
+				ID:         "expire-logs",
+				Status:     "Enabled",
+				Filter:     storage.LifecycleFilter{Prefix: "logs/"},
+				Expiration: &storage.LifecycleExpiration{Days: 1},
 			},
 			{
-				ID:     "expire-archive-noncurrent",
-				Status: "Enabled",
-				Filter: LifecycleFilter{Prefix: "archive/"},
-				NoncurrentVersionExpiration: &NoncurrentVersionExpiration{NoncurrentDays: 1},
+				ID:                          "expire-archive-noncurrent",
+				Status:                      "Enabled",
+				Filter:                      storage.LifecycleFilter{Prefix: "archive/"},
+				NoncurrentVersionExpiration: &storage.NoncurrentVersionExpiration{NoncurrentDays: 1},
 			},
 		},
 	}
@@ -1540,7 +1553,7 @@ func TestBucketLifecycleAndLogging(t *testing.T) {
 	}
 	// Modify to be 48 hours ago
 	logInfo.LastModified = time.Now().UTC().Add(-48 * time.Hour)
-	err = engine.metadata.PutObjectMetaRaw(logInfo)
+	err = engine.Metadata().PutObjectMetaRaw(logInfo)
 	if err != nil {
 		t.Fatalf("PutObjectMetaRaw failed: %v", err)
 	}
@@ -1566,7 +1579,7 @@ func TestBucketLifecycleAndLogging(t *testing.T) {
 	// Modify v1 to be 48 hours ago and noncurrent
 	v1Info.LastModified = time.Now().UTC().Add(-48 * time.Hour)
 	v1Info.IsLatest = false
-	err = engine.metadata.PutObjectMetaRaw(v1Info)
+	err = engine.Metadata().PutObjectMetaRaw(v1Info)
 	if err != nil {
 		t.Fatalf("PutObjectMetaRaw failed: %v", err)
 	}
@@ -1582,7 +1595,8 @@ func TestBucketLifecycleAndLogging(t *testing.T) {
 	if err == nil {
 		t.Error("expected logs/test.log to be expired and unavailable, but got nil error")
 	} else {
-		s3Err, ok := err.(*S3Error)
+		var s3Err *storage.S3Error
+		ok := errors.As(err, &s3Err)
 		if !ok || s3Err.Code != "NoSuchKey" {
 			t.Errorf("expected NoSuchKey error, got %v", err)
 		}
@@ -1607,8 +1621,8 @@ func TestBucketLifecycleAndLogging(t *testing.T) {
 	}
 
 	// 3. Test Logging
-	loggingStatus := &BucketLoggingStatus{
-		LoggingEnabled: &LoggingEnabled{
+	loggingStatus := &storage.BucketLoggingStatus{
+		LoggingEnabled: &storage.LoggingEnabled{
 			TargetBucket: bucket,
 			TargetPrefix: "s3-access-logs/",
 		},
@@ -1672,7 +1686,7 @@ func TestConcurrentWriteDelete(t *testing.T) {
 
 	wg.Wait()
 
-	isEmpty, err := engine.metadata.IsBucketEmpty(bucket)
+	isEmpty, err := engine.Metadata().IsBucketEmpty(bucket)
 	if err != nil {
 		t.Fatalf("IsBucketEmpty failed: %v", err)
 	}
@@ -1735,11 +1749,11 @@ func TestPathTraversalInvalidChars(t *testing.T) {
 	for _, badKey := range urlEncodedKeys {
 		_, err := engine.PutObject(ctx, bucket, badKey, strings.NewReader("data"), 4, "text/plain")
 		if err == nil {
-			resolvedPath, errPath := engine.objectPath(bucket, badKey)
+			resolvedPath, errPath := engine.ObjectPath(bucket, badKey)
 			if errPath != nil {
 				t.Errorf("failed to get object path for %q: %v", badKey, errPath)
 			}
-			expectedPrefix := engine.bucketPath(bucket)
+			expectedPrefix := engine.BucketPath(bucket)
 			if !strings.HasPrefix(resolvedPath, expectedPrefix) {
 				t.Errorf("path %q escaped bucket directory %q", resolvedPath, expectedPrefix)
 			}
@@ -1831,7 +1845,7 @@ func TestGracefulShutdown(t *testing.T) {
 	}
 
 	// Triggering activities will initialize the dispatchers and worker goroutines
-	engine.triggerWebhook("Put", info)
+	engine.TriggerWebhook("Put", info)
 	engine.MirrorSync("shutdown-bucket", "test.txt", "PUT")
 
 	// Let's call Close which will stop the dispatchers
@@ -1841,20 +1855,14 @@ func TestGracefulShutdown(t *testing.T) {
 	}
 
 	// Verify that the shutdown flags are set to 1
-	if atomic.LoadInt32(&engine.isSyncShuttingDown) != 1 {
+	if func() int32 { if engine.IsSyncShuttingDown() { return 1 }; return 0 }() != 1 {
 		t.Error("expected isSyncShuttingDown to be 1")
 	}
-	if atomic.LoadInt32(&engine.isWebhookShuttingDown) != 1 {
+	if func() int32 { if engine.IsWebhookShuttingDown() { return 1 }; return 0 }() != 1 {
 		t.Error("expected isWebhookShuttingDown to be 1")
 	}
 
 	// Try triggering again - it should be ignored or warning should be printed without panic/block
-	engine.triggerWebhook("Put", info)
+	engine.TriggerWebhook("Put", info)
 	engine.MirrorSync("shutdown-bucket", "test.txt", "PUT")
 }
-
-
-
-
-
-

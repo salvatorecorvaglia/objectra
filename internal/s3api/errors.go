@@ -2,6 +2,8 @@ package s3api
 
 import (
 	"encoding/xml"
+	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -12,24 +14,40 @@ import (
 const s3XmlNamespace = "http://s3.amazonaws.com/doc/2006-03-01/"
 
 // S3 error code to HTTP status code mapping.
+//
+// Any code absent here falls back to 500, which misleads clients into retrying
+// what are actually permanent client errors. Keep this in sync with every code
+// the handlers and storage engine emit.
 var errorHTTPStatus = map[string]int{
-	"AccessDenied":            http.StatusForbidden,
-	"BucketAlreadyExists":     http.StatusConflict,
-	"BucketAlreadyOwnedByYou": http.StatusConflict,
-	"BucketNotEmpty":          http.StatusConflict,
-	"InvalidArgument":         http.StatusBadRequest,
-	"InvalidBucketName":       http.StatusBadRequest,
-	"NoSuchBucket":            http.StatusNotFound,
-	"NoSuchKey":               http.StatusNotFound,
-	"NoSuchUpload":            http.StatusNotFound,
-	"NoSuchCORSConfiguration": http.StatusNotFound,
-	"InternalError":           http.StatusInternalServerError,
-	"MethodNotAllowed":        http.StatusMethodNotAllowed,
-	"InvalidRange":            http.StatusRequestedRangeNotSatisfiable,
-	"MalformedXML":            http.StatusBadRequest,
-	"SignatureDoesNotMatch":   http.StatusForbidden,
-	"InvalidAccessKeyId":      http.StatusForbidden,
-	"RequestTimeTooSkewed":    http.StatusForbidden,
+	"AccessDenied":                 http.StatusForbidden,
+	"BadRequest":                   http.StatusBadRequest,
+	"BucketAlreadyExists":          http.StatusConflict,
+	"BucketAlreadyOwnedByYou":      http.StatusConflict,
+	"BucketNotEmpty":               http.StatusConflict,
+	"EntityTooLarge":               http.StatusRequestEntityTooLarge,
+	"EntityTooSmall":               http.StatusBadRequest,
+	"InternalError":                http.StatusInternalServerError,
+	"InvalidAccessKeyId":           http.StatusForbidden,
+	"InvalidArgument":              http.StatusBadRequest,
+	"InvalidBucketName":            http.StatusBadRequest,
+	"InvalidDigest":                http.StatusBadRequest,
+	"InvalidPart":                  http.StatusBadRequest,
+	"InvalidPartOrder":             http.StatusBadRequest,
+	"InvalidRange":                 http.StatusRequestedRangeNotSatisfiable,
+	"InvalidRequest":               http.StatusBadRequest,
+	"MalformedXML":                 http.StatusBadRequest,
+	"MethodNotAllowed":             http.StatusMethodNotAllowed,
+	"NoSuchBucket":                 http.StatusNotFound,
+	"NoSuchCORSConfiguration":      http.StatusNotFound,
+	"NoSuchKey":                    http.StatusNotFound,
+	"NoSuchLifecycleConfiguration": http.StatusNotFound,
+	"NoSuchUpload":                 http.StatusNotFound,
+	"NoSuchVersion":                http.StatusNotFound,
+	"NotImplemented":               http.StatusNotImplemented,
+	"PreconditionFailed":           http.StatusPreconditionFailed,
+	"RequestTimeTooSkewed":         http.StatusForbidden,
+	"SignatureDoesNotMatch":        http.StatusForbidden,
+	"TooManyRequests":              http.StatusTooManyRequests,
 }
 
 // handleStorageError writes the appropriate S3 error response for a storage error.
@@ -38,10 +56,13 @@ func handleStorageError(w http.ResponseWriter, err error, resource string) bool 
 	if err == nil {
 		return false
 	}
-	if s3Err, ok := err.(*storage.S3Error); ok {
+	var s3Err *storage.S3Error
+	if errors.As(err, &s3Err) {
 		writeS3Error(w, s3Err.Code, s3Err.Message, resource)
 	} else {
-		writeS3Error(w, "InternalError", err.Error(), resource)
+		// Never surface internal error text (it leaks filesystem paths) to callers.
+		slog.Error("[S3] Internal error", "resource", resource, "error", err)
+		writeS3Error(w, "InternalError", "We encountered an internal error. Please try again.", resource)
 	}
 	return true
 }

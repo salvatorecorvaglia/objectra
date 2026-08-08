@@ -3,7 +3,6 @@ package storage
 import (
 	"bufio"
 	"compress/gzip"
-	"time"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -18,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -99,10 +99,10 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 			return err
 		}
 
-		// First part upload with SSE-C: initialize parameters in metadata
+		// First part upload with SSE-C: record the algorithm and key MD5 so
+		// later parts can be checked against it. The key itself is never stored.
 		if meta.SSECustomerAlgorithm == "" && len(meta.Parts) == 0 && ssecParams != nil {
 			meta.SSECustomerAlgorithm = ssecParams.Algorithm
-			meta.SSECustomerKey = ssecParams.Key
 			meta.SSECustomerKeyMD5 = ssecParams.KeyMD5
 			if err := fs.metadata.PutMultipartMeta(meta); err != nil {
 				return err
@@ -221,12 +221,12 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		return nil, err
 	}
 
-	GlobalMetrics.AddUploaded(uint64(written))
+	GlobalMetrics.AddUploaded(written)
 
 	return &partInfo, nil
 }
 
-func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string, parts []CompletePart) (*ObjectInfo, error) {
+func (fs *FilesystemEngine) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletePart) (*ObjectInfo, error) {
 	if hasPathTraversal(key) || hasPathTraversal(bucket) || hasPathTraversal(uploadID) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
@@ -242,10 +242,44 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 		return nil, &S3Error{Code: "NoSuchUpload", Message: errUploadNotFound}
 	}
 
-	// Sort requested parts by part number
+	// Because the customer key is never persisted, an SSE-C upload can only be
+	// assembled if the caller re-presents it here. This is a deliberate
+	// deviation from S3, which does not require SSE-C headers on Complete:
+	// Stiva physically concatenates parts, so it must decrypt and re-encrypt.
+	ssecParams := extractSSECParams(ctx)
+	if meta.SSECustomerAlgorithm != "" {
+		if ssecParams == nil {
+			return nil, &S3Error{
+				Code:    "InvalidArgument",
+				Message: "This multipart upload used SSE-C; the customer key must be supplied to complete it",
+			}
+		}
+		if subtle.ConstantTimeCompare([]byte(ssecParams.KeyMD5), []byte(meta.SSECustomerKeyMD5)) != 1 {
+			return nil, &S3Error{Code: "InvalidDigest", Message: "The customer-provided encryption key MD5 does not match"}
+		}
+	} else if ssecParams != nil {
+		return nil, &S3Error{
+			Code:    "InvalidArgument",
+			Message: "This multipart upload was not created with SSE-C and cannot be completed with a customer key",
+		}
+	}
+
+	// Sort requested parts by part number and reject duplicates: two entries
+	// with the same number would otherwise be concatenated twice.
 	sort.Slice(parts, func(i, j int) bool {
 		return parts[i].PartNumber < parts[j].PartNumber
 	})
+	for i := 1; i < len(parts); i++ {
+		if parts[i].PartNumber == parts[i-1].PartNumber {
+			return nil, &S3Error{
+				Code:    "InvalidPartOrder",
+				Message: fmt.Sprintf("Part %d is listed more than once.", parts[i].PartNumber),
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return nil, &S3Error{Code: "InvalidPart", Message: "You must specify at least one part."}
+	}
 
 	// Create a map for quick lookup of uploaded parts
 	uploadedParts := make(map[int]PartInfo)
@@ -339,7 +373,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 			return nil, fmt.Errorf("failed to write IV: %w", err)
 		}
 
-		block, err := aes.NewCipher(meta.SSECustomerKey)
+		block, err := aes.NewCipher(ssecParams.Key)
 		if err != nil {
 			return nil, fmt.Errorf(errFailedCreateAES, err)
 		}
@@ -381,7 +415,7 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(bucket, key, uploadID string
 				}
 				return nil, fmt.Errorf("failed to read part IV: %w", err)
 			}
-			block, err := aes.NewCipher(meta.SSECustomerKey)
+			block, err := aes.NewCipher(ssecParams.Key)
 			if err != nil {
 				for _, c := range closers {
 					c.Close()
@@ -531,4 +565,3 @@ func (fs *FilesystemEngine) lockUpload(uploadID string) func() {
 		fs.mu.Unlock()
 	}
 }
-

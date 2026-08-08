@@ -2,6 +2,7 @@ package storage
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"time"
@@ -86,6 +87,15 @@ func (fs *FilesystemEngine) GetBucketLogging(bucket string) (*BucketLoggingStatu
 	return fs.metadata.GetBucketLogging(bucket)
 }
 
+// maxExpiryBatch bounds how many expiring records are held in memory per sweep
+// pass. The cleanup workers used to accumulate every match across every bucket
+// before acting, which is unbounded on a large installation. Remaining items are
+// simply picked up by the next hourly pass.
+const maxExpiryBatch = 10000
+
+// errExpiryBatchFull stops an iteration early once the batch cap is reached.
+var errExpiryBatchFull = errors.New("expiry batch full")
+
 func (fs *FilesystemEngine) CleanExpiredObjects() error {
 	buckets, err := fs.ListBuckets()
 	if err != nil {
@@ -113,6 +123,9 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 					lastModified   time.Time
 				}
 				_ = fs.metadata.IterateObjectMetas(bInfo.Name, func(m *ObjectInfo) error {
+					if len(expiredList) >= maxExpiryBatch {
+						return errExpiryBatchFull
+					}
 					if !strings.HasPrefix(m.Key, rule.Filter.Prefix) {
 						return nil
 					}
@@ -161,6 +174,9 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 					age       time.Duration
 				}
 				_ = fs.metadata.IterateObjectVersions(bInfo.Name, func(v *ObjectInfo) error {
+					if len(expiredNoncurrentList) >= maxExpiryBatch {
+						return errExpiryBatchFull
+					}
 					if v.IsLatest {
 						return nil // Only noncurrent versions
 					}
@@ -186,7 +202,7 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 			// 3. Abort Incomplete Multipart Upload
 			if rule.AbortIncompleteMultipartUpload != nil && rule.AbortIncompleteMultipartUpload.DaysAfterInitiation > 0 {
 				cutoff := time.Duration(rule.AbortIncompleteMultipartUpload.DaysAfterInitiation) * 24 * time.Hour
-				db, err := fs.metadata.getBucketDB(bInfo.Name)
+				db, releasedb, err := fs.metadata.acquireBucketDB(bInfo.Name)
 				if err == nil {
 					var aborts []struct {
 						key      string
@@ -197,7 +213,10 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 						if b == nil {
 							return nil
 						}
-						return b.ForEach(func(k, v []byte) error {
+						return b.ForEach(func(_, v []byte) error {
+							if len(aborts) >= maxExpiryBatch {
+								return errExpiryBatchFull
+							}
 							var m MultipartMeta
 							if err := json.Unmarshal(v, &m); err == nil {
 								if strings.HasPrefix(m.Key, rule.Filter.Prefix) && now.Sub(m.Created) > cutoff {
@@ -210,6 +229,10 @@ func (fs *FilesystemEngine) CleanExpiredObjects() error {
 							return nil
 						})
 					})
+					// Release before aborting: AbortMultipartUpload re-acquires
+					// the same handle, and holding a reference across the calls
+					// would pin it for the whole sweep.
+					releasedb()
 					for _, a := range aborts {
 						slog.Info("[Storage] Aborting incomplete multipart upload of key in bucket", "uploadID", a.uploadID, "key", a.key, "bucket", bInfo.Name, "cutoff", cutoff)
 						_ = fs.AbortMultipartUpload(bInfo.Name, a.key, a.uploadID)
@@ -240,18 +263,22 @@ func (fs *FilesystemEngine) CleanExpiredMultipartUploads(cutoff time.Duration) e
 			unlock := fs.metadata.acquireBucketLock(bInfo.Name, false)
 			defer unlock()
 
-			db, err := fs.metadata.getBucketDB(bInfo.Name)
+			db, releasedb, err := fs.metadata.acquireBucketDB(bInfo.Name)
 			if err != nil {
 				slog.Error("[Storage] Failed to open DB for bucket during multipart cleanup", "bucket", bInfo.Name, "error", err)
 				return
 			}
+			defer releasedb()
 
 			err = db.View(func(tx *bolt.Tx) error {
 				b := tx.Bucket(multipartBucket)
 				if b == nil {
 					return nil
 				}
-				return b.ForEach(func(k, v []byte) error {
+				return b.ForEach(func(_, v []byte) error {
+					if len(aborts) >= maxExpiryBatch {
+						return errExpiryBatchFull
+					}
 					var meta MultipartMeta
 					if err := json.Unmarshal(v, &meta); err == nil {
 						if now.Sub(meta.Created) > cutoff {
@@ -265,7 +292,7 @@ func (fs *FilesystemEngine) CleanExpiredMultipartUploads(cutoff time.Duration) e
 					return nil
 				})
 			})
-			if err != nil {
+			if err != nil && !errors.Is(err, errExpiryBatchFull) {
 				slog.Error("[Storage] Failed to scan multipart uploads for bucket", "bucket", bInfo.Name, "error", err)
 			}
 		}()
@@ -278,4 +305,3 @@ func (fs *FilesystemEngine) CleanExpiredMultipartUploads(cutoff time.Duration) e
 
 	return nil
 }
-

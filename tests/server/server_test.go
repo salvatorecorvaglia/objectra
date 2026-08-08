@@ -1,4 +1,4 @@
-package server
+package server_test
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/salvatorecorvaglia/stiva/internal/config"
+	"github.com/salvatorecorvaglia/stiva/internal/server"
 )
 
 func TestServerStartSuccessAndShutdown(t *testing.T) {
@@ -20,7 +21,7 @@ func TestServerStartSuccessAndShutdown(t *testing.T) {
 		Region:      "us-east-1",
 	}
 
-	srv, err := New(cfg)
+	srv, err := server.New(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
@@ -64,7 +65,7 @@ func TestServerStartPortConflict(t *testing.T) {
 		Region:      "us-east-1",
 	}
 
-	srv, err := New(cfg)
+	srv, err := server.New(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}

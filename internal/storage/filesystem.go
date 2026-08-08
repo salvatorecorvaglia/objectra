@@ -2,8 +2,8 @@ package storage
 
 import (
 	"bufio"
-	"context"
 	"compress/gzip"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/md5"
@@ -104,6 +104,11 @@ type uploadLock struct {
 	refCount int
 }
 
+// NewFilesystemEngineForTesting initializes a FilesystemEngine struct without disk side effects.
+func NewFilesystemEngineForTesting(dataDir string) *FilesystemEngine {
+	return &FilesystemEngine{dataDir: dataDir}
+}
+
 // NewFilesystemEngine creates a new filesystem-backed storage engine.
 func NewFilesystemEngine(dataDir string, syncCfg *SyncConfig, webhookURL string) (*FilesystemEngine, error) {
 	bucketsDir := filepath.Join(dataDir, "buckets")
@@ -162,15 +167,6 @@ func (fs *FilesystemEngine) GetSystemValue(key string) (string, error) {
 func (fs *FilesystemEngine) PutSystemValue(key, val string) error {
 	return fs.metadata.PutSystemValue(key, val)
 }
-
-
-
-// objectPath returns the filesystem path for an object, with path traversal protection.
-
-
-
-
-
 
 // CreateBucket creates a new storage bucket.
 func (fs *FilesystemEngine) CreateBucket(name string) error {
@@ -472,7 +468,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 		return nil, err
 	}
 
-	GlobalMetrics.AddUploaded(uint64(written))
+	GlobalMetrics.AddUploaded(written)
 
 	fs.triggerWebhook("ObjectCreated:Put", info)
 
@@ -690,27 +686,42 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) (isDelet
 }
 
 // CopyObject copies an object from one location to another.
-func (fs *FilesystemEngine) CopyObject(srcBucket, srcKey, dstBucket, dstKey string) (*ObjectInfo, error) {
-	if err := fs.validateBucketName(srcBucket); err != nil {
+//
+// srcVersionID selects a specific source version; it is passed as a real
+// argument rather than being string-split out of the key, which used to corrupt
+// any key containing the literal "?versionId=".
+//
+// ctx carries the SSE-C parameters for both halves of the copy, so encrypted
+// sources and destinations are now supported.
+func (fs *FilesystemEngine) CopyObject(ctx context.Context, src CopySource, dstBucket, dstKey string) (*ObjectInfo, error) {
+	if err := fs.validateBucketName(src.Bucket); err != nil {
 		return nil, err
 	}
 	if err := fs.validateBucketName(dstBucket); err != nil {
 		return nil, err
 	}
 
-	var srcVersionID string
-	if parts := strings.SplitN(srcKey, "?versionId=", 2); len(parts) == 2 {
-		srcKey = parts[0]
-		srcVersionID = parts[1]
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	reader, srcInfo, err := fs.GetObject(context.Background(), srcBucket, srcKey, srcVersionID)
+	// The source and destination may use different SSE-C keys (or none), so the
+	// source key is set explicitly rather than inherited from ctx. A typed nil
+	// clears any destination key the caller already attached.
+	var srcCtx context.Context
+	if src.SSEC != nil {
+		srcCtx = context.WithValue(ctx, SSECContextKey, src.SSEC)
+	} else {
+		srcCtx = context.WithValue(ctx, SSECContextKey, (*SSECParams)(nil))
+	}
+
+	reader, srcInfo, err := fs.GetObject(srcCtx, src.Bucket, src.Key, src.VersionID)
 	if err != nil {
 		return nil, err
 	}
 	defer reader.Close()
 
-	return fs.PutObject(context.Background(), dstBucket, dstKey, reader, srcInfo.Size, srcInfo.ContentType)
+	return fs.PutObject(ctx, dstBucket, dstKey, reader, srcInfo.Size, srcInfo.ContentType)
 }
 
 // GetBucketVersioning gets the versioning status of a bucket.
@@ -823,10 +834,11 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 	isTruncated := false
 	nextToken := ""
 
-	db, err := fs.metadata.getBucketDB(input.Bucket)
+	db, releasedb, err := fs.metadata.acquireBucketDB(input.Bucket)
 	if err != nil {
 		return nil, err
 	}
+	defer releasedb()
 
 	err = db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(objectsBucket)
@@ -877,6 +889,12 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 						}
 						commonPrefixSet[dirPrefix] = true
 						commonPrefixes = append(commonPrefixes, dirPrefix)
+						// The continuation token must advance past every item
+						// already emitted, prefixes included. Tracking only the
+						// last object made the token point backwards whenever a
+						// page ended on a prefix, so the next page re-emitted
+						// those prefixes and paging could never make progress.
+						nextToken = advanceToken(nextToken, dirPrefix)
 					}
 					nextSeekKey := bucketPrefix + dirPrefix + "\xff"
 					k, v = c.Seek([]byte(nextSeekKey))
@@ -890,7 +908,7 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 			}
 
 			objects = append(objects, obj)
-			nextToken = obj.Key
+			nextToken = advanceToken(nextToken, obj.Key)
 
 			k, v = c.Next()
 		}
@@ -903,8 +921,8 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 
 	sort.Strings(commonPrefixes)
 
-	if isTruncated && nextToken == "" && len(commonPrefixes) > 0 {
-		nextToken = commonPrefixes[len(commonPrefixes)-1]
+	if !isTruncated {
+		nextToken = ""
 	}
 
 	return &ListObjectsOutput{
@@ -916,14 +934,15 @@ func (fs *FilesystemEngine) ListObjects(input *ListObjectsInput) (*ListObjectsOu
 	}, nil
 }
 
-// CreateMultipartUpload initiates a multipart upload.
-
-
-// CompleteMultipartUpload assembles all parts into the final object.
-
-// AbortMultipartUpload cancels a multipart upload and cleans up parts.
-
-
+// advanceToken returns whichever of the two continuation-token candidates sorts
+// later. Listing walks keys in ascending order, so the token must always be the
+// greatest item emitted so far — object key or rolled-up common prefix alike.
+func advanceToken(current, candidate string) string {
+	if candidate > current {
+		return candidate
+	}
+	return current
+}
 
 // S3Error represents an S3 API error with a code and message.
 type S3Error struct {
@@ -934,8 +953,6 @@ type S3Error struct {
 func (e *S3Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
-
-// CleanExpiredMultipartUploads scans the database for multipart uploads older than cutoff duration and aborts them.
 
 type readCloserWrapper struct {
 	io.Reader
@@ -974,7 +991,7 @@ type metricsReadCloser struct {
 
 func (m *metricsReadCloser) Read(p []byte) (int, error) {
 	n, err := m.ReadCloser.Read(p)
-	GlobalMetrics.AddDownloaded(uint64(n))
+	GlobalMetrics.AddDownloaded(int64(n))
 	return n, err
 }
 
@@ -987,22 +1004,15 @@ func (m *metricsReadSeekCloser) Seek(offset int64, whence int) (int64, error) {
 	return m.seeker.Seek(offset, whence)
 }
 
-// DataDir returns the path to the storage data directory.
+// Metadata returns the underlying MetadataStore.
+func (fs *FilesystemEngine) Metadata() *MetadataStore {
+	return fs.metadata
+}
+
+// DataDir returns the root data directory path.
 func (fs *FilesystemEngine) DataDir() string {
 	return fs.dataDir
 }
-
-// PutBucketLifecycle sets the lifecycle configuration of a bucket.
-
-// GetBucketLifecycle gets the lifecycle configuration of a bucket.
-
-// DeleteBucketLifecycle deletes the lifecycle configuration of a bucket.
-
-// PutBucketLogging sets the logging configuration of a bucket.
-
-// GetBucketLogging gets the logging configuration of a bucket.
-
-// CleanExpiredObjects scans all buckets for objects that meet expiration rules and removes them.
 
 func extractSSECParams(ctx context.Context) *SSECParams {
 	if ctx == nil {
@@ -1048,19 +1058,18 @@ func cleanupOrphanedTempFiles(dataDir string) {
 			if err != nil {
 				return nil
 			}
-			if !d.IsDir() {
+			// Only regular files are removed: skipping symlinks avoids the
+			// TOCTOU traversal a symlinked temp name could otherwise cause.
+			if d.Type().IsRegular() {
 				name := d.Name()
 				if strings.HasPrefix(name, ".stiva-tmp-") || strings.HasPrefix(name, ".part-tmp-") || strings.HasPrefix(name, ".stiva-multipart-") || strings.HasPrefix(name, "stiva-body-") {
-					_ = os.Remove(path)
+					_ = os.Remove(path) //nolint:gosec // startup sweep over our own data dir; symlinks excluded above
 				}
 			}
 			return nil
 		})
 	}
 }
-
-
-
 
 type ctrReadSeeker struct {
 	file          *os.File
@@ -1149,7 +1158,7 @@ func (crs *ctrReadSeeker) Seek(offset int64, whence int) (int64, error) {
 func addCtr(ctr []byte, val uint64) {
 	for i := len(ctr) - 1; i >= 0; i-- {
 		val += uint64(ctr[i])
-		ctr[i] = byte(val)
+		ctr[i] = byte(val & 0xff) // deliberate truncation: big-endian counter arithmetic
 		val >>= 8
 	}
 }

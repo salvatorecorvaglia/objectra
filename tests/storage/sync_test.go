@@ -1,15 +1,37 @@
-package storage
+package storage_test
 
 import (
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
+
+// syncConfigFromEnv builds a replication config from the STIVA_SYNC_* variables.
+func syncConfigFromEnv() *storage.SyncConfig {
+	endpoint := os.Getenv("STIVA_SYNC_ENDPOINT")
+	if endpoint == "" {
+		return nil
+	}
+	region := os.Getenv("STIVA_SYNC_REGION")
+	if region == "" {
+		region = "us-east-1"
+	}
+	return &storage.SyncConfig{
+		Endpoint:  strings.TrimSuffix(endpoint, "/"),
+		Bucket:    os.Getenv("STIVA_SYNC_BUCKET"),
+		AccessKey: os.Getenv("STIVA_SYNC_ACCESS_KEY"),
+		SecretKey: os.Getenv("STIVA_SYNC_SECRET_KEY"),
+		Region:    region,
+	}
+}
 
 func TestMirrorSync_Integration(t *testing.T) {
 	var mu sync.Mutex
@@ -44,7 +66,7 @@ func TestMirrorSync_Integration(t *testing.T) {
 	t.Setenv("STIVA_SYNC_REGION", "us-west-2")
 
 	tempDir := t.TempDir()
-	engine, err := NewFilesystemEngine(tempDir, LoadSyncConfig(), "")
+	engine, err := storage.NewFilesystemEngine(tempDir, syncConfigFromEnv(), "")
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}

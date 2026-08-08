@@ -1,4 +1,4 @@
-package storage
+package storage_test
 
 import (
 	"context"
@@ -22,14 +22,14 @@ func TestPathTraversalPrevention(t *testing.T) {
 
 	for _, key := range traversalKeys {
 		t.Run("objectPath_"+key, func(t *testing.T) {
-			_, err := engine.objectPath("safe-bucket", key)
+			_, err := engine.ObjectPath("safe-bucket", key)
 			if err == nil {
 				t.Errorf("expected error for traversal key %q, got nil", key)
 			}
 		})
 
 		t.Run("objectPathWithVersion_"+key, func(t *testing.T) {
-			_, err := engine.objectPathWithVersion("safe-bucket", key, "version-1")
+			_, err := engine.ObjectPathWithVersion("safe-bucket", key, "version-1")
 			if err == nil {
 				t.Errorf("expected error for traversal key %q, got nil", key)
 			}
@@ -67,7 +67,7 @@ func TestPathTraversalVersionAndUploadID(t *testing.T) {
 
 	for _, vID := range traversalVersionIDs {
 		t.Run("versionID_"+vID, func(t *testing.T) {
-			_, err := engine.objectPathWithVersion("safe-bucket", "valid-key.txt", vID)
+			_, err := engine.ObjectPathWithVersion("safe-bucket", "valid-key.txt", vID)
 			if err == nil {
 				t.Errorf("expected error for traversal versionID %q, got nil", vID)
 			}
@@ -83,12 +83,12 @@ func TestPathTraversalVersionAndUploadID(t *testing.T) {
 
 	for _, uID := range traversalUploadIDs {
 		t.Run("uploadID_"+uID, func(t *testing.T) {
-			_, err := engine.multipartUploadPath("safe-bucket", uID)
+			_, err := engine.MultipartUploadPath("safe-bucket", uID)
 			if err == nil {
 				t.Errorf("expected error for traversal uploadID %q, got nil", uID)
 			}
 
-			_, err = engine.multipartDir("safe-bucket", "valid-key.txt", uID)
+			_, err = engine.MultipartDir("safe-bucket", "valid-key.txt", uID)
 			if err == nil {
 				t.Errorf("expected error for traversal multipartDir uploadID %q, got nil", uID)
 			}
@@ -111,7 +111,7 @@ func TestValidNestedKeys(t *testing.T) {
 
 	for _, key := range validKeys {
 		t.Run("validKey_"+key, func(t *testing.T) {
-			p, err := engine.objectPath("safe-bucket", key)
+			p, err := engine.ObjectPath("safe-bucket", key)
 			if err != nil {
 				t.Errorf("unexpected error for valid key %q: %v", key, err)
 			}

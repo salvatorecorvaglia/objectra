@@ -1,10 +1,11 @@
-package s3api
+package s3api_test
 
 import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
 
+	"github.com/salvatorecorvaglia/stiva/internal/s3api"
 	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
@@ -30,9 +31,9 @@ func TestMatchOrigin(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		res := matchOrigin(tc.origin, tc.allowed)
+		res := s3api.MatchOrigin(tc.origin, tc.allowed)
 		if res != tc.expected {
-			t.Errorf("matchOrigin(%q, %v) = %v; want %v", tc.origin, tc.allowed, res, tc.expected)
+			t.Errorf("MatchOrigin(%q, %v) = %v; want %v", tc.origin, tc.allowed, res, tc.expected)
 		}
 	}
 }
@@ -49,9 +50,9 @@ func TestMatchMethod(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		res := matchMethod(tc.method, tc.allowed)
+		res := s3api.MatchMethod(tc.method, tc.allowed)
 		if res != tc.expected {
-			t.Errorf("matchMethod(%q, %v) = %v; want %v", tc.method, tc.allowed, res, tc.expected)
+			t.Errorf("MatchMethod(%q, %v) = %v; want %v", tc.method, tc.allowed, res, tc.expected)
 		}
 	}
 }
@@ -69,9 +70,9 @@ func TestMatchHeaders(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		res := matchHeaders(tc.reqHeaders, tc.allowed)
+		res := s3api.MatchHeaders(tc.reqHeaders, tc.allowed)
 		if res != tc.expected {
-			t.Errorf("matchHeaders(%v, %v) = %v; want %v", tc.reqHeaders, tc.allowed, res, tc.expected)
+			t.Errorf("MatchHeaders(%v, %v) = %v; want %v", tc.reqHeaders, tc.allowed, res, tc.expected)
 		}
 	}
 }
@@ -92,15 +93,14 @@ func TestEvaluateCORS(t *testing.T) {
 		req := httptest.NewRequest("GET", "/bucket/key", nil)
 		req.Header.Set("Origin", "http://localhost:3000")
 
-		headers, matched := EvaluateCORS(req, cors)
+		headers, matched := s3api.EvaluateCORS(req, cors)
 		if !matched {
 			t.Fatal("Expected CORS to match")
 		}
 
 		expected := map[string]string{
-			"Access-Control-Allow-Origin":      "http://localhost:3000",
-			"Access-Control-Allow-Methods":     "GET, PUT",
-			"Access-Control-Allow-Credentials": "true",
+			"Access-Control-Allow-Origin":  "http://localhost:3000",
+			"Access-Control-Allow-Methods": "GET, PUT",
 		}
 
 		if !reflect.DeepEqual(headers, expected) {
@@ -114,17 +114,16 @@ func TestEvaluateCORS(t *testing.T) {
 		req.Header.Set("Access-Control-Request-Method", "PUT")
 		req.Header.Set("Access-Control-Request-Headers", "content-type, authorization")
 
-		headers, matched := EvaluateCORS(req, cors)
+		headers, matched := s3api.EvaluateCORS(req, cors)
 		if !matched {
 			t.Fatal("Expected CORS to match")
 		}
 
 		expected := map[string]string{
-			"Access-Control-Allow-Origin":      "http://localhost:3000",
-			"Access-Control-Allow-Methods":     "GET, PUT",
-			"Access-Control-Allow-Credentials": "true",
-			"Access-Control-Allow-Headers":     "content-type, authorization",
-			"Access-Control-Max-Age":           "3600",
+			"Access-Control-Allow-Origin":  "http://localhost:3000",
+			"Access-Control-Allow-Methods": "GET, PUT",
+			"Access-Control-Allow-Headers": "content-type, authorization",
+			"Access-Control-Max-Age":       "3600",
 		}
 
 		if !reflect.DeepEqual(headers, expected) {
@@ -136,7 +135,7 @@ func TestEvaluateCORS(t *testing.T) {
 		req := httptest.NewRequest("GET", "/bucket/key", nil)
 		req.Header.Set("Origin", "http://malicious.com")
 
-		_, matched := EvaluateCORS(req, cors)
+		_, matched := s3api.EvaluateCORS(req, cors)
 		if matched {
 			t.Error("Expected CORS matching to fail")
 		}

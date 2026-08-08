@@ -5,9 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Stiva — Object Storage Console</title>
     <meta name="description" content="Stiva self-hosted S3-compatible object storage management console">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -202,7 +199,7 @@
     </div>
 
     <!-- Create Bucket Modal -->
-    <div id="create-bucket-modal" class="modal-overlay" style="display:none;">
+    <div id="create-bucket-modal" class="modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-hidden="true" aria-label="Create bucket">
         <div class="modal">
             <div class="modal-header">
                 <h3>Create Bucket</h3>
@@ -223,7 +220,7 @@
     </div>
 
     <!-- Create Folder Modal -->
-    <div id="create-folder-modal" class="modal-overlay" style="display:none;">
+    <div id="create-folder-modal" class="modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-hidden="true" aria-label="Create folder">
         <div class="modal">
             <div class="modal-header">
                 <h3>Create Folder</h3>
@@ -243,7 +240,7 @@
     </div>
 
     <!-- Share Modal -->
-    <div id="share-modal" class="modal-overlay" style="display:none;">
+    <div id="share-modal" class="modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-hidden="true" aria-label="Share object">
         <div class="modal">
             <div class="modal-header">
                 <h3>Share Object</h3>
@@ -275,7 +272,7 @@
     </div>
 
     <!-- Preview Modal -->
-    <div id="preview-modal" class="modal-overlay" style="display:none;">
+    <div id="preview-modal" class="modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-hidden="true" aria-label="Preview object">
         <div class="modal modal-lg">
             <div class="modal-header">
                 <h3 id="preview-title">File Preview</h3>
@@ -294,7 +291,7 @@
     </div>
 
     <!-- Confirm Delete Modal -->
-    <div id="delete-modal" class="modal-overlay" style="display:none;">
+    <div id="delete-modal" class="modal-overlay" style="display:none;" role="dialog" aria-modal="true" aria-hidden="true" aria-label="Confirm deletion">
         <div class="modal">
             <div class="modal-header">
                 <h3>Confirm Deletion</h3>
@@ -326,7 +323,7 @@
     <input type="file" id="file-input" multiple style="display:none;">
 
     <!-- Toast Container -->
-    <div id="toast-container" class="toast-container"></div>
+    <div id="toast-container" class="toast-container" role="region" aria-live="polite" aria-label="Notifications"></div>
 
     <script src="app.js"></script>
 </body>

@@ -1,16 +1,17 @@
-package console
+package console_test
 
 import (
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/salvatorecorvaglia/stiva/internal/console"
 )
 
 func TestGenerateAndValidateToken(t *testing.T) {
 	accessKey := "test-access-key"
 
-	token, err := GenerateToken(accessKey)
+	token, err := console.GenerateToken(accessKey)
 	if err != nil {
 		t.Fatalf("GenerateToken failed: %v", err)
 	}
@@ -19,7 +20,7 @@ func TestGenerateAndValidateToken(t *testing.T) {
 	}
 
 	// Validate it
-	sub, err := ValidateToken(token)
+	sub, err := console.ValidateToken(token)
 	if err != nil {
 		t.Fatalf("ValidateToken failed: %v", err)
 	}
@@ -29,7 +30,7 @@ func TestGenerateAndValidateToken(t *testing.T) {
 }
 
 func TestValidateTokenInvalid(t *testing.T) {
-	_, err := ValidateToken("invalid.token.string")
+	_, err := console.ValidateToken("invalid.token.string")
 	if err == nil {
 		t.Error("expected error for invalid token")
 	}
@@ -50,7 +51,7 @@ func TestValidateTokenWrongSecret(t *testing.T) {
 		t.Fatalf("failed to sign token with wrong secret: %v", err)
 	}
 
-	_, err = ValidateToken(signedToken)
+	_, err = console.ValidateToken(signedToken)
 	if err == nil {
 		t.Error("expected error for token signed with wrong secret")
 	}
@@ -65,12 +66,12 @@ func TestValidateExpiredToken(t *testing.T) {
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signedToken, err := token.SignedString(jwtSecret)
+	signedToken, err := token.SignedString(console.GetJWTSecret())
 	if err != nil {
 		t.Fatalf("failed to sign token: %v", err)
 	}
 
-	_, err = ValidateToken(signedToken)
+	_, err = console.ValidateToken(signedToken)
 	if err == nil {
 		t.Error("expected error for expired token")
 	}
@@ -78,8 +79,8 @@ func TestValidateExpiredToken(t *testing.T) {
 
 func TestTokenUniqueness(t *testing.T) {
 	// Generate multiple tokens and ensure JTIs are unique
-	token1, _ := GenerateToken("user")
-	token2, _ := GenerateToken("user")
+	token1, _ := console.GenerateToken("user")
+	token2, _ := console.GenerateToken("user")
 
 	if token1 == token2 {
 		t.Error("expected different tokens for same user (different JTI)")
@@ -98,7 +99,7 @@ func TestValidateTokenWrongSigningMethod(t *testing.T) {
 	token := jwt.NewWithClaims(jwt.SigningMethodNone, claims)
 	signedToken, _ := token.SignedString(jwt.UnsafeAllowNoneSignatureType)
 
-	_, err := ValidateToken(signedToken)
+	_, err := console.ValidateToken(signedToken)
 	if err == nil {
 		t.Error("expected error for token with 'none' signing method")
 	}

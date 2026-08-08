@@ -1,4 +1,4 @@
-package storage
+package storage_test
 
 import (
 	"context"
@@ -10,11 +10,13 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 func TestWebhook_Integration(t *testing.T) {
 	var mu sync.Mutex
-	var receivedPayloads []WebhookPayload
+	var receivedPayloads []storage.WebhookPayload
 
 	// Create mock webhook receiver
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,7 +29,7 @@ func TestWebhook_Integration(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		var payload WebhookPayload
+		var payload storage.WebhookPayload
 		if err := json.Unmarshal(body, &payload); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -43,7 +45,7 @@ func TestWebhook_Integration(t *testing.T) {
 	t.Setenv("STIVA_WEBHOOK_URL", server.URL)
 
 	tempDir := t.TempDir()
-	engine, err := NewFilesystemEngine(tempDir, nil, server.URL)
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, server.URL)
 	if err != nil {
 		t.Fatalf("Failed to create engine: %v", err)
 	}

@@ -1,4 +1,4 @@
-package console
+package console_test
 
 import (
 	"bytes"
@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/salvatorecorvaglia/stiva/internal/auth"
+	"github.com/salvatorecorvaglia/stiva/internal/console"
 	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
@@ -27,14 +28,14 @@ func TestConsoleEndpoints(t *testing.T) {
 	defer engine.Close()
 
 	creds := auth.NewCredentials("access", "secret")
-	handler := NewHandler(engine, creds, 9000, "us-east-1", "", 100, 1000)
+	handler := console.NewHandler(console.Options{Engine: engine, Creds: creds, S3Port: 9000, Region: "us-east-1", LoginRateLimit: 100, APIRateLimit: 1000})
 
 	err = engine.CreateBucket("test-bucket")
 	if err != nil {
 		t.Fatalf("failed to create bucket: %v", err)
 	}
 
-	token, err := GenerateToken("access")
+	token, err := console.GenerateToken("access")
 	if err != nil {
 		t.Fatalf("failed to generate token: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestConsoleRateLimiting(t *testing.T) {
 
 	creds := auth.NewCredentials("access", "secret")
 	// Set very tight rate limit (burst of 1 for login, burst of 2 for API)
-	handler := NewHandler(engine, creds, 9000, "us-east-1", "", 1, 2)
+	handler := console.NewHandler(console.Options{Engine: engine, Creds: creds, S3Port: 9000, Region: "us-east-1", LoginRateLimit: 1, APIRateLimit: 2})
 
 	// Test login rate limiting
 	loginBody, _ := json.Marshal(map[string]string{

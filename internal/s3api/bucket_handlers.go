@@ -95,7 +95,6 @@ func (rt *Router) handleGetBucketLocation(w http.ResponseWriter, _ *http.Request
 	writeXML(w, http.StatusOK, result)
 }
 
-
 // handleGetBucketVersioning handles GET /<bucket>?versioning.
 func (rt *Router) handleGetBucketVersioning(w http.ResponseWriter, _ *http.Request, bucket string) {
 	status, err := rt.engine.GetBucketVersioning(bucket)

@@ -3,8 +3,11 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds all runtime configuration for the Stiva server.
@@ -53,6 +56,117 @@ type Config struct {
 	S3Endpoint string
 	// TrustProxy specifies whether to trust proxy headers like X-Forwarded-For.
 	TrustProxy bool
+	// TrustedProxyHops is the number of reverse proxies in front of Stiva. The
+	// client address is read that many entries from the right of
+	// X-Forwarded-For, so caller-supplied entries cannot be trusted.
+	TrustedProxyHops int
+}
+
+// RateLimitDisabledSentinel is the sentinel that turns a rate limiter off. A limit of 0
+// locks callers out permanently, so disabled rate limiters must be explicit.
+const RateLimitDisabledSentinel = -1
+const rateLimitDisabled = RateLimitDisabledSentinel
+
+// Validate reports configuration that would leave the server broken or
+// insecure. It is called before anything binds a port.
+func (c *Config) Validate() error {
+	var errs []error
+
+	if err := validatePort("STIVA_S3_PORT", c.S3Port); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validatePort("STIVA_CONSOLE_PORT", c.ConsolePort); err != nil {
+		errs = append(errs, err)
+	}
+	if c.S3Port == c.ConsolePort {
+		errs = append(errs, fmt.Errorf("STIVA_S3_PORT and STIVA_CONSOLE_PORT must differ (both are %d)", c.S3Port))
+	}
+
+	if c.AccessKey == "" {
+		errs = append(errs, errors.New("STIVA_ACCESS_KEY must not be empty"))
+	}
+	if c.SecretKey == "" {
+		errs = append(errs, errors.New("STIVA_SECRET_KEY must not be empty"))
+	}
+	if c.DataDir == "" {
+		errs = append(errs, errors.New("STIVA_DATA_DIR must not be empty"))
+	}
+
+	// TLS needs both halves of the pair or neither; one alone silently falls
+	// back to a self-signed certificate, which is rarely what was intended.
+	if c.TLSEnabled && (c.TLSCert != "") != (c.TLSKey != "") {
+		errs = append(errs, errors.New("STIVA_TLS_CERT and STIVA_TLS_KEY must be set together"))
+	}
+
+	if secret := os.Getenv("STIVA_JWT_SECRET"); secret != "" && len(secret) < minJWTSecretLen {
+		errs = append(errs, fmt.Errorf(
+			"STIVA_JWT_SECRET must be at least %d characters (got %d); a short secret makes console session tokens brute-forceable",
+			minJWTSecretLen, len(secret)))
+	}
+
+	if err := validateRateLimit("STIVA_LOGIN_RATE_LIMIT", c.LoginRateLimit); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateRateLimit("STIVA_API_RATE_LIMIT", c.APIRateLimit); err != nil {
+		errs = append(errs, err)
+	}
+
+	if c.TrustedProxyHops < 1 {
+		errs = append(errs, errors.New("STIVA_TRUSTED_PROXY_HOPS must be at least 1"))
+	}
+
+	switch strings.ToLower(c.LogFormat) {
+	case "text", "json":
+	default:
+		errs = append(errs, fmt.Errorf("STIVA_LOG_FORMAT must be 'text' or 'json' (got %q)", c.LogFormat))
+	}
+
+	switch strings.ToLower(c.LogLevel) {
+	case "debug", "info", "warn", "error":
+	default:
+		errs = append(errs, fmt.Errorf("STIVA_LOG_LEVEL must be one of debug, info, warn, error (got %q)", c.LogLevel))
+	}
+
+	// Replication needs a complete set of credentials to be usable at all.
+	if c.SyncEndpoint != "" {
+		if c.SyncBucket == "" {
+			errs = append(errs, errors.New("STIVA_SYNC_BUCKET is required when STIVA_SYNC_ENDPOINT is set"))
+		}
+		if c.SyncAccessKey == "" || c.SyncSecretKey == "" {
+			errs = append(errs, errors.New("STIVA_SYNC_ACCESS_KEY and STIVA_SYNC_SECRET_KEY are required when STIVA_SYNC_ENDPOINT is set"))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
+// MinJWTSecretLen is the shortest console signing secret we accept. HS256 with
+// less entropy can be cracked offline once one session token is observed.
+const MinJWTSecretLen = 32
+const minJWTSecretLen = MinJWTSecretLen
+
+// EnvBool returns true if an environment variable holds a common truthy value.
+func EnvBool(key string) bool {
+	return envBool(key)
+}
+
+func validatePort(name string, port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("%s must be between 1 and 65535 (got %d)", name, port)
+	}
+	return nil
+}
+
+func validateRateLimit(name string, limit int) error {
+	if limit == rateLimitDisabled || limit > 0 {
+		return nil
+	}
+	return fmt.Errorf("%s must be positive, or %d to disable the limit (got %d)", name, rateLimitDisabled, limit)
+}
+
+// RateLimitDisabled reports whether a configured limit means "no limiting".
+func RateLimitDisabled(limit int) bool {
+	return limit == rateLimitDisabled
 }
 
 // Load reads configuration from environment variables, falling back to defaults.
@@ -65,7 +179,7 @@ func Load() *Config {
 		ConsolePort:    envIntOrDefault("STIVA_CONSOLE_PORT", 9001),
 		Region:         envOrDefault("STIVA_REGION", "us-east-1"),
 		Domain:         envOrDefault("STIVA_DOMAIN", ""),
-		TLSEnabled:     os.Getenv("STIVA_TLS_ENABLED") == "true",
+		TLSEnabled:     envBool("STIVA_TLS_ENABLED"),
 		TLSCert:        envOrDefault("STIVA_TLS_CERT", ""),
 		TLSKey:         envOrDefault("STIVA_TLS_KEY", ""),
 		LoginRateLimit: envIntOrDefault("STIVA_LOGIN_RATE_LIMIT", 5),
@@ -79,7 +193,20 @@ func Load() *Config {
 		SyncRegion:     envOrDefault("STIVA_SYNC_REGION", "us-east-1"),
 		WebhookURL:     envOrDefault("STIVA_WEBHOOK_URL", ""),
 		S3Endpoint:     envOrDefault("STIVA_S3_ENDPOINT", ""),
-		TrustProxy:     os.Getenv("STIVA_TRUST_PROXY") == "true",
+		TrustProxy:     envBool("STIVA_TRUST_PROXY"),
+
+		TrustedProxyHops: envIntOrDefault("STIVA_TRUSTED_PROXY_HOPS", 1),
+	}
+}
+
+// envBool accepts the usual truthy spellings rather than only the exact string
+// "true", which silently ignored values like "1", "TRUE" and "yes".
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

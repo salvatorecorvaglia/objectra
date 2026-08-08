@@ -16,9 +16,13 @@ import (
 )
 
 var (
-	bucketsBucket   = []byte("buckets")
-	objectsBucket   = []byte("objects")
-	multipartBucket = []byte("multipart")
+	BucketsBucket   = []byte("buckets")
+	ObjectsBucket   = []byte("objects")
+	MultipartBucket = []byte("multipart")
+
+	bucketsBucket   = BucketsBucket
+	objectsBucket   = ObjectsBucket
+	multipartBucket = MultipartBucket
 )
 
 type initLock struct {
@@ -26,20 +30,41 @@ type initLock struct {
 	refCount int
 }
 
+// MaxOpenBucketDBs bounds the number of cached per-bucket bbolt handles. It is
+// a soft cap: a handle that is still in use is never evicted (see bucketDBEntry).
+const MaxOpenBucketDBs = 100
+const maxOpenBucketDBs = MaxOpenBucketDBs
+
+// bucketDBEntry is a refcounted bbolt handle.
+//
+// Refcounting exists because LRU eviction used to call Close() on a handle that
+// other goroutines were still holding and about to run transactions against —
+// long listings would fail with "database not open" once more than 100 buckets
+// were in play. A handle is now only closed once its last user releases it.
+type bucketDBEntry struct {
+	db       *bolt.DB
+	refCount int
+	lastUsed time.Time
+	// evicted marks a handle that lost its cache slot; the last release closes it.
+	evicted bool
+}
+
 // MetadataStore manages bucket and object metadata using per-bucket bbolt databases.
 type MetadataStore struct {
-	globalDB       *bolt.DB
-	activeBuckets  map[string]*bolt.DB
-	activeLastUsed map[string]time.Time
-	mu             sync.RWMutex
-	bucketLocks    [32]*bucketLockSegment
-	dataDir        string
-	initLocks      map[string]*initLock
-	initMu         sync.Mutex
+	globalDB      *bolt.DB
+	activeBuckets map[string]*bucketDBEntry
+	mu            sync.RWMutex
+	bucketLocks   [32]*bucketLockSegment
+	dataDir       string
+	initLocks     map[string]*initLock
+	initMu        sync.Mutex
 
 	bucketCache map[string]*BucketInfo
 	cacheMu     sync.RWMutex
 	inMigration bool
+
+	countCache map[string]countEntry
+	countMu    sync.RWMutex
 }
 
 type bucketLockSegment struct {
@@ -123,11 +148,11 @@ func NewMetadataStore(dataDir string) (*MetadataStore, error) {
 	}
 
 	m := &MetadataStore{
-		globalDB:       globalDB,
-		activeBuckets:  make(map[string]*bolt.DB),
-		activeLastUsed: make(map[string]time.Time),
-		dataDir:        dataDir,
-		bucketCache:    make(map[string]*BucketInfo),
+		globalDB:      globalDB,
+		activeBuckets: make(map[string]*bucketDBEntry),
+		dataDir:       dataDir,
+		bucketCache:   make(map[string]*BucketInfo),
+		countCache:    make(map[string]countEntry),
 	}
 	for i := 0; i < 32; i++ {
 		m.bucketLocks[i] = &bucketLockSegment{
@@ -149,13 +174,12 @@ func (m *MetadataStore) Close() error {
 	defer m.mu.Unlock()
 
 	var errs []error
-	for bucket, db := range m.activeBuckets {
-		if err := db.Close(); err != nil {
+	for bucket, entry := range m.activeBuckets {
+		if err := entry.db.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to close db for bucket %s: %w", bucket, err))
 		}
 	}
-	m.activeBuckets = make(map[string]*bolt.DB)
-	m.activeLastUsed = make(map[string]time.Time)
+	m.activeBuckets = make(map[string]*bucketDBEntry)
 
 	if err := m.globalDB.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("failed to close central metadata db: %w", err))
@@ -164,12 +188,94 @@ func (m *MetadataStore) Close() error {
 	return errors.Join(errs...)
 }
 
-func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
+// releaseBucketDB drops one reference to a handle, closing it if it has been
+// evicted from the cache and this was the last user.
+func (m *MetadataStore) releaseBucketDB(entry *bucketDBEntry) {
 	m.mu.Lock()
-	if db, ok := m.activeBuckets[bucket]; ok {
-		m.activeLastUsed[bucket] = time.Now()
+	defer m.mu.Unlock()
+
+	entry.refCount--
+	if entry.refCount <= 0 && entry.evicted {
+		_ = entry.db.Close()
+	}
+}
+
+// evictLocked drops the least-recently-used idle handle to make room. Handles
+// with live references are skipped rather than closed, so the cap is soft: it is
+// better to briefly exceed it than to pull a database out from under a request.
+// Callers must hold m.mu.
+func (m *MetadataStore) evictLocked(keep string) {
+	if len(m.activeBuckets) < maxOpenBucketDBs {
+		return
+	}
+
+	var oldestBucket string
+	var oldestTime time.Time
+	for name, entry := range m.activeBuckets {
+		if name == keep || entry.refCount > 0 {
+			continue
+		}
+		if oldestBucket == "" || entry.lastUsed.Before(oldestTime) {
+			oldestBucket = name
+			oldestTime = entry.lastUsed
+		}
+	}
+	if oldestBucket == "" {
+		// Every cached handle is in use; keep them all open.
+		return
+	}
+
+	entry := m.activeBuckets[oldestBucket]
+	entry.evicted = true
+	_ = entry.db.Close()
+	delete(m.activeBuckets, oldestBucket)
+}
+
+// acquireBucketDB returns a bbolt handle for the bucket along with a release
+// function that must be called when the caller is done with it.
+// GlobalDB returns the central bbolt database handle.
+func (m *MetadataStore) GlobalDB() *bolt.DB {
+	return m.globalDB
+}
+
+// HasInitLock returns true if an initLock exists for the given bucket.
+func (m *MetadataStore) HasInitLock(bucket string) bool {
+	m.initMu.Lock()
+	defer m.initMu.Unlock()
+	_, exists := m.initLocks[bucket]
+	return exists
+}
+
+// AcquireBucketDB acquires a reference-counted handle to a bucket's bbolt database.
+func (m *MetadataStore) AcquireBucketDB(bucket string) (*bolt.DB, func(), error) {
+	return m.acquireBucketDB(bucket)
+}
+
+// ActiveBucketsCount returns the number of active bucket DB handles in the cache.
+func (m *MetadataStore) ActiveBucketsCount() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.activeBuckets)
+}
+
+// ActiveBucketRefCount returns the reference count for an active bucket DB handle.
+func (m *MetadataStore) ActiveBucketRefCount(bucket string) (int, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	entry, ok := m.activeBuckets[bucket]
+	if !ok {
+		return 0, false
+	}
+	return entry.refCount, true
+}
+
+func (m *MetadataStore) acquireBucketDB(bucket string) (*bolt.DB, func(), error) {
+	m.mu.Lock()
+	if entry, ok := m.activeBuckets[bucket]; ok {
+		entry.lastUsed = time.Now()
+		entry.refCount++
 		m.mu.Unlock()
-		return db, nil
+		return entry.db, func() { m.releaseBucketDB(entry) }, nil
 	}
 	m.mu.Unlock()
 
@@ -184,10 +290,10 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if !exists {
-			return nil, fmt.Errorf("bucket not found in registry: %s", bucket)
+			return nil, nil, fmt.Errorf("bucket not found in registry: %s", bucket)
 		}
 	}
 
@@ -217,10 +323,11 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 
 	// Double check if already opened by another thread
 	m.mu.Lock()
-	if db, ok := m.activeBuckets[bucket]; ok {
-		m.activeLastUsed[bucket] = time.Now()
+	if entry, ok := m.activeBuckets[bucket]; ok {
+		entry.lastUsed = time.Now()
+		entry.refCount++
 		m.mu.Unlock()
-		return db, nil
+		return entry.db, func() { m.releaseBucketDB(entry) }, nil
 	}
 	m.mu.Unlock()
 
@@ -228,7 +335,7 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 	dbPath := filepath.Join(m.dataDir, "metadata", bucket+".db")
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{Timeout: 1 * time.Second})
 	if err != nil {
-		return nil, fmt.Errorf("failed to open metadata db for bucket %s: %w", bucket, err)
+		return nil, nil, fmt.Errorf("failed to open metadata db for bucket %s: %w", bucket, err)
 	}
 
 	err = db.Update(func(tx *bolt.Tx) error {
@@ -242,51 +349,42 @@ func (m *MetadataStore) getBucketDB(bucket string) (*bolt.DB, error) {
 	})
 	if err != nil {
 		db.Close()
-		return nil, fmt.Errorf("failed to initialize metadata db for bucket %s: %w", bucket, err)
+		return nil, nil, fmt.Errorf("failed to initialize metadata db for bucket %s: %w", bucket, err)
 	}
 
-	// Cache the opened database under global write lock with LRU eviction (max 100 open DB handles)
 	m.mu.Lock()
-	if len(m.activeBuckets) >= 100 {
-		var oldestBucket string
-		var oldestTime time.Time
-		for b, last := range m.activeLastUsed {
-			if b == bucket {
-				continue
-			}
-			if oldestBucket == "" || last.Before(oldestTime) {
-				oldestBucket = b
-				oldestTime = last
-			}
-		}
-		if oldestBucket != "" {
-			if oldDB, ok := m.activeBuckets[oldestBucket]; ok {
-				_ = oldDB.Close()
-				delete(m.activeBuckets, oldestBucket)
-				delete(m.activeLastUsed, oldestBucket)
-			}
-		}
+	// Another goroutine may have won the race while we were opening.
+	if existing, ok := m.activeBuckets[bucket]; ok {
+		m.mu.Unlock()
+		_ = db.Close()
+		m.mu.Lock()
+		existing.lastUsed = time.Now()
+		existing.refCount++
+		m.mu.Unlock()
+		return existing.db, func() { m.releaseBucketDB(existing) }, nil
 	}
-	m.activeBuckets[bucket] = db
-	if m.activeLastUsed == nil {
-		m.activeLastUsed = make(map[string]time.Time)
-	}
-	m.activeLastUsed[bucket] = time.Now()
+
+	m.evictLocked(bucket)
+
+	entry := &bucketDBEntry{db: db, refCount: 1, lastUsed: time.Now()}
+	m.activeBuckets[bucket] = entry
 	m.mu.Unlock()
 
-	return db, nil
+	return db, func() { m.releaseBucketDB(entry) }, nil
 }
 
 func (m *MetadataStore) CloseAndRemoveBucketDB(bucket string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	db, ok := m.activeBuckets[bucket]
-	if ok {
-		_ = db.Close()
+	if entry, ok := m.activeBuckets[bucket]; ok {
 		delete(m.activeBuckets, bucket)
-		delete(m.activeLastUsed, bucket)
+		if entry.refCount > 0 {
+			// Someone is mid-transaction; mark it so the last release closes it.
+			entry.evicted = true
+		} else {
+			_ = entry.db.Close()
+		}
 	}
+	m.mu.Unlock()
 
 	dbPath := filepath.Join(m.dataDir, "metadata", bucket+".db")
 	return os.Remove(dbPath)
@@ -323,11 +421,12 @@ func (m *MetadataStore) migrateIfNecessary() error {
 				}
 				bucketName := string(parts[0])
 
-				bucketDB, err := m.getBucketDB(bucketName)
+				bucketDB, releasebucketDB, err := m.acquireBucketDB(bucketName)
 				if err != nil {
 					errs = append(errs, err)
 					return nil
 				}
+				defer releasebucketDB()
 
 				err = bucketDB.Update(func(btx *bolt.Tx) error {
 					bb, err := btx.CreateBucketIfNotExists(objectsBucket)
@@ -361,11 +460,12 @@ func (m *MetadataStore) migrateIfNecessary() error {
 				}
 				bucketName := string(parts[0])
 
-				bucketDB, err := m.getBucketDB(bucketName)
+				bucketDB, releasebucketDB, err := m.acquireBucketDB(bucketName)
 				if err != nil {
 					errs = append(errs, err)
 					return nil
 				}
+				defer releasebucketDB()
 
 				err = bucketDB.Update(func(btx *bolt.Tx) error {
 					bb, err := btx.CreateBucketIfNotExists(multipartBucket)
@@ -444,6 +544,11 @@ func (m *MetadataStore) GetBucket(name string) (*BucketInfo, error) {
 	return &info, nil
 }
 
+// maxBucketCacheEntries bounds the bucket metadata cache. It previously grew
+// without limit, and cached a nil entry for every name that was looked up and
+// not found — so probing random bucket names grew the map indefinitely.
+const maxBucketCacheEntries = 1024
+
 // GetBucketCached retrieves bucket metadata by name from the cache.
 func (m *MetadataStore) GetBucketCached(name string) (*BucketInfo, error) {
 	m.cacheMu.RLock()
@@ -460,6 +565,11 @@ func (m *MetadataStore) GetBucketCached(name string) (*BucketInfo, error) {
 	info, err := m.GetBucket(name)
 
 	m.cacheMu.Lock()
+	// Drop the whole cache rather than track per-entry recency: entries are
+	// cheap to rebuild and this bound is only a safety valve.
+	if len(m.bucketCache) >= maxBucketCacheEntries {
+		m.bucketCache = make(map[string]*BucketInfo, maxBucketCacheEntries)
+	}
 	if err != nil {
 		m.bucketCache[name] = nil
 	} else {
@@ -484,6 +594,7 @@ func (m *MetadataStore) DeleteBucket(name string) error {
 	m.cacheMu.Lock()
 	delete(m.bucketCache, name)
 	m.cacheMu.Unlock()
+	m.invalidateCount(name)
 	return m.CloseAndRemoveBucketDB(name)
 }
 
@@ -492,22 +603,30 @@ func (m *MetadataStore) IsBucketEmpty(bucket string) (bool, error) {
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
 
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return false, err
 	}
+	defer releasedb()
 
+	// Any record at all means the bucket is not empty: like S3, every object
+	// version and delete marker must be removed before the bucket can go.
+	//
+	// This walks a cursor and stops at the first key rather than calling
+	// Stats(), which traverses every page of the bucket just to produce a count
+	// that is then compared against zero.
 	isEmpty := true
 	err = db.View(func(tx *bolt.Tx) error {
-		objB := tx.Bucket(objectsBucket)
-		if objB != nil && objB.Stats().KeyN > 0 {
-			isEmpty = false
-			return nil
+		if objB := tx.Bucket(objectsBucket); objB != nil {
+			if k, _ := objB.Cursor().First(); k != nil {
+				isEmpty = false
+				return nil
+			}
 		}
-		mpB := tx.Bucket(multipartBucket)
-		if mpB != nil && mpB.Stats().KeyN > 0 {
-			isEmpty = false
-			return nil
+		if mpB := tx.Bucket(multipartBucket); mpB != nil {
+			if k, _ := mpB.Cursor().First(); k != nil {
+				isEmpty = false
+			}
 		}
 		return nil
 	})
@@ -700,12 +819,14 @@ func objectMetaKeyVersion(bucket, key, versionID string) []byte {
 
 // PutObjectMeta stores object metadata (both the latest pointer and the historical record).
 func (m *MetadataStore) PutObjectMeta(info *ObjectInfo) error {
+	defer m.invalidateCount(info.Bucket)
 	unlock := m.acquireBucketLock(info.Bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(info.Bucket)
+	db, releasedb, err := m.acquireBucketDB(info.Bucket)
 	if err != nil {
 		return err
 	}
+	defer releasedb()
 	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(objectsBucket)
 
@@ -728,10 +849,16 @@ func (m *MetadataStore) PutObjectMeta(info *ObjectInfo) error {
 		if err != nil {
 			return err
 		}
-		// Write historical version if version ID is present
 		if info.VersionID != "" {
-			err = b.Put(objectMetaKeyVersion(info.Bucket, info.Key, info.VersionID), data)
-			if err != nil {
+			// Write historical version record.
+			if err := b.Put(objectMetaKeyVersion(info.Bucket, info.Key, info.VersionID), data); err != nil {
+				return err
+			}
+		} else {
+			// Versioning is off for this write, so any history left behind by a
+			// previously-versioned period is unreachable: the version records
+			// could never be listed or deleted again and leaked forever.
+			if err := deleteVersionRecords(b, info.Bucket, info.Key); err != nil {
 				return err
 			}
 		}
@@ -740,14 +867,33 @@ func (m *MetadataStore) PutObjectMeta(info *ObjectInfo) error {
 	})
 }
 
+// deleteVersionRecords removes every historical version record for a key,
+// leaving the latest-version pointer untouched.
+func deleteVersionRecords(b *bolt.Bucket, bucket, key string) error {
+	prefix := []byte(bucket + "\x00" + key + "\x00")
+	c := b.Cursor()
+
+	var stale [][]byte
+	for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+		stale = append(stale, append([]byte(nil), k...))
+	}
+	for _, k := range stale {
+		if err := b.Delete(k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // GetObjectMeta retrieves object metadata. If versionID is empty, retrieves the latest version.
 func (m *MetadataStore) GetObjectMeta(bucket, key, versionID string) (*ObjectInfo, error) {
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return nil, err
 	}
+	defer releasedb()
 	var info ObjectInfo
 	err = db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(objectsBucket)
@@ -771,12 +917,14 @@ func (m *MetadataStore) GetObjectMeta(bucket, key, versionID string) (*ObjectInf
 // DeleteObjectMeta removes object metadata. If versionID is specified, deletes only that version.
 // If latest is deleted, updates the latest pointer to the next newest version in history.
 func (m *MetadataStore) DeleteObjectMeta(bucket, key, versionID string) error {
+	defer m.invalidateCount(bucket)
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return err
 	}
+	defer releasedb()
 	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(objectsBucket)
 		if versionID != "" {
@@ -848,10 +996,11 @@ func (m *MetadataStore) findNextNewestVersion(tx *bolt.Tx, bucket, key, deletedV
 func (m *MetadataStore) ListAllObjectMetas(bucket string) ([]ObjectInfo, error) {
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return nil, err
 	}
+	defer releasedb()
 	var objects []ObjectInfo
 	prefix := []byte(bucket + "\x00")
 	err = db.View(func(tx *bolt.Tx) error {
@@ -879,10 +1028,11 @@ func (m *MetadataStore) ListAllObjectMetas(bucket string) ([]ObjectInfo, error) 
 func (m *MetadataStore) ListAllObjectVersions(bucket string) ([]ObjectInfo, error) {
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return nil, err
 	}
+	defer releasedb()
 	var objects []ObjectInfo
 	prefix := []byte(bucket + "\x00")
 	err = db.View(func(tx *bolt.Tx) error {
@@ -909,14 +1059,57 @@ func (m *MetadataStore) ListAllObjectVersions(bucket string) ([]ObjectInfo, erro
 	return objects, err
 }
 
+// countCacheTTL bounds how long a cached object count may be reused when no
+// write has invalidated it. Writes invalidate eagerly, so this only limits
+// staleness from changes made outside this process.
+const countCacheTTL = 30 * time.Second
+
+type countEntry struct {
+	count      int
+	computedAt time.Time
+}
+
+// invalidateCount drops the cached object count for a bucket. Called from every
+// path that adds or removes a latest-version pointer.
+func (m *MetadataStore) invalidateCount(bucket string) {
+	m.countMu.Lock()
+	delete(m.countCache, bucket)
+	m.countMu.Unlock()
+}
+
 // CountObjectMetas counts latest objects in a bucket.
+//
+// The result is memoised: the console lists every bucket on each dashboard load
+// and refreshes every ten seconds, so an uncached count meant a full cursor scan
+// of every bucket's database on every page view.
 func (m *MetadataStore) CountObjectMetas(bucket string) (int, error) {
-	unlock := m.acquireBucketLock(bucket, false)
-	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	m.countMu.RLock()
+	entry, ok := m.countCache[bucket]
+	m.countMu.RUnlock()
+	if ok && time.Since(entry.computedAt) < countCacheTTL {
+		return entry.count, nil
+	}
+
+	count, err := m.countObjectMetasUncached(bucket)
 	if err != nil {
 		return 0, err
 	}
+
+	m.countMu.Lock()
+	m.countCache[bucket] = countEntry{count: count, computedAt: time.Now()}
+	m.countMu.Unlock()
+
+	return count, nil
+}
+
+func (m *MetadataStore) countObjectMetasUncached(bucket string) (int, error) {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
+	db, releasedb, err := m.acquireBucketDB(bucket)
+	if err != nil {
+		return 0, err
+	}
+	defer releasedb()
 	count := 0
 	prefix := []byte(bucket + "\x00")
 	err = db.View(func(tx *bolt.Tx) error {
@@ -936,12 +1129,14 @@ func (m *MetadataStore) CountObjectMetas(bucket string) (int, error) {
 
 // DeleteAllObjectMetas removes all object metadata for a given bucket.
 func (m *MetadataStore) DeleteAllObjectMetas(bucket string) error {
+	defer m.invalidateCount(bucket)
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return err
 	}
+	defer releasedb()
 	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(objectsBucket)
 		c := b.Cursor()
@@ -967,6 +1162,13 @@ func multipartKey(bucket, key, uploadID string) []byte {
 }
 
 // MultipartMeta stores multipart upload metadata.
+//
+// The customer-provided SSE-C key is deliberately NOT a field here. It used to
+// be persisted verbatim into bbolt, which defeated the entire point of SSE-C:
+// anyone with read access to the metadata database could decrypt every
+// multipart object. Only the key's MD5 is retained, purely so that subsequent
+// UploadPart and CompleteMultipartUpload calls can verify the caller supplied
+// the same key. Callers must now present the key on CompleteMultipartUpload.
 type MultipartMeta struct {
 	UploadID             string     `json:"uploadId"`
 	Bucket               string     `json:"bucket"`
@@ -975,7 +1177,6 @@ type MultipartMeta struct {
 	Created              time.Time  `json:"created"`
 	Parts                []PartInfo `json:"parts"`
 	SSECustomerAlgorithm string     `json:"sseCustomerAlgorithm,omitempty"`
-	SSECustomerKey       []byte     `json:"sseCustomerKey,omitempty"`
 	SSECustomerKeyMD5    string     `json:"sseCustomerKeyMD5,omitempty"`
 }
 
@@ -983,10 +1184,11 @@ type MultipartMeta struct {
 func (m *MetadataStore) PutMultipartMeta(meta *MultipartMeta) error {
 	unlock := m.acquireBucketLock(meta.Bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(meta.Bucket)
+	db, releasedb, err := m.acquireBucketDB(meta.Bucket)
 	if err != nil {
 		return err
 	}
+	defer releasedb()
 	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(multipartBucket)
 		data, err := json.Marshal(meta)
@@ -1001,10 +1203,11 @@ func (m *MetadataStore) PutMultipartMeta(meta *MultipartMeta) error {
 func (m *MetadataStore) GetMultipartMeta(bucket, key, uploadID string) (*MultipartMeta, error) {
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return nil, err
 	}
+	defer releasedb()
 	var meta MultipartMeta
 	err = db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(multipartBucket)
@@ -1024,13 +1227,39 @@ func (m *MetadataStore) GetMultipartMeta(bucket, key, uploadID string) (*Multipa
 func (m *MetadataStore) DeleteMultipartMeta(bucket, key, uploadID string) error {
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return err
 	}
+	defer releasedb()
 	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(multipartBucket)
 		return b.Delete(multipartKey(bucket, key, uploadID))
+	})
+}
+
+// IterateMultipartMetas streams every in-progress multipart upload for a bucket
+// to the callback, in key order.
+func (m *MetadataStore) IterateMultipartMetas(bucket string, fn func(meta *MultipartMeta) error) error {
+	unlock := m.acquireBucketLock(bucket, false)
+	defer unlock()
+	db, releasedb, err := m.acquireBucketDB(bucket)
+	if err != nil {
+		return err
+	}
+	defer releasedb()
+	return db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(multipartBucket)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
+			var meta MultipartMeta
+			if err := json.Unmarshal(v, &meta); err != nil {
+				return err
+			}
+			return fn(&meta)
+		})
 	})
 }
 
@@ -1141,12 +1370,14 @@ func (m *MetadataStore) GetBucketLogging(bucket string) (*BucketLoggingStatus, e
 
 // PutObjectMetaRaw stores object metadata exactly as provided, without overriding fields.
 func (m *MetadataStore) PutObjectMetaRaw(info *ObjectInfo) error {
+	defer m.invalidateCount(info.Bucket)
 	unlock := m.acquireBucketLock(info.Bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(info.Bucket)
+	db, releasedb, err := m.acquireBucketDB(info.Bucket)
 	if err != nil {
 		return err
 	}
+	defer releasedb()
 	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(objectsBucket)
 		data, err := json.Marshal(info)
@@ -1184,7 +1415,7 @@ func (m *MetadataStore) GetSystemValue(key string) (string, error) {
 func (m *MetadataStore) PutSystemValue(key, val string) error {
 	return m.globalDB.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketsBucket)
-		return b.Put([]byte("_sys_" + key), []byte(val))
+		return b.Put([]byte("_sys_"+key), []byte(val))
 	})
 }
 
@@ -1192,10 +1423,11 @@ func (m *MetadataStore) PutSystemValue(key, val string) error {
 func (m *MetadataStore) GetObjectVersions(bucket, key string) ([]ObjectInfo, error) {
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return nil, err
 	}
+	defer releasedb()
 	var versions []ObjectInfo
 	prefix := []byte(bucket + "\x00" + key + "\x00")
 	err = db.View(func(tx *bolt.Tx) error {
@@ -1238,10 +1470,11 @@ func (m *MetadataStore) GetObjectVersions(bucket, key string) ([]ObjectInfo, err
 func (m *MetadataStore) IterateObjectMetas(bucket string, fn func(info *ObjectInfo) error) error {
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return err
 	}
+	defer releasedb()
 	prefix := []byte(bucket + "\x00")
 	return db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(objectsBucket)
@@ -1271,10 +1504,11 @@ func (m *MetadataStore) IterateObjectMetas(bucket string, fn func(info *ObjectIn
 func (m *MetadataStore) IterateObjectVersions(bucket string, fn func(info *ObjectInfo) error) error {
 	unlock := m.acquireBucketLock(bucket, false)
 	defer unlock()
-	db, err := m.getBucketDB(bucket)
+	db, releasedb, err := m.acquireBucketDB(bucket)
 	if err != nil {
 		return err
 	}
+	defer releasedb()
 	prefix := []byte(bucket + "\x00")
 	return db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(objectsBucket)
@@ -1299,4 +1533,3 @@ func (m *MetadataStore) IterateObjectVersions(bucket string, fn func(info *Objec
 		return nil
 	})
 }
-

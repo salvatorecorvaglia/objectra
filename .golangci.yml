@@ -4,7 +4,27 @@
 
 version: "2"
 linters:
+  # Default set (errcheck, govet, ineffassign, staticcheck, unused) plus the
+  # checks that matter for a security-sensitive storage server.
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - noctx
+    - revive
+    - unconvert
   settings:
+    gosec:
+      excludes:
+        # MD5 is required by the S3 ETag and SSE-C key-MD5 specs, not used for security.
+        - G401
+        - G501
+    revive:
+      rules:
+        - name: exported
+          disabled: true
     errcheck:
       exclude-functions:
         - (*os.File).Close
@@ -25,6 +45,8 @@ linters:
       - linters:
           - errcheck
           - ineffassign
+          - gosec
+          - noctx
         path: _test\.go
     paths:
       - third_party$
@@ -34,6 +56,10 @@ issues:
   max-issues-per-linter: 0
   max-same-issues: 0
 formatters:
+  # Without this the pipeline never checked formatting at all.
+  enable:
+    - gofmt
+    - goimports
   exclusions:
     generated: lax
     paths:

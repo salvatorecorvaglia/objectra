@@ -28,7 +28,6 @@ func IsValidBucketName(name string) bool {
 	return true
 }
 
-
 type ssecKeyType struct{}
 
 // SSECContextKey is the context key for SSE-C parameters.
@@ -40,7 +39,6 @@ type SSECParams struct {
 	Key       []byte // 32 bytes for AES-256
 	KeyMD5    string // base64-encoded MD5 of the key
 }
-
 
 // CORSRule holds a CORS rule specification.
 type CORSRule struct {
@@ -125,6 +123,16 @@ type ObjectInfo struct {
 	Compressed           bool      `json:"compressed,omitempty"`
 }
 
+// CopySource identifies the source of a CopyObject operation.
+type CopySource struct {
+	Bucket string
+	Key    string
+	// VersionID optionally selects a specific source version.
+	VersionID string
+	// SSEC carries the customer key for an SSE-C encrypted source, if any.
+	SSEC *SSECParams
+}
+
 // ListObjectsInput holds parameters for listing objects in a bucket.
 type ListObjectsInput struct {
 	Bucket            string
@@ -185,17 +193,22 @@ type Engine interface {
 	GetObject(ctx context.Context, bucket, key, versionID string) (io.ReadCloser, *ObjectInfo, error)
 	HeadObject(ctx context.Context, bucket, key, versionID string) (*ObjectInfo, error)
 	DeleteObject(bucket, key, versionID string) (isDeleteMarker bool, delVersionID string, err error)
-	CopyObject(srcBucket, srcKey, dstBucket, dstKey string) (*ObjectInfo, error)
+	CopyObject(ctx context.Context, src CopySource, dstBucket, dstKey string) (*ObjectInfo, error)
 
 	// List operations
 	ListObjects(input *ListObjectsInput) (*ListObjectsOutput, error)
+	ListObjectVersions(input *ListVersionsInput) (*ListVersionsOutput, error)
 	CountObjects(bucket string) (int, error)
 
 	// Multipart upload operations
 	CreateMultipartUpload(bucket, key, contentType string) (*MultipartUploadInfo, error)
 	UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int, reader io.Reader, size int64) (*PartInfo, error)
-	CompleteMultipartUpload(bucket, key, uploadID string, parts []CompletePart) (*ObjectInfo, error)
+	// CompleteMultipartUpload requires the SSE-C customer key in ctx when the
+	// upload was created with SSE-C, because the key is never persisted.
+	CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletePart) (*ObjectInfo, error)
 	AbortMultipartUpload(bucket, key, uploadID string) error
+	ListMultipartUploads(bucket, prefix string, maxUploads int) ([]MultipartUploadInfo, bool, error)
+	ListParts(bucket, key, uploadID string) ([]PartInfo, error)
 
 	// Lifecycle
 	PutBucketLifecycle(bucket string, lc *LifecycleConfiguration) error

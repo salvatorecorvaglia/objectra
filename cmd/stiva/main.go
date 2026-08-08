@@ -25,11 +25,20 @@ var (
 )
 
 func main() {
+	// run returns an error rather than calling os.Exit directly so that deferred
+	// cleanup (notably the shutdown context cancel) always runs.
+	if err := run(); err != nil {
+		slog.Error("Stiva exited with error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	// Parse version flags
 	for _, arg := range os.Args[1:] {
 		if arg == "-v" || arg == "--version" || arg == "-version" || arg == "version" {
 			fmt.Printf("Stiva version %s (commit %s, built at %s)\n", version, commit, date)
-			os.Exit(0)
+			return nil
 		}
 	}
 
@@ -57,6 +66,12 @@ func main() {
 	}
 	slog.SetDefault(slog.New(handler))
 
+	// Fail fast on configuration that would leave the server broken or
+	// insecure, rather than surfacing it as confusing runtime behaviour.
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+
 	if cfg.AccessKey == "stiva" && cfg.SecretKey == "stiva123" {
 		slog.Warn("WARNING: Running Stiva with default credentials! Please set STIVA_ACCESS_KEY and STIVA_SECRET_KEY in production.")
 	}
@@ -65,13 +80,11 @@ func main() {
 
 	srv, err := server.New(cfg)
 	if err != nil {
-		slog.Error("Failed to start Stiva", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("failed to start Stiva: %w", err)
 	}
 
 	if err := srv.Start(); err != nil {
-		slog.Error("Server error", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("server error: %w", err)
 	}
 
 	// Handle graceful shutdown
@@ -85,18 +98,18 @@ func main() {
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
-		slog.Error("Shutdown error", "error", err)
-		os.Exit(1)
+		return fmt.Errorf("shutdown error: %w", err)
 	}
 
 	slog.Info("[Server] Stiva stopped")
+	return nil
 }
 
 func printBanner(cfg *config.Config) {
 	banner := fmt.Sprintf(`
   ____  _   _             
  / ___|| |_(_)_   ____ _  
- \___ \| __| \ \ / / _` + "`" + `| 
+ \___ \| __| \ \ / / _`+"`"+`| 
   ___) | |_| |\ V / (_| | 
  |____/ \__|_| \_/ \__,_| 
 

@@ -29,9 +29,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     ./cmd/stiva
 
 # --- Runtime Stage ---
-FROM alpine:3.20
+FROM alpine:3.22
 
-RUN apk add --no-cache ca-certificates tzdata
+# wget is used by the container healthcheck.
+RUN apk add --no-cache ca-certificates tzdata wget
 
 # Create non-root user
 RUN addgroup -S stiva && adduser -S stiva -G stiva
@@ -58,5 +59,8 @@ VOLUME ["/data"]
 
 # Run as non-root user
 USER stiva
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget --quiet --tries=1 --spider "http://127.0.0.1:${STIVA_CONSOLE_PORT}/" || exit 1
 
 ENTRYPOINT ["./stiva"]

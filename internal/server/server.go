@@ -80,7 +80,14 @@ func New(cfg *config.Config) (*Server, error) {
 	creds := auth.NewCredentials(cfg.AccessKey, cfg.SecretKey)
 
 	// S3 API server
-	s3Router := s3api.NewRouter(engine, creds, cfg.Region, cfg.Domain, cfg.TrustProxy)
+	s3Router := s3api.NewRouter(s3api.RouterOptions{
+		Engine:           engine,
+		Creds:            creds,
+		Region:           cfg.Region,
+		Domain:           cfg.Domain,
+		TrustProxy:       cfg.TrustProxy,
+		TrustedProxyHops: cfg.TrustedProxyHops,
+	})
 	s3Server := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.S3Port),
 		Handler:           s3Router,
@@ -90,7 +97,17 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// Web console server
-	consoleHandler := console.NewHandler(engine, creds, cfg.S3Port, cfg.Region, cfg.S3Endpoint, cfg.LoginRateLimit, cfg.APIRateLimit)
+	consoleHandler := console.NewHandler(console.Options{
+		Engine:           engine,
+		Creds:            creds,
+		S3Port:           cfg.S3Port,
+		Region:           cfg.Region,
+		S3Endpoint:       cfg.S3Endpoint,
+		LoginRateLimit:   cfg.LoginRateLimit,
+		APIRateLimit:     cfg.APIRateLimit,
+		TrustProxy:       cfg.TrustProxy,
+		TrustedProxyHops: cfg.TrustedProxyHops,
+	})
 	consoleServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ConsolePort),
 		Handler:           consoleHandler,
@@ -133,12 +150,15 @@ func New(cfg *config.Config) (*Server, error) {
 
 // Start launches both servers concurrently and starts background workers.
 func (s *Server) Start() error {
-	s3Listener, err := net.Listen("tcp", s.s3Server.Addr)
+	var lc net.ListenConfig
+	ctx := context.Background()
+
+	s3Listener, err := lc.Listen(ctx, "tcp", s.s3Server.Addr)
 	if err != nil {
 		return fmt.Errorf("failed to bind S3 API port %s: %w", s.s3Server.Addr, err)
 	}
 
-	consoleListener, err := net.Listen("tcp", s.consoleServer.Addr)
+	consoleListener, err := lc.Listen(ctx, "tcp", s.consoleServer.Addr)
 	if err != nil {
 		s3Listener.Close()
 		return fmt.Errorf("failed to bind Console port %s: %w", s.consoleServer.Addr, err)

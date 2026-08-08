@@ -82,6 +82,18 @@ func (rt *Router) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// SSE-C uploads must re-present the customer key here: Stiva concatenates
+	// parts on completion and no longer stores the key server-side.
+	params, err := extractSSECParams(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+	ctx := r.Context()
+	if params != nil {
+		ctx = context.WithValue(ctx, storage.SSECContextKey, params)
+	}
+
 	var parts []storage.CompletePart
 	for _, p := range reqBody.Parts {
 		etag := p.ETag
@@ -95,7 +107,7 @@ func (rt *Router) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		})
 	}
 
-	info, err := rt.engine.CompleteMultipartUpload(bucket, key, uploadID, parts)
+	info, err := rt.engine.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts)
 	if handleStorageError(w, err, resource) {
 		return
 	}

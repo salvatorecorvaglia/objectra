@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"os"
 	"testing"
 
 	"github.com/salvatorecorvaglia/stiva/internal/config"
@@ -9,10 +8,10 @@ import (
 
 func TestConfigLoadDefaults(t *testing.T) {
 	// Clear any overrides
-	os.Unsetenv("STIVA_ACCESS_KEY")
-	os.Unsetenv("STIVA_SECRET_KEY")
-	os.Unsetenv("STIVA_S3_PORT")
-	os.Unsetenv("STIVA_TLS_ENABLED")
+	t.Setenv("STIVA_ACCESS_KEY", "")
+	t.Setenv("STIVA_SECRET_KEY", "")
+	t.Setenv("STIVA_S3_PORT", "")
+	t.Setenv("STIVA_TLS_ENABLED", "")
 
 	cfg := config.Load()
 

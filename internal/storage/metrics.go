@@ -16,10 +16,10 @@ type MetricsTracker struct {
 	ActiveMultiparts int64
 
 	// Disk space caching
-	lastDiskCheck    time.Time
-	cachedTotal      uint64
-	cachedFree       uint64
-	diskMu           sync.Mutex
+	lastDiskCheck time.Time
+	cachedTotal   uint64
+	cachedFree    uint64
+	diskMu        sync.Mutex
 }
 
 // GlobalMetrics is the singleton instance of the metrics tracker.
@@ -33,12 +33,21 @@ func (m *MetricsTracker) IncErrors() {
 	atomic.AddUint64(&m.RequestErrors, 1)
 }
 
-func (m *MetricsTracker) AddUploaded(n uint64) {
-	atomic.AddUint64(&m.BytesUploaded, n)
+// AddUploaded records n uploaded bytes. Negative values are ignored so that
+// callers can pass io.Copy results directly without an unchecked conversion.
+func (m *MetricsTracker) AddUploaded(n int64) {
+	if n <= 0 {
+		return
+	}
+	atomic.AddUint64(&m.BytesUploaded, uint64(n))
 }
 
-func (m *MetricsTracker) AddDownloaded(n uint64) {
-	atomic.AddUint64(&m.BytesDownloaded, n)
+// AddDownloaded records n downloaded bytes. Negative values are ignored.
+func (m *MetricsTracker) AddDownloaded(n int64) {
+	if n <= 0 {
+		return
+	}
+	atomic.AddUint64(&m.BytesDownloaded, uint64(n))
 }
 
 func (m *MetricsTracker) IncActiveMultiparts() {
@@ -48,7 +57,6 @@ func (m *MetricsTracker) IncActiveMultiparts() {
 func (m *MetricsTracker) DecActiveMultiparts() {
 	atomic.AddInt64(&m.ActiveMultiparts, -1)
 }
-
 
 // FormatPrometheus generates a plain-text Prometheus-compliant metrics string.
 func (m *MetricsTracker) FormatPrometheus(dataDir string) string {

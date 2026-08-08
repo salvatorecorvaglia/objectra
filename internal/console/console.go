@@ -1,8 +1,10 @@
 package console
 
 import (
+	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -18,6 +20,8 @@ import (
 	"time"
 
 	"github.com/salvatorecorvaglia/stiva/internal/auth"
+	"github.com/salvatorecorvaglia/stiva/internal/config"
+	"github.com/salvatorecorvaglia/stiva/internal/httpx"
 	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
@@ -26,6 +30,12 @@ const (
 	errInvalidRequest   = "invalid request"
 	contentTypeHeader   = "Content-Type"
 	errMissingKey       = "missing key parameter"
+
+	// defaultPresignExpiry is used when the caller does not specify one.
+	defaultPresignExpiry = time.Hour
+	// defaultMaxPresignExpiry caps generated links. S3 itself allows at most 7
+	// days for SigV4 presigned URLs, and these are signed with root credentials.
+	defaultMaxPresignExpiry = 7 * 24 * time.Hour
 )
 
 //go:embed static/*
@@ -37,109 +47,142 @@ type clientRateLimit struct {
 }
 
 type rateLimiter struct {
-		mu          sync.Mutex
-		clients     map[string]*clientRateLimit
-		rate        float64 // tokens per second
-		burst       float64
-		lastCleanup time.Time
+	mu          sync.Mutex
+	clients     map[string]*clientRateLimit
+	rate        float64 // tokens per second
+	burst       float64
+	lastCleanup time.Time
+	disabled    bool
+}
+
+func newRateLimiter(limitPerMin int) *rateLimiter {
+	return &rateLimiter{
+		clients:     make(map[string]*clientRateLimit),
+		rate:        float64(limitPerMin) / 60.0,
+		burst:       float64(limitPerMin),
+		lastCleanup: time.Now(),
+		// A limit of 0 previously meant "allow nothing", which permanently
+		// locked operators out of the console when they set it expecting
+		// "unlimited". Disabling is now explicit and 0 is rejected by config
+		// validation.
+		disabled: config.RateLimitDisabled(limitPerMin),
+	}
+}
+
+func (rl *rateLimiter) allow(ip string) bool {
+	if rl.disabled {
+		return true
 	}
 
-	func newRateLimiter(limitPerMin int) *rateLimiter {
-		rate := float64(limitPerMin) / 60.0
-		return &rateLimiter{
-			clients:     make(map[string]*clientRateLimit),
-			rate:        rate,
-			burst:       float64(limitPerMin),
-			lastCleanup: time.Now(),
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+
+	// Passive stale client cleanup (older than 10 minutes, runs at most once per minute)
+	if now.Sub(rl.lastCleanup) > 1*time.Minute {
+		for k, v := range rl.clients {
+			if now.Sub(v.lastAccess) > 10*time.Minute {
+				delete(rl.clients, k)
+			}
 		}
+		rl.lastCleanup = now
 	}
 
-	func (rl *rateLimiter) allow(ip string) bool {
-		rl.mu.Lock()
-		defer rl.mu.Unlock()
-
-		now := time.Now()
-
-		// Passive stale client cleanup (older than 10 minutes, runs at most once per minute)
-		if now.Sub(rl.lastCleanup) > 1*time.Minute {
+	client, exists := rl.clients[ip]
+	if !exists {
+		if len(rl.clients) >= 10000 {
 			for k, v := range rl.clients {
-				if now.Sub(v.lastAccess) > 10*time.Minute {
+				if now.Sub(v.lastAccess) > 1*time.Minute {
 					delete(rl.clients, k)
 				}
 			}
-			rl.lastCleanup = now
 		}
-
-		client, exists := rl.clients[ip]
-		if !exists {
-			if len(rl.clients) >= 10000 {
-				for k, v := range rl.clients {
-					if now.Sub(v.lastAccess) > 1*time.Minute {
-						delete(rl.clients, k)
-					}
-				}
-			}
-			client = &clientRateLimit{
-				tokens:     rl.burst,
-				lastAccess: now,
-			}
-			rl.clients[ip] = client
+		client = &clientRateLimit{
+			tokens:     rl.burst,
+			lastAccess: now,
 		}
-
-		elapsed := now.Sub(client.lastAccess).Seconds()
-		client.tokens += elapsed * rl.rate
-		if client.tokens > rl.burst {
-			client.tokens = rl.burst
-		}
-		client.lastAccess = now
-
-		if client.tokens >= 1 {
-			client.tokens -= 1
-			return true
-		}
-		return false
+		rl.clients[ip] = client
 	}
 
-var trustProxy = os.Getenv("STIVA_TRUST_PROXY") == "true"
+	elapsed := now.Sub(client.lastAccess).Seconds()
+	client.tokens += elapsed * rl.rate
+	if client.tokens > rl.burst {
+		client.tokens = rl.burst
+	}
+	client.lastAccess = now
 
-func getClientIP(r *http.Request) string {
-	if trustProxy {
-		if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-			if idx := strings.Index(ip, ","); idx != -1 {
-				return strings.TrimSpace(ip[:idx])
-			}
-			return strings.TrimSpace(ip)
-		}
+	if client.tokens >= 1 {
+		client.tokens -= 1
+		return true
 	}
-	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return ip
-	}
-	return r.RemoteAddr
+	return false
+}
+
+// getClientIP resolves the rate-limiting key for a request.
+//
+// Proxy trust now comes from the handler's configuration rather than a
+// package-level env lookup, so the console and the S3 API can no longer
+// disagree about whether X-Forwarded-For is trustworthy.
+func (h *Handler) getClientIP(r *http.Request) string {
+	return httpx.ClientIP(r, h.trustProxy, h.trustedProxyHops)
+}
+
+// Options configures a console Handler. It replaces a seven-argument
+// constructor in which the proxy-trust setting was not threaded through at all.
+type Options struct {
+	Engine           storage.Engine
+	Creds            *auth.Credentials
+	S3Port           int
+	Region           string
+	S3Endpoint       string
+	LoginRateLimit   int
+	APIRateLimit     int
+	TrustProxy       bool
+	TrustedProxyHops int
+	// MaxPresignExpiry bounds how far in the future a generated presigned URL
+	// may be valid. Zero selects defaultMaxPresignExpiry.
+	MaxPresignExpiry time.Duration
 }
 
 // Handler serves the web console UI and its REST API.
 type Handler struct {
-	engine       storage.Engine
-	creds        *auth.Credentials
-	s3Port       int
-	region       string
-	s3Endpoint   string
-	mux          *http.ServeMux
-	loginLimiter *rateLimiter
-	apiLimiter   *rateLimiter
+	engine           storage.Engine
+	creds            *auth.Credentials
+	s3Port           int
+	region           string
+	s3Endpoint       string
+	mux              *http.ServeMux
+	loginLimiter     *rateLimiter
+	apiLimiter       *rateLimiter
+	trustProxy       bool
+	trustedProxyHops int
+	maxPresignExpiry time.Duration
 }
 
 // NewHandler creates a new console handler.
-func NewHandler(engine storage.Engine, creds *auth.Credentials, s3Port int, region string, s3Endpoint string, loginLimit, apiLimit int) *Handler {
+func NewHandler(opts Options) *Handler {
+	hops := opts.TrustedProxyHops
+	if hops < 1 {
+		hops = 1
+	}
+	maxExpiry := opts.MaxPresignExpiry
+	if maxExpiry <= 0 {
+		maxExpiry = defaultMaxPresignExpiry
+	}
+
 	h := &Handler{
-		engine:       engine,
-		creds:        creds,
-		s3Port:       s3Port,
-		region:       region,
-		s3Endpoint:   s3Endpoint,
-		mux:          http.NewServeMux(),
-		loginLimiter: newRateLimiter(loginLimit),
-		apiLimiter:   newRateLimiter(apiLimit),
+		engine:           opts.Engine,
+		creds:            opts.Creds,
+		s3Port:           opts.S3Port,
+		region:           opts.Region,
+		s3Endpoint:       opts.S3Endpoint,
+		mux:              http.NewServeMux(),
+		loginLimiter:     newRateLimiter(opts.LoginRateLimit),
+		apiLimiter:       newRateLimiter(opts.APIRateLimit),
+		trustProxy:       opts.TrustProxy,
+		trustedProxyHops: hops,
+		maxPresignExpiry: maxExpiry,
 	}
 	h.setupRoutes()
 	return h
@@ -147,8 +190,7 @@ func NewHandler(engine storage.Engine, creds *auth.Credentials, s3Port int, regi
 
 func (h *Handler) rateLimitMiddleware(limiter *rateLimiter, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ip := getClientIP(r)
-		if !limiter.allow(ip) {
+		if !limiter.allow(h.getClientIP(r)) {
 			writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many requests"})
 			return
 		}
@@ -195,8 +237,36 @@ func (h *Handler) setupRoutes() {
 	})
 }
 
+// securityHeaders applies the baseline browser protections the console was
+// serving without: framing, MIME sniffing, referrer leakage and a CSP.
+//
+// The CSP permits inline styles and scripts because the SPA ships inline
+// handlers and style attributes; it still blocks loading code from any other
+// origin, and 'frame-ancestors none' is the modern equivalent of DENY.
+func securityHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("X-Content-Type-Options", "nosniff")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "same-origin")
+	h.Set("Content-Security-Policy",
+		"default-src 'self'; "+
+			"img-src 'self' data: blob:; "+
+			"media-src 'self' blob:; "+
+			"style-src 'self' 'unsafe-inline'; "+
+			"script-src 'self' 'unsafe-inline'; "+
+			"connect-src 'self'; "+
+			"font-src 'self'; "+
+			"frame-src 'self' blob:; "+
+			"object-src 'none'; "+
+			"base-uri 'none'; "+
+			"form-action 'self'; "+
+			"frame-ancestors 'none'")
+}
+
 // ServeHTTP implements the http.Handler interface.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	securityHeaders(w)
+
 	// Set CORS headers for console
 	// CORS: Only allow requests from the same origin.
 	// In production, this should be set to the actual console URL.
@@ -258,7 +328,12 @@ func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.AccessKey != h.creds.AccessKey || req.SecretKey != h.creds.SecretKey {
+	// Constant-time comparison: a plain != leaks the secret's prefix length
+	// through response timing, one byte at a time.
+	accessOK := subtle.ConstantTimeCompare([]byte(req.AccessKey), []byte(h.creds.AccessKey)) == 1
+	secretOK := subtle.ConstantTimeCompare([]byte(req.SecretKey), []byte(h.creds.SecretKey)) == 1
+	if !accessOK || !secretOK {
+		slog.Warn("[Console] Failed login attempt", "ip", h.getClientIP(r))
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
@@ -508,37 +583,83 @@ func (h *Handler) listObjects(w http.ResponseWriter, r *http.Request, bucket str
 }
 
 func (h *Handler) uploadObject(w http.ResponseWriter, r *http.Request, bucket string) {
-	// Parse multipart form (max 32MB in memory; larger files spill to temp disk)
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	// Stream the multipart body part-by-part instead of calling
+	// ParseMultipartForm, which spooled the entire upload into the *OS* temp
+	// directory (ignoring STIVA_DATA_DIR) before a single byte reached storage.
+	mr, err := r.MultipartReader()
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse upload"})
 		return
 	}
-	if r.MultipartForm != nil {
-		defer func() { _ = r.MultipartForm.RemoveAll() }()
+
+	// Prefer the key from the query string. Streaming means form fields are only
+	// visible if they precede the file part, so relying on field order alone
+	// would silently fall back to the bare filename and flatten folder uploads.
+	var (
+		key         = r.URL.Query().Get("key")
+		filename    string
+		contentType string
+		info        *storage.ObjectInfo
+	)
+
+	for {
+		part, err := mr.NextPart()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse upload"})
+			return
+		}
+
+		switch part.FormName() {
+		case "key":
+			// Form fields are small; bound them anyway so a hostile client
+			// cannot stream an unbounded "key".
+			buf, err := io.ReadAll(io.LimitReader(part, 4096))
+			part.Close()
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": errInvalidRequest})
+				return
+			}
+			if key == "" {
+				key = string(buf)
+			}
+
+		case "file":
+			filename = part.FileName()
+			contentType = part.Header.Get(contentTypeHeader)
+			if contentType == "" {
+				contentType = "application/octet-stream"
+			}
+
+			objectKey := key
+			if objectKey == "" {
+				objectKey = filename
+			}
+			if objectKey == "" {
+				part.Close()
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing key"})
+				return
+			}
+
+			// Size is unknown when streaming, so pass -1 and let the engine
+			// record whatever was actually written.
+			info, err = h.engine.PutObject(r.Context(), bucket, objectKey, part, -1, contentType)
+			part.Close()
+			if err != nil {
+				slog.Error("[Console] Upload error", "error", err)
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "upload failed"})
+				return
+			}
+
+		default:
+			part.Close()
+		}
 	}
 
-	file, header, err := r.FormFile("file")
-	if err != nil {
+	if info == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no file provided"})
-		return
-	}
-	defer file.Close()
-
-	// Get the key (path) for the object
-	key := r.FormValue("key")
-	if key == "" {
-		key = header.Filename
-	}
-
-	contentType := header.Header.Get(contentTypeHeader)
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-
-	info, err := h.engine.PutObject(r.Context(), bucket, key, file, header.Size, contentType)
-	if err != nil {
-		slog.Error("[Console] Upload error", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -569,6 +690,10 @@ func (h *Handler) downloadObject(w http.ResponseWriter, r *http.Request, bucket 
 
 	w.Header().Set(contentTypeHeader, info.ContentType)
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+	// Content is user-supplied: never let the browser sniff it into something
+	// executable, and never render it inline in this origin.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, reader)
 }
@@ -590,6 +715,9 @@ func (h *Handler) deleteObject(w http.ResponseWriter, r *http.Request, bucket st
 
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set(contentTypeHeader, "application/json")
+	// API responses describe account state and must not be cached by browsers
+	// or intermediaries.
+	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
 }
@@ -693,7 +821,7 @@ func (h *Handler) completeMultipart(w http.ResponseWriter, r *http.Request, buck
 		})
 	}
 
-	info, err := h.engine.CompleteMultipartUpload(bucket, req.Key, req.UploadID, s3Parts)
+	info, err := h.engine.CompleteMultipartUpload(r.Context(), bucket, req.Key, req.UploadID, s3Parts)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -732,12 +860,22 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 		return
 	}
 
-	expiresStr := r.URL.Query().Get("expires")
-	expiresSec := 3600 // Default 1 hour
-	if expiresStr != "" {
-		if val, err := strconv.Atoi(expiresStr); err == nil && val > 0 {
-			expiresSec = val
+	// Presigned URLs are signed with the root credentials, so an unbounded
+	// expiry effectively hands out a permanent root-signed link. Clamp it.
+	expires := defaultPresignExpiry
+	if expiresStr := r.URL.Query().Get("expires"); expiresStr != "" {
+		val, err := strconv.Atoi(expiresStr)
+		if err != nil || val <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "expires must be a positive number of seconds"})
+			return
 		}
+		expires = time.Duration(val) * time.Second
+	}
+	if expires > h.maxPresignExpiry {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("expires must not exceed %d seconds", int(h.maxPresignExpiry.Seconds())),
+		})
+		return
 	}
 
 	s3Endpoint := h.s3Endpoint
@@ -747,7 +885,7 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
 			scheme = "https"
 		}
-		
+
 		hostWithoutPort := r.Host
 		if strings.Contains(r.Host, ":") {
 			h, _, err := net.SplitHostPort(r.Host)
@@ -766,7 +904,7 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 		h.region,
 		bucket,
 		key,
-		time.Duration(expiresSec)*time.Second,
+		expires,
 		s3Endpoint,
 	)
 	if err != nil {
@@ -783,7 +921,8 @@ func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	authHeader := r.Header.Get("Authorization")
 	if metricsToken != "" {
-		if authHeader == "Bearer "+metricsToken {
+		expected := "Bearer " + metricsToken
+		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) == 1 {
 			authorized = true
 		}
 	}
@@ -859,4 +998,3 @@ func (h *Handler) handleDeleteLifecycle(w http.ResponseWriter, _ *http.Request, 
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "lifecycle configuration deleted"})
 }
-

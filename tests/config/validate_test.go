@@ -1,0 +1,164 @@
+package config_test
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/salvatorecorvaglia/stiva/internal/config"
+)
+
+func validConfig() *config.Config {
+	return &config.Config{
+		AccessKey:        "ak",
+		SecretKey:        "sk",
+		DataDir:          "/data",
+		S3Port:           9000,
+		ConsolePort:      9001,
+		Region:           "us-east-1",
+		LoginRateLimit:   5,
+		APIRateLimit:     60,
+		LogLevel:         "info",
+		LogFormat:        "text",
+		TrustedProxyHops: 1,
+	}
+}
+
+func TestValidateAcceptsDefaults(t *testing.T) {
+	if err := validConfig().Validate(); err != nil {
+		t.Fatalf("default configuration rejected: %v", err)
+	}
+}
+
+// TestValidateRejectsZeroRateLimit is the regression test for the audit finding
+// that STIVA_LOGIN_RATE_LIMIT=0 produced a limiter with zero tokens and zero
+// refill, permanently locking every operator out of the console. Zero is now a
+// startup error, and -1 is the explicit way to disable limiting.
+func TestValidateRejectsZeroRateLimit(t *testing.T) {
+	cfg := validConfig()
+	cfg.LoginRateLimit = 0
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("a login rate limit of 0 must be rejected, not silently lock out the console")
+	}
+	if !strings.Contains(err.Error(), "STIVA_LOGIN_RATE_LIMIT") {
+		t.Errorf("error should name the offending variable, got: %v", err)
+	}
+}
+
+func TestRateLimitDisabledSentinel(t *testing.T) {
+	cfg := validConfig()
+	cfg.LoginRateLimit = config.RateLimitDisabledSentinel
+	cfg.APIRateLimit = config.RateLimitDisabledSentinel
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("the disable sentinel must be accepted: %v", err)
+	}
+	if !config.RateLimitDisabled(config.RateLimitDisabledSentinel) {
+		t.Error("RateLimitDisabled should report true for the sentinel")
+	}
+	if config.RateLimitDisabled(5) {
+		t.Error("RateLimitDisabled should report false for a real limit")
+	}
+}
+
+func TestValidateRejectsBadConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*config.Config)
+		wantSub string
+	}{
+		{"port too low", func(c *config.Config) { c.S3Port = 0 }, "STIVA_S3_PORT"},
+		{"port too high", func(c *config.Config) { c.ConsolePort = 70000 }, "STIVA_CONSOLE_PORT"},
+		{"ports collide", func(c *config.Config) { c.ConsolePort = c.S3Port }, "must differ"},
+		{"empty access key", func(c *config.Config) { c.AccessKey = "" }, "STIVA_ACCESS_KEY"},
+		{"empty secret key", func(c *config.Config) { c.SecretKey = "" }, "STIVA_SECRET_KEY"},
+		{"empty data dir", func(c *config.Config) { c.DataDir = "" }, "STIVA_DATA_DIR"},
+		{"bad log level", func(c *config.Config) { c.LogLevel = "verbose" }, "STIVA_LOG_LEVEL"},
+		{"bad log format", func(c *config.Config) { c.LogFormat = "yaml" }, "STIVA_LOG_FORMAT"},
+		{"zero proxy hops", func(c *config.Config) { c.TrustedProxyHops = 0 }, "STIVA_TRUSTED_PROXY_HOPS"},
+		{
+			"tls cert without key",
+			func(c *config.Config) { c.TLSEnabled = true; c.TLSCert = "/tmp/c.pem" },
+			"must be set together",
+		},
+		{
+			"tls key without cert",
+			func(c *config.Config) { c.TLSEnabled = true; c.TLSKey = "/tmp/k.pem" },
+			"must be set together",
+		},
+		{
+			"sync endpoint without bucket",
+			func(c *config.Config) {
+				c.SyncEndpoint = "http://backup:9000"
+				c.SyncAccessKey = "a"
+				c.SyncSecretKey = "b"
+			},
+			"STIVA_SYNC_BUCKET",
+		},
+		{
+			"sync endpoint without credentials",
+			func(c *config.Config) {
+				c.SyncEndpoint = "http://backup:9000"
+				c.SyncBucket = "mirror"
+			},
+			"STIVA_SYNC_ACCESS_KEY",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.mutate(cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected %s to be rejected", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Errorf("error %q should mention %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// TestValidateRejectsShortJWTSecret guards the console signing key: HS256 with a
+// short secret can be brute-forced offline from one captured token.
+func TestValidateRejectsShortJWTSecret(t *testing.T) {
+	t.Setenv("STIVA_JWT_SECRET", "short")
+
+	err := validConfig().Validate()
+	if err == nil {
+		t.Fatal("a short STIVA_JWT_SECRET must be rejected")
+	}
+	if !strings.Contains(err.Error(), "STIVA_JWT_SECRET") {
+		t.Errorf("error should name STIVA_JWT_SECRET, got: %v", err)
+	}
+}
+
+func TestValidateAcceptsLongJWTSecret(t *testing.T) {
+	t.Setenv("STIVA_JWT_SECRET", strings.Repeat("x", config.MinJWTSecretLen))
+
+	if err := validConfig().Validate(); err != nil {
+		t.Fatalf("a sufficiently long secret must be accepted: %v", err)
+	}
+}
+
+// TestEnvBoolAcceptsCommonSpellings covers the finding that only the exact
+// string "true" enabled boolean flags, silently ignoring "1", "TRUE" and "yes".
+func TestEnvBoolAcceptsCommonSpellings(t *testing.T) {
+	truthy := []string{"1", "t", "true", "TRUE", "True", "y", "yes", "YES", "on", " true "}
+	for _, v := range truthy {
+		t.Setenv("STIVA_TEST_BOOL", v)
+		if !config.EnvBool("STIVA_TEST_BOOL") {
+			t.Errorf("EnvBool(%q) = false, want true", v)
+		}
+	}
+
+	falsy := []string{"", "0", "false", "no", "off", "banana"}
+	for _, v := range falsy {
+		t.Setenv("STIVA_TEST_BOOL", v)
+		if config.EnvBool("STIVA_TEST_BOOL") {
+			t.Errorf("EnvBool(%q) = true, want false", v)
+		}
+	}
+}

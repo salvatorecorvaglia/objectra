@@ -44,29 +44,63 @@ jobs:
         with:
           version: v2.12.2
 
-  # ── Test ──────────────────────────────────────────────────────
-  test:
-    name: Test (Go ${{ matrix.go-version }})
+  # ── Vulnerability scan ────────────────────────────────────────
+  vulncheck:
+    name: Vulnerability Scan
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25"]
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Set up Go ${{ matrix.go-version }}
+      - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.25"
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # ── Test ──────────────────────────────────────────────────────
+  # Windows is included because internal/storage/paths.go carries
+  # Windows-specific path-traversal logic that must be exercised, not
+  # just cross-compiled.
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
           cache: true
           cache-dependency-path: go.sum
 
       - name: Run tests
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
+      - name: Enforce coverage floor
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Total coverage: ${total}%"
+          # Ratchet: raise this floor as coverage improves; never lower it.
+          floor=60.0
+          awk -v t="$total" -v f="$floor" 'BEGIN { if (t+0 < f+0) { printf "Coverage %.1f%% is below the %.1f%% floor\n", t, f; exit 1 } }'
+
       - name: Upload coverage artifact
-        if: matrix.go-version == '1.25'
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report

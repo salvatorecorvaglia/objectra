@@ -1,4 +1,4 @@
-package storage
+package storage_test
 
 import (
 	"encoding/json"
@@ -9,6 +9,7 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
 
 func TestMetadataMigration(t *testing.T) {
@@ -23,37 +24,37 @@ func TestMetadataMigration(t *testing.T) {
 
 	err = db.Update(func(tx *bolt.Tx) error {
 		// Create legacy buckets
-		bBucket, err := tx.CreateBucket(bucketsBucket)
+		bBucket, err := tx.CreateBucket(storage.BucketsBucket)
 		if err != nil {
 			return err
 		}
-		bucket1 := BucketInfo{Name: "b1", CreationDate: time.Now().UTC()}
+		bucket1 := storage.BucketInfo{Name: "b1", CreationDate: time.Now().UTC()}
 		bData, _ := json.Marshal(bucket1)
 		_ = bBucket.Put([]byte("b1"), bData)
 
-		bucket2 := BucketInfo{Name: "b2", CreationDate: time.Now().UTC()}
+		bucket2 := storage.BucketInfo{Name: "b2", CreationDate: time.Now().UTC()}
 		bData2, _ := json.Marshal(bucket2)
 		_ = bBucket.Put([]byte("b2"), bData2)
 
 		// Create legacy objects bucket
-		oBucket, err := tx.CreateBucket(objectsBucket)
+		oBucket, err := tx.CreateBucket(storage.ObjectsBucket)
 		if err != nil {
 			return err
 		}
-		obj1 := ObjectInfo{Bucket: "b1", Key: "file1.txt", Size: 10, ETag: "etag1", LastModified: time.Now().UTC()}
+		obj1 := storage.ObjectInfo{Bucket: "b1", Key: "file1.txt", Size: 10, ETag: "etag1", LastModified: time.Now().UTC()}
 		oData1, _ := json.Marshal(obj1)
 		_ = oBucket.Put([]byte("b1\x00file1.txt"), oData1)
 
-		obj2 := ObjectInfo{Bucket: "b2", Key: "file2.txt", Size: 20, ETag: "etag2", LastModified: time.Now().UTC()}
+		obj2 := storage.ObjectInfo{Bucket: "b2", Key: "file2.txt", Size: 20, ETag: "etag2", LastModified: time.Now().UTC()}
 		oData2, _ := json.Marshal(obj2)
 		_ = oBucket.Put([]byte("b2\x00file2.txt"), oData2)
 
 		// Create legacy multipart bucket
-		mBucket, err := tx.CreateBucket(multipartBucket)
+		mBucket, err := tx.CreateBucket(storage.MultipartBucket)
 		if err != nil {
 			return err
 		}
-		mp1 := MultipartMeta{UploadID: "up1", Bucket: "b1", Key: "large.bin", Created: time.Now().UTC()}
+		mp1 := storage.MultipartMeta{UploadID: "up1", Bucket: "b1", Key: "large.bin", Created: time.Now().UTC()}
 		mData1, _ := json.Marshal(mp1)
 		_ = mBucket.Put([]byte("b1\x00large.bin\x00up1"), mData1)
 
@@ -66,7 +67,7 @@ func TestMetadataMigration(t *testing.T) {
 	db.Close()
 
 	// 2. Open the MetadataStore (which triggers auto-migration)
-	meta, err := NewMetadataStore(tmpDir)
+	meta, err := storage.NewMetadataStore(tmpDir)
 	if err != nil {
 		t.Fatalf("NewMetadataStore failed: %v", err)
 	}
@@ -81,11 +82,11 @@ func TestMetadataMigration(t *testing.T) {
 	}
 
 	// 4. Verify legacy objects & multipart buckets were cleaned up from global database
-	err = meta.globalDB.View(func(tx *bolt.Tx) error {
-		if tx.Bucket(objectsBucket) != nil {
+	err = meta.GlobalDB().View(func(tx *bolt.Tx) error {
+		if tx.Bucket(storage.ObjectsBucket) != nil {
 			t.Error("objects bucket was not removed from central database")
 		}
-		if tx.Bucket(multipartBucket) != nil {
+		if tx.Bucket(storage.MultipartBucket) != nil {
 			t.Error("multipart bucket was not removed from central database")
 		}
 		return nil
@@ -123,7 +124,7 @@ func TestMetadataMigration(t *testing.T) {
 func TestMetadataInitLocksCleanupOnError(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	meta, err := NewMetadataStore(tmpDir)
+	meta, err := storage.NewMetadataStore(tmpDir)
 	if err != nil {
 		t.Fatalf("NewMetadataStore failed: %v", err)
 	}
@@ -143,11 +144,7 @@ func TestMetadataInitLocksCleanupOnError(t *testing.T) {
 	}
 
 	// Verify that the badBucket lock is cleaned up from initLocks map
-	meta.initMu.Lock()
-	_, exists := meta.initLocks[badBucket]
-	meta.initMu.Unlock()
-
-	if exists {
+	if meta.HasInitLock(badBucket) {
 		t.Error("expected initLocks entry to be deleted after initialization failure")
 	}
 }
@@ -155,14 +152,14 @@ func TestMetadataInitLocksCleanupOnError(t *testing.T) {
 func TestListBucketsIgnoresSystemKeys(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	meta, err := NewMetadataStore(tmpDir)
+	meta, err := storage.NewMetadataStore(tmpDir)
 	if err != nil {
 		t.Fatalf("NewMetadataStore failed: %v", err)
 	}
 	defer meta.Close()
 
 	// 1. Create a regular bucket
-	bucket := &BucketInfo{
+	bucket := &storage.BucketInfo{
 		Name:         "testbucket",
 		CreationDate: time.Now().UTC(),
 	}
@@ -193,7 +190,7 @@ func TestListBucketsIgnoresSystemKeys(t *testing.T) {
 func TestConcurrentGetBucketDBInitLocks(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	meta, err := NewMetadataStore(tmpDir)
+	meta, err := storage.NewMetadataStore(tmpDir)
 	if err != nil {
 		t.Fatalf("NewMetadataStore failed: %v", err)
 	}
@@ -219,12 +216,7 @@ func TestConcurrentGetBucketDBInitLocks(t *testing.T) {
 	wg.Wait()
 
 	// Verify that the entry in initLocks is eventually deleted after all goroutines complete
-	meta.initMu.Lock()
-	_, exists := meta.initLocks[badBucket]
-	meta.initMu.Unlock()
-
-	if exists {
+	if meta.HasInitLock(badBucket) {
 		t.Error("expected initLocks entry to be deleted after all concurrent attempts complete")
 	}
 }
-

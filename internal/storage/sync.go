@@ -7,7 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -24,28 +24,6 @@ type SyncConfig struct {
 	Region    string
 }
 
-// LoadSyncConfig loads sync configuration from environment variables.
-func LoadSyncConfig() *SyncConfig {
-	endpoint := os.Getenv("STIVA_SYNC_ENDPOINT")
-	if endpoint == "" {
-		return nil
-	}
-	bucket := os.Getenv("STIVA_SYNC_BUCKET")
-	accessKey := os.Getenv("STIVA_SYNC_ACCESS_KEY")
-	secretKey := os.Getenv("STIVA_SYNC_SECRET_KEY")
-	region := os.Getenv("STIVA_SYNC_REGION")
-	if region == "" {
-		region = "us-east-1"
-	}
-	return &SyncConfig{
-		Endpoint:  strings.TrimSuffix(endpoint, "/"),
-		Bucket:    bucket,
-		AccessKey: accessKey,
-		SecretKey: secretKey,
-		Region:    region,
-	}
-}
-
 type syncTask struct {
 	fs     *FilesystemEngine
 	cfg    *SyncConfig
@@ -53,8 +31,6 @@ type syncTask struct {
 	key    string
 	op     string
 }
-
-// Globals deleted; moved to FilesystemEngine struct.
 
 const syncQueueSize = 5000
 const syncWorkerCount = 10
@@ -66,7 +42,7 @@ func (fs *FilesystemEngine) initSyncDispatcher() {
 		go func() {
 			defer fs.syncWG.Done()
 			for task := range fs.syncQueue {
-				err := performSync(task.fs, task.fs.syncClient, task.cfg, task.bucket, task.key, task.op)
+				err := performSync(context.Background(), task.fs, task.fs.syncClient, task.cfg, task.bucket, task.key, task.op)
 				if err != nil {
 					slog.Error("[Sync] Mirroring failed", "op", task.op, "bucket", task.bucket, "key", task.key, "error", err)
 				} else {
@@ -127,17 +103,20 @@ func (fs *FilesystemEngine) MirrorSync(bucket, key, op string) {
 	}
 }
 
-func performSync(fs *FilesystemEngine, client *http.Client, cfg *SyncConfig, bucket, key, op string) error {
-	// Construct the destination URL
-	// Endpoint is e.g. http://localhost:9002
-	destURL := fmt.Sprintf("%s/%s/%s", cfg.Endpoint, cfg.Bucket, strings.TrimPrefix(key, "/"))
+func performSync(ctx context.Context, fs *FilesystemEngine, client *http.Client, cfg *SyncConfig, bucket, key, op string) error {
+	// Construct the destination URL.
+	//
+	// Each path segment is escaped individually: interpolating the raw key meant
+	// that any key containing '?', '#' or a space produced a malformed request
+	// whose path no longer matched the one being signed.
+	destURL := fmt.Sprintf("%s/%s/%s", cfg.Endpoint, url.PathEscape(cfg.Bucket), escapeObjectKey(key))
 
 	var req *http.Request
 	var err error
 
 	switch op {
 	case "DELETE":
-		req, err = http.NewRequest("DELETE", destURL, nil)
+		req, err = http.NewRequestWithContext(ctx, http.MethodDelete, destURL, nil)
 		if err != nil {
 			return err
 		}
@@ -147,7 +126,7 @@ func performSync(fs *FilesystemEngine, client *http.Client, cfg *SyncConfig, buc
 			return fmt.Errorf("failed to fetch object metadata: %w", err)
 		}
 
-		reader, _, err := fs.GetObject(context.Background(), bucket, key, "")
+		reader, _, err := fs.GetObject(ctx, bucket, key, "")
 		if err != nil {
 			return fmt.Errorf("failed to get object reader: %w", err)
 		}
@@ -158,7 +137,7 @@ func performSync(fs *FilesystemEngine, client *http.Client, cfg *SyncConfig, buc
 			Closer: reader,
 		}
 
-		req, err = http.NewRequest("PUT", destURL, bufferedReader)
+		req, err = http.NewRequestWithContext(ctx, http.MethodPut, destURL, bufferedReader)
 		if err != nil {
 			return err
 		}
@@ -191,4 +170,14 @@ func performSync(fs *FilesystemEngine, client *http.Client, cfg *SyncConfig, buc
 type bufferedReadCloser struct {
 	*bufio.Reader
 	io.Closer
+}
+
+// escapeObjectKey percent-encodes an object key for use in a URL path, escaping
+// each '/'-separated segment while preserving the separators themselves.
+func escapeObjectKey(key string) string {
+	segments := strings.Split(strings.TrimPrefix(key, "/"), "/")
+	for i, seg := range segments {
+		segments[i] = url.PathEscape(seg)
+	}
+	return strings.Join(segments, "/")
 }

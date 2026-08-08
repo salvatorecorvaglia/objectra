@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +22,22 @@ const (
 	unsignedPayload      = "UNSIGNED-PAYLOAD"
 	aws4HMACSHA256Format = "AWS4-HMAC-SHA256\n%s\n%s\n%s"
 	amzSignatureQuery    = "X-Amz-Signature"
+
+	// maxClockSkew is the tolerated difference between the request timestamp
+	// and server time, matching the AWS SigV4 window.
+	maxClockSkew = 15 * time.Minute
+	// maxPresignValidity is the longest lifetime a presigned URL may declare,
+	// matching the S3 limit of seven days.
+	maxPresignValidity = 7 * 24 * time.Hour
+	// maxInMemoryPayload is the largest request body hashed entirely in memory.
+	maxInMemoryPayload = 2 * 1024 * 1024
 )
+
+// MaxPayloadSize bounds the request body Stiva will buffer while verifying a
+// signed payload hash. Bodies larger than this are rejected rather than spooled
+// to disk, which previously let an authenticated client force unbounded
+// temp-file writes. Zero disables the limit.
+var MaxPayloadSize int64 = 5 * 1024 * 1024 * 1024 // 5GiB, the S3 single-PUT maximum
 
 // TempDir is the directory where temporary request body files are stored.
 var TempDir string
@@ -45,6 +61,11 @@ type SigV4Verifier struct {
 // NewSigV4Verifier creates a new verifier with the given credentials.
 func NewSigV4Verifier(creds *Credentials) *SigV4Verifier {
 	return &SigV4Verifier{creds: creds}
+}
+
+// Creds returns the credentials associated with this verifier.
+func (v *SigV4Verifier) Creds() *Credentials {
+	return v.creds
 }
 
 // parsedAuth holds the components parsed from the Authorization header.
@@ -101,7 +122,7 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 	}
 
 	// Check for date/time skew (standard is 15 minutes)
-	if time.Now().UTC().Sub(t).Abs() > 15*time.Minute {
+	if time.Now().UTC().Sub(t).Abs() > maxClockSkew {
 		return &AuthError{Code: "RequestTimeTooSkewed", Message: "The difference between the request time and the current time is too large."}
 	}
 
@@ -167,20 +188,39 @@ func (v *SigV4Verifier) verifyPresigned(r *http.Request) error {
 	signedHeaders := strings.Split(q.Get("X-Amz-SignedHeaders"), ";")
 	signature := q.Get(amzSignatureQuery)
 
-	// Check expiration
+	// Expiry is mandatory. It used to be checked only when X-Amz-Expires was
+	// present, so a URL signed without that parameter never expired at all.
+	signedAt, err := time.Parse("20060102T150405Z", dateStr)
+	if err != nil {
+		return &AuthError{Code: "AccessDenied", Message: "invalid or missing X-Amz-Date"}
+	}
+
 	expires := q.Get("X-Amz-Expires")
-	if expires != "" {
-		t, err := time.Parse("20060102T150405Z", dateStr)
-		if err != nil {
-			return &AuthError{Code: "AccessDenied", Message: "invalid date format"}
+	if expires == "" {
+		return &AuthError{Code: "AccessDenied", Message: "X-Amz-Expires is required for presigned requests"}
+	}
+
+	dur, err := strconv.Atoi(expires)
+	if err != nil || dur <= 0 {
+		return &AuthError{Code: "AccessDenied", Message: "invalid expires value"}
+	}
+	if time.Duration(dur)*time.Second > maxPresignValidity {
+		return &AuthError{
+			Code:    "AccessDenied",
+			Message: "X-Amz-Expires exceeds the maximum allowed value of 604800 seconds",
 		}
-		var dur int
-		_, err = fmt.Sscanf(expires, "%d", &dur)
-		if err != nil {
-			return &AuthError{Code: "AccessDenied", Message: "invalid expires value"}
-		}
-		if time.Now().UTC().After(t.Add(time.Duration(dur) * time.Second)) {
-			return &AuthError{Code: "AccessDenied", Message: "Request has expired"}
+	}
+
+	now := time.Now().UTC()
+	if now.After(signedAt.Add(time.Duration(dur) * time.Second)) {
+		return &AuthError{Code: "AccessDenied", Message: "Request has expired"}
+	}
+	// Reject URLs dated far in the future, which would otherwise extend the
+	// effective lifetime well beyond the stated expiry window.
+	if signedAt.After(now.Add(maxClockSkew)) {
+		return &AuthError{
+			Code:    "RequestTimeTooSkewed",
+			Message: "The difference between the request time and the current time is too large.",
 		}
 	}
 
@@ -293,6 +333,11 @@ func (v *SigV4Verifier) buildCanonicalRequest(r *http.Request, signedHeaders []s
 	)
 }
 
+// BuildCanonicalRequestPresigned constructs the canonical request for presigned URLs.
+func (v *SigV4Verifier) BuildCanonicalRequestPresigned(r *http.Request, signedHeaders []string) string {
+	return v.buildCanonicalRequestPresigned(r, signedHeaders)
+}
+
 // buildCanonicalRequestPresigned constructs the canonical request for presigned URLs.
 func (v *SigV4Verifier) buildCanonicalRequestPresigned(r *http.Request, signedHeaders []string) string {
 	method := r.Method
@@ -351,6 +396,11 @@ func awsPercentEncode(s string) string {
 	return buf.String()
 }
 
+// GetCanonicalQueryString returns the sorted, URL-encoded query string.
+func GetCanonicalQueryString(values url.Values) string {
+	return getCanonicalQueryString(values)
+}
+
 // getCanonicalQueryString returns the sorted, URL-encoded query string.
 func getCanonicalQueryString(values url.Values) string {
 	if len(values) == 0 {
@@ -373,6 +423,11 @@ func getCanonicalQueryString(values url.Values) string {
 	}
 
 	return strings.Join(pairs, "&")
+}
+
+// DeriveSigningKey derives the SigV4 signing key.
+func (v *SigV4Verifier) DeriveSigningKey(datestamp, region, service string) []byte {
+	return v.deriveSigningKey(datestamp, region, service)
 }
 
 // deriveSigningKey derives the SigV4 signing key.
@@ -403,6 +458,11 @@ func HmacSHA256(key, data []byte) []byte {
 	return hmacSHA256(key, data)
 }
 
+// HashSHA256 computes SHA256 hash and returns hex string.
+func HashSHA256(data []byte) string {
+	return hashSHA256(data)
+}
+
 // hashSHA256 computes SHA256 hash and returns hex string.
 func hashSHA256(data []byte) string {
 	h := sha256.New()
@@ -417,14 +477,22 @@ func HashPayload(r *http.Request) (string, error) {
 		return hashSHA256([]byte("")), nil
 	}
 
-	const maxMemoryBuffer = 2 * 1024 * 1024 // 2MB
-	lr := io.LimitReader(r.Body, maxMemoryBuffer+1)
+	// Reject oversized bodies up front. Spooling an unbounded body to disk to
+	// hash it lets a single request fill the data volume.
+	if MaxPayloadSize > 0 && r.ContentLength > MaxPayloadSize {
+		return "", &AuthError{
+			Code:    "EntityTooLarge",
+			Message: "Your proposed upload exceeds the maximum allowed size.",
+		}
+	}
+
+	lr := io.LimitReader(r.Body, maxInMemoryPayload+1)
 	buf, err := io.ReadAll(lr)
 	if err != nil {
 		return "", err
 	}
 
-	if len(buf) <= maxMemoryBuffer {
+	if len(buf) <= maxInMemoryPayload {
 		r.Body = io.NopCloser(bytes.NewReader(buf))
 		return hashSHA256(buf), nil
 	}

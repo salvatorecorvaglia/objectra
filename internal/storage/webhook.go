@@ -2,10 +2,15 @@ package storage
 
 import (
 	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 )
@@ -30,8 +35,6 @@ type webhookTask struct {
 	payload WebhookPayload
 }
 
-// Globals deleted; moved to FilesystemEngine struct.
-
 const webhookQueueSize = 5000
 const webhookWorkerCount = 10
 
@@ -46,6 +49,21 @@ func (fs *FilesystemEngine) initWebhookDispatcher() {
 			}
 		}()
 	}
+}
+
+// TriggerWebhook sends a webhook notification for an object operation.
+func (fs *FilesystemEngine) TriggerWebhook(action string, info *ObjectInfo) {
+	fs.triggerWebhook(action, info)
+}
+
+// IsWebhookShuttingDown reports whether the webhook dispatcher has begun shutting down.
+func (fs *FilesystemEngine) IsWebhookShuttingDown() bool {
+	return atomic.LoadInt32(&fs.isWebhookShuttingDown) == 1
+}
+
+// IsSyncShuttingDown reports whether the mirror sync dispatcher has begun shutting down.
+func (fs *FilesystemEngine) IsSyncShuttingDown() bool {
+	return atomic.LoadInt32(&fs.isSyncShuttingDown) == 1
 }
 
 // StopWebhookDispatcher halts webhook processing, flushes remaining notifications, and waits for workers to terminate.
@@ -105,6 +123,15 @@ func (fs *FilesystemEngine) triggerWebhook(eventName string, info *ObjectInfo) {
 	}
 }
 
+// webhookSecret signs outgoing payloads so receivers can authenticate them.
+// Without a signature any host that learns the endpoint URL can forge events.
+var webhookSecret = os.Getenv("STIVA_WEBHOOK_SECRET")
+
+const (
+	webhookMaxRetries  = 3
+	webhookBaseBackoff = time.Second
+)
+
 func sendWebhookEvent(url string, payload WebhookPayload) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -112,36 +139,52 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 		return
 	}
 
-
-	backoff := 1 * time.Second
-	maxRetries := 3
-
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(data))
-		if err != nil {
-			slog.Error("[Webhook] Failed to create request", "error", err)
+	// Sleeping between attempts on the worker goroutine stalled the whole pool:
+	// one dead endpoint blocked a worker for the full backoff on every event,
+	// and the queue silently overflowed. Retries now run on their own timer.
+	var attempt func(n int)
+	attempt = func(n int) {
+		if deliverWebhook(url, data) {
 			return
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "Stiva-Webhook-Dispatcher")
-
-		resp, err := webhookClient.Do(req)
-		if err == nil {
-			_, _ = io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				return // Success!
-			}
-			slog.Warn("[Webhook] Server returned error status", "status", resp.StatusCode, "attempt", attempt+1)
-		} else {
-			slog.Warn("[Webhook] Dispatch failed", "attempt", attempt+1, "error", err)
+		if n >= webhookMaxRetries {
+			slog.Error("[Webhook] Failed to deliver event after retries",
+				"event", payload.EventName, "retries", webhookMaxRetries)
+			return
 		}
+		backoff := webhookBaseBackoff << n
+		time.AfterFunc(backoff, func() { attempt(n + 1) })
+	}
+	attempt(0)
+}
 
-		if attempt < maxRetries {
-			time.Sleep(backoff)
-			backoff *= 2
-		}
+// deliverWebhook performs a single delivery attempt, reporting success.
+func deliverWebhook(url string, data []byte) bool {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		slog.Error("[Webhook] Failed to create request", "error", err)
+		return true // Unrecoverable: do not retry a malformed URL.
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "Stiva-Webhook-Dispatcher")
+
+	if webhookSecret != "" {
+		mac := hmac.New(sha256.New, []byte(webhookSecret))
+		_, _ = mac.Write(data)
+		req.Header.Set("X-Stiva-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
 
-	slog.Error("[Webhook] Failed to deliver event after retries", "event", payload.EventName, "retries", maxRetries)
+	resp, err := webhookClient.Do(req)
+	if err != nil {
+		slog.Warn("[Webhook] Dispatch failed", "error", err)
+		return false
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return true
+	}
+	slog.Warn("[Webhook] Server returned error status", "status", resp.StatusCode)
+	return false
 }

@@ -17,6 +17,10 @@
     let currentSortField = 'name';
     let currentSortOrder = 'asc';
 
+    // Zero-byte marker object used to make an empty "folder" visible. It is an
+    // implementation detail and must never be listed as a file.
+    const FOLDER_PLACEHOLDER = '.stiva_folder';
+
     // ---- DOM Refs ----
     const $ = (sel) => document.querySelector(sel);
     const $$ = (sel) => document.querySelectorAll(sel);
@@ -101,6 +105,9 @@
         const container = $('#toast-container');
         const toast = document.createElement('div');
         toast.className = `toast ${type}`;
+        // Announce to assistive tech: toasts are the only feedback for most
+        // actions, and were previously silent to screen readers.
+        toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
 
         const icons = {
             success: '✓',
@@ -396,7 +403,11 @@
 
             const resp = await api('GET', `/api/buckets/${currentBucket}/objects?${params}`);
             const data = await resp.json();
-            loadedItems = data.items || [];
+            // Hide the folder placeholder: it used to appear as a stray file
+            // inside every folder created from the console.
+            loadedItems = (data.items || []).filter(
+                (item) => item.isPrefix || !item.key.endsWith(FOLDER_PLACEHOLDER)
+            );
 
             renderObjectsTable();
 
@@ -451,7 +462,11 @@
 
         objectsEmpty.style.display = 'none';
         objectsTableContainer.style.display = 'block';
-        objectCount.textContent = `${loadedItems.length} item${loadedItems.length !== 1 ? 's' : ''}`;
+        // Sorting is applied to the loaded page only, not the whole bucket. Say
+        // so rather than letting the column arrows imply a global ordering.
+        const scopeNote = paginationContainer.style.display !== 'none' ? ' on this page' : '';
+        objectCount.textContent =
+            `${loadedItems.length} item${loadedItems.length !== 1 ? 's' : ''}${scopeNote}`;
 
         const folders = loadedItems.filter(item => item.isPrefix);
         const files = loadedItems.filter(item => !item.isPrefix);
@@ -493,6 +508,9 @@
             th.classList.remove('sort-asc', 'sort-desc');
             if (field === currentSortField) {
                 th.classList.add(currentSortOrder === 'asc' ? 'sort-asc' : 'sort-desc');
+                th.setAttribute('aria-sort', currentSortOrder === 'asc' ? 'ascending' : 'descending');
+            } else {
+                th.setAttribute('aria-sort', 'none');
             }
         }
 
@@ -789,11 +807,13 @@
     async function uploadSmallFile(file, key, index, total) {
         const formData = new FormData();
         formData.append('file', file);
-        formData.append('key', key);
 
         await new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', `/api/buckets/${currentBucket}/objects/upload`);
+            // The key travels in the query string: the server streams the
+            // multipart body straight to storage and so cannot rely on a form
+            // field that arrives after the file part.
+            xhr.open('POST', `/api/buckets/${currentBucket}/objects/upload?key=${encodeURIComponent(key)}`);
             xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
             xhr.upload.onprogress = (e) => {
@@ -966,13 +986,16 @@
 
         const key = currentPrefix + name + '/';
 
-        // Create a "folder" by uploading a zero-byte object with a trailing slash
+        // Create a "folder" by uploading a zero-byte placeholder object.
         const formData = new FormData();
         formData.append('file', new Blob(['']), '.keep');
-        formData.append('key', key + '.stiva_folder');
+
+        const placeholderKey = key + FOLDER_PLACEHOLDER;
 
         try {
-            const resp = await api('POST', `/api/buckets/${currentBucket}/objects/upload`, formData, true);
+            const resp = await api('POST',
+                `/api/buckets/${currentBucket}/objects/upload?key=${encodeURIComponent(placeholderKey)}`,
+                formData, true);
             if (resp.ok) {
                 showToast(`Folder "${name}" created`, 'success');
                 closeModal('create-folder-modal');
@@ -987,17 +1010,77 @@
 
     // ---- Modal Helpers ----
 
+    // Element that had focus before a modal opened, so it can be restored.
+    let focusBeforeModal = null;
+
+    const FOCUSABLE = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+    function isAnyModalOpen() {
+        return Array.from($$('.modal-overlay')).some(
+            (m) => m.style.display && m.style.display !== 'none'
+        );
+    }
+
+    // Keep focus inside the open dialog: without this, Tab walks into the page
+    // behind the modal, which is both confusing and a screen-reader trap.
+    function trapFocus(e) {
+        if (e.key !== 'Tab') return;
+        const modal = Array.from($$('.modal-overlay')).find(
+            (m) => m.style.display && m.style.display !== 'none'
+        );
+        if (!modal) return;
+
+        const focusable = Array.from(modal.querySelectorAll(FOCUSABLE)).filter(
+            (el) => !el.disabled && el.offsetParent !== null
+        );
+        if (focusable.length === 0) return;
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+
+        if (e.shiftKey && document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+        }
+    }
+
     function openModal(id) {
-        document.getElementById(id).style.display = 'flex';
+        const modal = document.getElementById(id);
+        focusBeforeModal = document.activeElement;
+        modal.style.display = 'flex';
+        modal.setAttribute('aria-hidden', 'false');
+
+        // Move focus into the dialog so keyboard and screen-reader users land
+        // on the content rather than being left behind it.
+        const focusable = modal.querySelector(FOCUSABLE);
+        if (focusable) focusable.focus();
+
+        document.addEventListener('keydown', trapFocus);
     }
 
     function closeModal(id) {
-        document.getElementById(id).style.display = 'none';
+        const modal = document.getElementById(id);
+        modal.style.display = 'none';
+        modal.setAttribute('aria-hidden', 'true');
+
         if (id === 'preview-modal') {
             previewContentContainer.innerHTML = '';
         }
         if (id === 'share-modal') {
             shareTargetKey = '';
+        }
+
+        if (!isAnyModalOpen()) {
+            document.removeEventListener('keydown', trapFocus);
+        }
+
+        // Return focus where the user left it.
+        if (focusBeforeModal && typeof focusBeforeModal.focus === 'function') {
+            focusBeforeModal.focus();
+            focusBeforeModal = null;
         }
     }
 
@@ -1152,22 +1235,23 @@
         }, 300);
     });
 
+    // Route overlay and Escape dismissals through closeModal so focus is
+    // restored and listeners are cleaned up, rather than just hiding the node.
     $$('.modal-overlay').forEach((overlay) => {
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) {
-                overlay.style.display = 'none';
+                closeModal(overlay.id);
             }
         });
     });
 
     window.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') {
-            $$('.modal-overlay').forEach((overlay) => {
-                if (overlay.style.display === 'flex' || overlay.style.display === 'block') {
-                    overlay.style.display = 'none';
-                }
-            });
-        }
+        if (e.key !== 'Escape') return;
+        $$('.modal-overlay').forEach((overlay) => {
+            if (overlay.style.display && overlay.style.display !== 'none') {
+                closeModal(overlay.id);
+            }
+        });
     });
 
     // Enter key in modal inputs
@@ -1199,9 +1283,25 @@
         renderObjectsTable();
     }
 
-    if (thName) thName.addEventListener('click', () => handleSort('name'));
-    if (thSize) thSize.addEventListener('click', () => handleSort('size'));
-    if (thDate) thDate.addEventListener('click', () => handleSort('date'));
+    // Sortable headers must be operable by keyboard, not just the mouse, and
+    // must announce their state via aria-sort.
+    function makeSortable(th, field) {
+        if (!th) return;
+        th.setAttribute('role', 'columnheader');
+        th.setAttribute('tabindex', '0');
+        th.setAttribute('aria-sort', 'none');
+        th.addEventListener('click', () => handleSort(field));
+        th.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleSort(field);
+            }
+        });
+    }
+
+    makeSortable(thName, 'name');
+    makeSortable(thSize, 'size');
+    makeSortable(thDate, 'date');
 
     const selectAllCheckbox = $('#select-all-objects');
     if (selectAllCheckbox) {
@@ -1334,17 +1434,23 @@
                 .catch(() => logout());
         }
 
-        // Auto-refresh objects list every 10 seconds silently
+        // Auto-refresh objects list every 10 seconds silently.
         setInterval(() => {
-            if (token && currentBucket && document.visibilityState === 'visible') {
-                const openModal = document.querySelector('.modal.open, .modal.show, [style*="display: block"]');
-                const activeEl = document.activeElement;
-                const isTyping = activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA');
+            if (!token || !currentBucket || document.visibilityState !== 'visible') return;
 
-                if (!openModal && !isTyping) {
-                    loadObjects(true);
-                }
-            }
+            // Modals are opened with `display: flex`, so the previous check for
+            // `display: block` never matched and the table refreshed underneath
+            // open dialogs.
+            if (isAnyModalOpen()) return;
+
+            const activeEl = document.activeElement;
+            if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) return;
+
+            // Refreshing while the user is mid-selection would silently discard
+            // the checkboxes they were about to act on.
+            if (objectsTbody.querySelector('.object-select:checked')) return;
+
+            loadObjects(true);
         }, 10000);
     }
 

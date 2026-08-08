@@ -3,10 +3,12 @@ package s3api
 import (
 	"context"
 	"crypto/md5"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -30,7 +32,14 @@ func extractSSECParams(r *http.Request) (*storage.SSECParams, error) {
 	if algo != "AES256" {
 		return nil, fmt.Errorf("UnsupportedEncryptionAlgorithm: The encryption algorithm specified is not supported")
 	}
-	keyB64 := r.Header.Get("x-amz-server-side-encryption-customer-key")
+	return buildSSECParams(algo,
+		r.Header.Get("x-amz-server-side-encryption-customer-key"),
+		r.Header.Get(amzSSECKeyMD5Header))
+}
+
+// buildSSECParams validates a base64 customer key against its stated MD5.
+// Shared by the object and copy-source header families.
+func buildSSECParams(algo, keyB64, keyMD5B64 string) (*storage.SSECParams, error) {
 	if keyB64 == "" {
 		return nil, fmt.Errorf("MissingEncryptionKey: The encryption key is missing")
 	}
@@ -38,13 +47,14 @@ func extractSSECParams(r *http.Request) (*storage.SSECParams, error) {
 	if err != nil || len(key) != 32 {
 		return nil, fmt.Errorf("InvalidEncryptionKey: The encryption key is invalid")
 	}
-	keyMD5B64 := r.Header.Get(amzSSECKeyMD5Header)
 	if keyMD5B64 == "" {
 		return nil, fmt.Errorf("MissingEncryptionKeyMD5: The encryption key MD5 is missing")
 	}
 	expectedMD5Raw := md5.Sum(key)
 	expectedMD5 := base64.StdEncoding.EncodeToString(expectedMD5Raw[:])
-	if keyMD5B64 != expectedMD5 {
+	// Constant-time: this compares a caller-supplied value against a digest
+	// derived from the caller's own key, but keep the primitive consistent.
+	if subtle.ConstantTimeCompare([]byte(keyMD5B64), []byte(expectedMD5)) != 1 {
 		return nil, fmt.Errorf("InvalidEncryptionKeyMD5: The customer-provided encryption key MD5 does not match")
 	}
 	return &storage.SSECParams{
@@ -133,6 +143,21 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 	if info.SSECustomerAlgorithm != "" {
 		w.Header().Set(amzSSECAlgorithmHeader, info.SSECustomerAlgorithm)
 		w.Header().Set(amzSSECKeyMD5Header, info.SSECustomerKeyMD5)
+	}
+
+	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" {
+		quotedETag := fmt.Sprintf(`"%s"`, info.ETag)
+		if ifMatch != "*" && ifMatch != info.ETag && ifMatch != quotedETag {
+			writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", resource)
+			return
+		}
+	}
+	if ifNoneMatch := r.Header.Get("If-None-Match"); ifNoneMatch != "" {
+		quotedETag := fmt.Sprintf(`"%s"`, info.ETag)
+		if ifNoneMatch == "*" || ifNoneMatch == info.ETag || ifNoneMatch == quotedETag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 	}
 
 	// If the reader supports seeking, use http.ServeContent which handles
@@ -263,6 +288,21 @@ func (rt *Router) handleHeadObject(w http.ResponseWriter, r *http.Request, bucke
 		w.Header().Set(amzSSECAlgorithmHeader, info.SSECustomerAlgorithm)
 		w.Header().Set(amzSSECKeyMD5Header, info.SSECustomerKeyMD5)
 	}
+	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" {
+		quotedETag := fmt.Sprintf(`"%s"`, info.ETag)
+		if ifMatch != "*" && ifMatch != info.ETag && ifMatch != quotedETag {
+			writeS3Error(w, "PreconditionFailed", "At least one of the pre-conditions you specified did not hold", resource)
+			return
+		}
+	}
+	if ifNoneMatch := r.Header.Get("If-None-Match"); ifNoneMatch != "" {
+		quotedETag := fmt.Sprintf(`"%s"`, info.ETag)
+		if ifNoneMatch == "*" || ifNoneMatch == info.ETag || ifNoneMatch == quotedETag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -295,20 +335,34 @@ func (rt *Router) handleDeleteObject(w http.ResponseWriter, r *http.Request, buc
 
 // handleCopyObject handles PUT /<bucket>/<key> with x-amz-copy-source header (CopyObject).
 func (rt *Router) handleCopyObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
-	copySource := r.Header.Get("x-amz-copy-source")
-	copySource = strings.TrimPrefix(copySource, "/")
 	resource := "/" + bucket + "/" + key
 
-	parts := strings.SplitN(copySource, "/", 2)
-	if len(parts) != 2 {
-		writeS3Error(w, "InvalidArgument", "Invalid copy source", resource)
+	src, err := parseCopySource(r.Header.Get("x-amz-copy-source"))
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
 		return
 	}
 
-	srcBucket := parts[0]
-	srcKey := parts[1]
+	// The source may be SSE-C encrypted under a different key than the
+	// destination; S3 carries it in the x-amz-copy-source-* header family.
+	srcParams, err := extractCopySourceSSECParams(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+	src.SSEC = srcParams
 
-	info, err := rt.engine.CopyObject(srcBucket, srcKey, bucket, key)
+	dstParams, err := extractSSECParams(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+	ctx := r.Context()
+	if dstParams != nil {
+		ctx = context.WithValue(ctx, storage.SSECContextKey, dstParams)
+	}
+
+	info, err := rt.engine.CopyObject(ctx, src, bucket, key)
 	if handleStorageError(w, err, resource) {
 		return
 	}
@@ -319,4 +373,53 @@ func (rt *Router) handleCopyObject(w http.ResponseWriter, r *http.Request, bucke
 	}
 
 	writeXML(w, http.StatusOK, result)
+}
+
+// parseCopySource interprets an x-amz-copy-source header.
+//
+// The header is URL-encoded by AWS SDKs, and may carry ?versionId=. Neither was
+// handled before: the value was used verbatim, so any source key containing a
+// space, '+' or percent escape resolved to the wrong object (or none at all).
+func parseCopySource(raw string) (storage.CopySource, error) {
+	if raw == "" {
+		return storage.CopySource{}, fmt.Errorf("x-amz-copy-source is required")
+	}
+
+	value := strings.TrimPrefix(raw, "/")
+
+	// Split the version selector off before decoding so that a literal
+	// "?versionId=" inside a key cannot be confused for the real one.
+	versionID := ""
+	if idx := strings.LastIndex(value, "?versionId="); idx != -1 {
+		versionID = value[idx+len("?versionId="):]
+		value = value[:idx]
+	}
+
+	bucket, encodedKey, found := strings.Cut(value, "/")
+	if !found || bucket == "" || encodedKey == "" {
+		return storage.CopySource{}, fmt.Errorf("invalid copy source")
+	}
+
+	key, err := url.PathUnescape(encodedKey)
+	if err != nil {
+		return storage.CopySource{}, fmt.Errorf("invalid copy source encoding")
+	}
+
+	return storage.CopySource{Bucket: bucket, Key: key, VersionID: versionID}, nil
+}
+
+// extractCopySourceSSECParams reads the SSE-C headers describing the *source*
+// object of a copy.
+func extractCopySourceSSECParams(r *http.Request) (*storage.SSECParams, error) {
+	algo := r.Header.Get("x-amz-copy-source-server-side-encryption-customer-algorithm")
+	if algo == "" {
+		return nil, nil
+	}
+	if algo != "AES256" {
+		return nil, fmt.Errorf("UnsupportedEncryptionAlgorithm: The encryption algorithm specified is not supported")
+	}
+
+	keyB64 := r.Header.Get("x-amz-copy-source-server-side-encryption-customer-key")
+	keyMD5 := r.Header.Get("x-amz-copy-source-server-side-encryption-customer-key-MD5")
+	return buildSSECParams(algo, keyB64, keyMD5)
 }

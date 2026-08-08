@@ -56,20 +56,14 @@ func EvaluateCORS(r *http.Request, cors *storage.CORSConfiguration) (map[string]
 		}
 
 		// Found a matching rule! Prepare response headers.
+		//
+		// Access-Control-Allow-Credentials is deliberately NOT set. S3 never
+		// sets it, and emitting it for every non-wildcard rule silently turned
+		// a plain origin allowlist into permission for those origins to make
+		// credentialed cross-origin requests.
 		headers := make(map[string]string)
 		headers["Access-Control-Allow-Origin"] = origin
 		headers["Access-Control-Allow-Methods"] = strings.Join(rule.AllowedMethods, ", ")
-
-		hasWildcard := false
-		for _, o := range rule.AllowedOrigins {
-			if o == "*" {
-				hasWildcard = true
-				break
-			}
-		}
-		if !hasWildcard {
-			headers["Access-Control-Allow-Credentials"] = "true"
-		}
 
 		if r.Method == http.MethodOptions {
 			// Preflight-specific headers
@@ -80,17 +74,20 @@ func EvaluateCORS(r *http.Request, cors *storage.CORSConfiguration) (map[string]
 			if rule.MaxAgeSeconds > 0 {
 				headers["Access-Control-Max-Age"] = strconv.Itoa(rule.MaxAgeSeconds)
 			}
-		} else {
+		} else if len(rule.ExposeHeaders) > 0 {
 			// Normal request specific headers
-			if len(rule.ExposeHeaders) > 0 {
-				headers["Access-Control-Expose-Headers"] = strings.Join(rule.ExposeHeaders, ", ")
-			}
+			headers["Access-Control-Expose-Headers"] = strings.Join(rule.ExposeHeaders, ", ")
 		}
 
 		return headers, true
 	}
 
 	return nil, false
+}
+
+// MatchOrigin tests if an origin matches an allowed origins list.
+func MatchOrigin(origin string, allowedOrigins []string) bool {
+	return matchOrigin(origin, allowedOrigins)
 }
 
 func matchOrigin(origin string, allowedOrigins []string) bool {
@@ -138,6 +135,11 @@ func matchOrigin(origin string, allowedOrigins []string) bool {
 	return false
 }
 
+// MatchMethod tests if an HTTP method matches an allowed methods list.
+func MatchMethod(method string, allowedMethods []string) bool {
+	return matchMethod(method, allowedMethods)
+}
+
 func matchMethod(method string, allowedMethods []string) bool {
 	method = strings.ToUpper(method)
 	for _, allowed := range allowedMethods {
@@ -148,7 +150,12 @@ func matchMethod(method string, allowedMethods []string) bool {
 	return false
 }
 
-func matchHeaders(reqHeaders []string, allowedHeaders []string) bool {
+// MatchHeaders tests if requested headers match allowed headers list.
+func MatchHeaders(reqHeaders, allowedHeaders []string) bool {
+	return matchHeaders(reqHeaders, allowedHeaders)
+}
+
+func matchHeaders(reqHeaders, allowedHeaders []string) bool {
 	if len(reqHeaders) == 0 {
 		return true
 	}
