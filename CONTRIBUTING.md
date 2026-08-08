@@ -68,7 +68,7 @@ We are always looking for ways to make Stiva better! If you have a feature reque
 
 ### Running Tests
 
-Stiva has unit and integration tests across the codebase. Make sure all tests pass before submitting a pull request:
+Stiva has unit, integration, and fuzz tests organized under the top-level `tests/` directory (`tests/auth`, `tests/config`, `tests/console`, `tests/httpx`, `tests/s3api`, `tests/server`, `tests/storage`). Make sure all tests pass before submitting a pull request:
 ```bash
 # Run all tests in the workspace
 go test -v ./...

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Reorganized project test suite into a standalone `tests/` root directory (`tests/auth`, `tests/config`, `tests/console`, `tests/httpx`, `tests/s3api`, `tests/server`, `tests/storage`).
+- Added new integration and fuzz test suites including `paths_fuzz_test.go`, `ssec_multipart_test.go`, `operations_test.go`, `subresource_test.go`, `dbcache_test.go`, `listing_test.go`, `clientip_test.go`, `presign_test.go`, and `validate_test.go`.
+- Added `internal/httpx` package providing reliable client IP resolution (`clientip.go`) supporting trusted proxy chains.
+- Added decoupled object listing module (`internal/storage/listing.go`) for structured bucket/key listing operations.
+
+### Changed
+
+- Enhanced Admin Web Console accessibility with ARIA attributes, semantic structure, and improved drag-and-drop file upload reliability.
+- Upgraded `.golangci.yml` linter configuration to version 2 schema and updated CI linter rules.
+- Refactored S3 API router subresource handling, error rendering, and bulk object delete operations.
+
+### Fixed
+
+- Fixed database handle leaks in `TestDeleteBucketVersionedEmptiness` and unclosed server instances in `TestServerStartPortConflict` that caused `unlinkat` access denied errors on Windows CI runners.
+- Fixed false-positive integer conversion linting warnings and simplified server shutdown flag assertions.
+
 ## [1.0.0] - 2026-08-06
 
 ### Chore

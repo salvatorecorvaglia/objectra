@@ -18,10 +18,10 @@
 *   **Partial Content / Range Requests**: Seekable `GetObject` range requests supporting chunk buffering for compressed streams.
 
 ### 🖥️ Built-In Web Admin Console
-*   **Stunning Dashboard UI**: Modern SPA dashboard built with vanilla HTML, CSS, and JS (zero heavy npm builds required) featuring rate-limit feedback and ESC key modal closing shortcuts.
+*   **Stunning Dashboard UI**: Modern SPA dashboard built with vanilla HTML, CSS, and JS (zero heavy npm builds required) featuring rate-limit feedback, ARIA accessibility markup, and ESC key modal closing shortcuts.
 *   **Bucket Management**: Create and delete buckets directly from the UI.
 *   **Object Browser**: Interactive object navigation, supporting folder-like path hierarchies.
-*   **Drag & Drop Uploads**: Fast, intuitive file uploading directly to your S3 storage.
+*   **Drag & Drop Uploads**: Fast, intuitive file uploading directly to your S3 storage with progress tracking.
 *   **Rich Previews**: Instant browser previews for text, images, and sandboxed PDF files (with strict script-only iframe boundaries).
 *   **Presigned Links**: Generate temporary, shareable download links for objects with custom expiry windows.
 
@@ -220,7 +220,9 @@ rclone lsd stiva:
 
 ## 🧪 Running Tests
 
-To run the unit and integration tests:
+Unit, integration, and fuzz tests are located under the `tests/` directory (`tests/auth`, `tests/config`, `tests/console`, `tests/httpx`, `tests/s3api`, `tests/server`, `tests/storage`).
+
+To run the test suite:
 
 ```bash
 # Run all tests
