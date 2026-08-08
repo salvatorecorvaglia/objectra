@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	bolt "go.etcd.io/bbolt"
 	"github.com/salvatorecorvaglia/stiva/internal/storage"
+	bolt "go.etcd.io/bbolt"
 )
 
 func TestMetadataMigration(t *testing.T) {

@@ -1,10 +1,6 @@
 package storage_test
 
 import (
-	"github.com/salvatorecorvaglia/stiva/internal/storage"
-)
-
-import (
 	"bytes"
 	"context"
 	"crypto/md5"
@@ -24,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/salvatorecorvaglia/stiva/internal/storage"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -1854,12 +1851,12 @@ func TestGracefulShutdown(t *testing.T) {
 		t.Fatalf("engine.Close failed: %v", err)
 	}
 
-	// Verify that the shutdown flags are set to 1
-	if func() int32 { if engine.IsSyncShuttingDown() { return 1 }; return 0 }() != 1 {
-		t.Error("expected isSyncShuttingDown to be 1")
+	// Verify that the shutdown flags are set
+	if !engine.IsSyncShuttingDown() {
+		t.Error("expected isSyncShuttingDown to be true")
 	}
-	if func() int32 { if engine.IsWebhookShuttingDown() { return 1 }; return 0 }() != 1 {
-		t.Error("expected isWebhookShuttingDown to be 1")
+	if !engine.IsWebhookShuttingDown() {
+		t.Error("expected isWebhookShuttingDown to be true")
 	}
 
 	// Try triggering again - it should be ignored or warning should be printed without panic/block

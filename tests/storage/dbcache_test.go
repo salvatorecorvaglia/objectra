@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	bolt "go.etcd.io/bbolt"
 	"github.com/salvatorecorvaglia/stiva/internal/storage"
+	bolt "go.etcd.io/bbolt"
 )
 
 // TestBucketDBEvictionDoesNotCloseInUseHandle is the regression test for the
