@@ -69,11 +69,11 @@ func TestServerStartPortConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create server: %v", err)
 	}
+	defer srv.Shutdown(context.Background())
 
 	// Try starting the server - it should fail synchronously
 	err = srv.Start()
 	if err == nil {
 		t.Error("Expected error when starting server with conflicting port, got nil")
-		srv.Shutdown(context.Background())
 	}
 }

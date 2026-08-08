@@ -1369,10 +1369,8 @@ func TestDeleteBucketVersionedEmptiness(t *testing.T) {
 	// Get latest delete marker to delete it
 	// Actually, let's delete the delete marker using its version ID
 	// Let's find it in history
-	db, releasedb, err := engine.Metadata().AcquireBucketDB(bucket)
-	if err == nil {
-		defer releasedb()
-		var delMarkerID string
+	var delMarkerID string
+	if db, releasedb, err := engine.Metadata().AcquireBucketDB(bucket); err == nil {
 		db.View(func(tx *bolt.Tx) error {
 			b := tx.Bucket([]byte("objects"))
 			c := b.Cursor()
@@ -1386,9 +1384,10 @@ func TestDeleteBucketVersionedEmptiness(t *testing.T) {
 			}
 			return nil
 		})
-		if delMarkerID != "" {
-			engine.DeleteObject(bucket, "file.txt", delMarkerID)
-		}
+		releasedb()
+	}
+	if delMarkerID != "" {
+		engine.DeleteObject(bucket, "file.txt", delMarkerID)
 	}
 
 	// Now it should be empty and deletable
