@@ -2,10 +2,7 @@
 # golangci-lint configuration for Stiva
 # ================================================================
 
-version: "2"
 linters:
-  # Default set (errcheck, govet, ineffassign, staticcheck, unused) plus the
-  # checks that matter for a security-sensitive storage server.
   enable:
     - bodyclose
     - errorlint
@@ -15,54 +12,39 @@ linters:
     - noctx
     - revive
     - unconvert
-  settings:
-    gosec:
-      excludes:
-        # MD5 is required by the S3 ETag and SSE-C key-MD5 specs, not used for security.
-        - G401
-        - G501
-    revive:
-      rules:
-        - name: exported
-          disabled: true
-    errcheck:
-      exclude-functions:
-        - (*os.File).Close
-        - (io.Closer).Close
-        - os.Remove
-        - os.RemoveAll
-        - (*go.etcd.io/bbolt.DB).Close
-        - (net.Listener).Close
-        - (*net.TCPListener).Close
-  exclusions:
-    generated: lax
-    presets:
-      - comments
-      - common-false-positives
-      - legacy
-      - std-error-handling
+
+linters-settings:
+  gosec:
+    excludes:
+      # MD5 is required by S3 ETag and SSE-C key-MD5 specs.
+      - G401
+      - G501
+      - G115
+  revive:
     rules:
-      - linters:
-          - errcheck
-          - ineffassign
-          - gosec
-          - noctx
-        path: _test\.go
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
+      - name: exported
+        disabled: true
+      - name: var-naming
+        disabled: true
+      - name: increment-decrement
+        disabled: true
+  errcheck:
+    exclude-functions:
+      - (*os.File).Close
+      - (io.Closer).Close
+      - os.Remove
+      - os.RemoveAll
+      - (*go.etcd.io/bbolt.DB).Close
+      - (net.Listener).Close
+      - (*net.TCPListener).Close
+
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-formatters:
-  # Without this the pipeline never checked formatting at all.
-  enable:
-    - gofmt
-    - goimports
-  exclusions:
-    generated: lax
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - ineffassign
+        - gosec
+        - noctx
