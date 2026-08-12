@@ -114,7 +114,7 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
 	cleanObjPath := filepath.Clean(objPath)
 	bucketPrefix := bucketDir + string(filepath.Separator)
-	if cleanObjPath != bucketDir && !strings.HasPrefix(cleanObjPath, bucketPrefix) {
+	if !strings.HasPrefix(cleanObjPath, bucketPrefix) {
 		return
 	}
 	rel, err := filepath.Rel(bucketDir, cleanObjPath)
@@ -125,7 +125,7 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 	dir := filepath.Dir(cleanObjPath)
 	for dir != bucketDir {
 		cleanDir := filepath.Clean(dir)
-		if cleanDir != bucketDir && !strings.HasPrefix(cleanDir, bucketPrefix) {
+		if !strings.HasPrefix(cleanDir, bucketPrefix) {
 			break
 		}
 		checkRel, err := filepath.Rel(bucketDir, cleanDir)
@@ -140,7 +140,11 @@ func (fs *FilesystemEngine) cleanupParentDirs(objPath string, bucket string) {
 		if err := os.Remove(cleanDir); err != nil {
 			break
 		}
-		dir = filepath.Dir(cleanDir)
+		parent := filepath.Dir(cleanDir)
+		if parent == cleanDir {
+			break
+		}
+		dir = parent
 	}
 }
 
@@ -219,7 +223,7 @@ func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) err
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
 	cleanObjPath := filepath.Clean(objPath)
 	bucketPrefix := bucketDir + string(filepath.Separator)
-	if cleanObjPath != bucketDir && !strings.HasPrefix(cleanObjPath, bucketPrefix) {
+	if !strings.HasPrefix(cleanObjPath, bucketPrefix) {
 		return errors.New(errInvalidKeyTraversal)
 	}
 	rel, err := filepath.Rel(bucketDir, cleanObjPath)
@@ -237,7 +241,7 @@ func (fs *FilesystemEngine) checkPathConflict(objPath string, bucket string) err
 	dir := filepath.Dir(cleanObjPath)
 	for dir != bucketDir {
 		cleanDir := filepath.Clean(dir)
-		if cleanDir != bucketDir && !strings.HasPrefix(cleanDir, bucketPrefix) {
+		if !strings.HasPrefix(cleanDir, bucketPrefix) {
 			break
 		}
 		checkRel, err := filepath.Rel(bucketDir, cleanDir)

@@ -331,11 +331,18 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	}
 
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
+	bucketPrefix := bucketDir + string(filepath.Separator)
+	if !strings.HasPrefix(objPath, bucketPrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
+	}
 	rel, err := filepath.Rel(bucketDir, objPath)
 	if err != nil || filepath.IsAbs(rel) || isRelTraversal(rel) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 	objDir := filepath.Dir(objPath)
+	if objDir != bucketDir && !strings.HasPrefix(objDir, bucketPrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
+	}
 	relDir, err := filepath.Rel(bucketDir, objDir)
 	if err != nil || filepath.IsAbs(relDir) || isRelTraversal(relDir) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
@@ -439,6 +446,9 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	}
 
 	// Atomically move temp file to final location
+	if !strings.HasPrefix(objPath, bucketPrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
+	}
 	if err := os.Rename(tmpPath, objPath); err != nil {
 		return nil, fmt.Errorf("failed to rename temp file: %w", err)
 	}
@@ -491,6 +501,12 @@ func (fs *FilesystemEngine) GetObject(ctx context.Context, bucket, key, versionI
 	objPath, err := fs.objectPathWithVersion(bucket, key, info.VersionID)
 	if err != nil {
 		return nil, nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
+	}
+
+	bucketDir := filepath.Clean(fs.bucketPath(bucket))
+	bucketPrefix := bucketDir + string(filepath.Separator)
+	if !strings.HasPrefix(objPath, bucketPrefix) {
+		return nil, nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 
 	file, err := os.Open(objPath)
@@ -594,10 +610,16 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) (isDelet
 		versionStatus = ""
 	}
 
+	bucketDir := filepath.Clean(fs.bucketPath(bucket))
+	bucketPrefix := bucketDir + string(filepath.Separator)
+
 	if versionID != "" {
 		objPath, err := fs.objectPathWithVersion(bucket, key, versionID)
 		if err != nil {
 			return false, "", &S3Error{Code: "InvalidArgument", Message: err.Error()}
+		}
+		if !strings.HasPrefix(objPath, bucketPrefix) {
+			return false, "", &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 		}
 		os.Remove(objPath)
 		fs.cleanupParentDirs(objPath, bucket)
@@ -625,7 +647,7 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) (isDelet
 		case "Suspended":
 			delVersionID = "null"
 			objPath, err := fs.objectPathWithVersion(bucket, key, "null")
-			if err == nil {
+			if err == nil && strings.HasPrefix(objPath, bucketPrefix) {
 				os.Remove(objPath)
 				fs.cleanupParentDirs(objPath, bucket)
 			}
@@ -661,7 +683,7 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) (isDelet
 	if err == nil {
 		for _, v := range versions {
 			objPath, err := fs.objectPathWithVersion(bucket, key, v.VersionID)
-			if err == nil {
+			if err == nil && strings.HasPrefix(objPath, bucketPrefix) {
 				os.Remove(objPath)
 				fs.cleanupParentDirs(objPath, bucket)
 			}
@@ -669,7 +691,7 @@ func (fs *FilesystemEngine) DeleteObject(bucket, key, versionID string) (isDelet
 	} else {
 		// Fallback to deleting the latest version's file if GetObjectVersions fails
 		objPath, err := fs.objectPathWithVersion(bucket, key, info.VersionID)
-		if err == nil {
+		if err == nil && strings.HasPrefix(objPath, bucketPrefix) {
 			os.Remove(objPath)
 			fs.cleanupParentDirs(objPath, bucket)
 		}

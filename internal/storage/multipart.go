@@ -44,6 +44,11 @@ func (fs *FilesystemEngine) CreateMultipartUpload(bucket, key, contentType strin
 	if err != nil {
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
+	baseDir := filepath.Clean(filepath.Join(fs.dataDir, "multipart", bucket))
+	basePrefix := baseDir + string(filepath.Separator)
+	if !strings.HasPrefix(partDir, basePrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidUploadID}
+	}
 	if err := os.MkdirAll(partDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create multipart directory: %w", err)
 	}
@@ -131,6 +136,11 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 	if err != nil {
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
+	baseDir := filepath.Clean(filepath.Join(fs.dataDir, "multipart", bucket))
+	basePrefix := baseDir + string(filepath.Separator)
+	if !strings.HasPrefix(partDir, basePrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidUploadID}
+	}
 	partPath := filepath.Join(partDir, fmt.Sprintf("part-%05d", partNumber))
 
 	tmpFile, err := os.CreateTemp(partDir, ".part-tmp-*")
@@ -184,6 +194,9 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		return nil, &S3Error{Code: "BadRequest", Message: fmt.Sprintf("Size mismatch: expected %d bytes, wrote %d bytes", size, written)}
 	}
 
+	if !strings.HasPrefix(partPath, basePrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidUploadID}
+	}
 	if err := os.Rename(tmpPath, partPath); err != nil {
 		return nil, fmt.Errorf("failed to rename part file: %w", err)
 	}
@@ -331,11 +344,18 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(ctx context.Context, bucket,
 	}
 
 	bucketDir := filepath.Clean(fs.bucketPath(bucket))
+	bucketPrefix := bucketDir + string(filepath.Separator)
+	if !strings.HasPrefix(objPath, bucketPrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
+	}
 	rel, err := filepath.Rel(bucketDir, objPath)
 	if err != nil || filepath.IsAbs(rel) || isRelTraversal(rel) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
 	}
 	objDir := filepath.Dir(objPath)
+	if objDir != bucketDir && !strings.HasPrefix(objDir, bucketPrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
+	}
 	relDir, err := filepath.Rel(bucketDir, objDir)
 	if err != nil || filepath.IsAbs(relDir) || isRelTraversal(relDir) {
 		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
@@ -395,9 +415,17 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(ctx context.Context, bucket,
 	if err != nil {
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
+	partBaseDir := filepath.Clean(filepath.Join(fs.dataDir, "multipart", bucket))
+	partBasePrefix := partBaseDir + string(filepath.Separator)
+	if !strings.HasPrefix(partDir, partBasePrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidUploadID}
+	}
 
 	for _, part := range parts {
 		partPath := filepath.Join(partDir, fmt.Sprintf("part-%05d", part.PartNumber))
+		if !strings.HasPrefix(partPath, partBasePrefix) {
+			return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidUploadID}
+		}
 		partFile, err := os.Open(partPath)
 		if err != nil {
 			return nil, fmt.Errorf("part %d not found: %w", part.PartNumber, err)
@@ -448,6 +476,9 @@ func (fs *FilesystemEngine) CompleteMultipartUpload(ctx context.Context, bucket,
 	}
 
 	// Atomically move temp file to final location
+	if !strings.HasPrefix(objPath, bucketPrefix) {
+		return nil, &S3Error{Code: "InvalidArgument", Message: errInvalidKeyTraversal}
+	}
 	if err := os.Rename(tmpPath, objPath); err != nil {
 		return nil, fmt.Errorf("failed to rename temp file: %w", err)
 	}
