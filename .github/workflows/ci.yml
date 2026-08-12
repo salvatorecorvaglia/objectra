@@ -38,7 +38,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.24"
+          go-version-file: 'go.mod'
           cache: false
 
       - name: Run golangci-lint
@@ -46,13 +46,18 @@ jobs:
         with:
           version: v1.64.8
 
-  # ── Vulnerability scan ────────────────────────────────────────
   vulncheck:
     name: Vulnerability Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: false
 
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
@@ -75,7 +80,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.24"
+          go-version-file: 'go.mod'
           cache: true
           cache-dependency-path: go.sum
 
@@ -121,7 +126,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.24"
+          go-version-file: 'go.mod'
           cache: true
           cache-dependency-path: go.sum
 
