@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-12
+
 ### Added
 
 - Reorganized project test suite into a standalone `tests/` root directory (`tests/auth`, `tests/config`, `tests/console`, `tests/httpx`, `tests/s3api`, `tests/server`, `tests/storage`).
@@ -24,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Fixed database handle leaks in `TestDeleteBucketVersionedEmptiness` and unclosed server instances in `TestServerStartPortConflict` that caused `unlinkat` access denied errors on Windows CI runners.
 - Fixed false-positive integer conversion linting warnings and simplified server shutdown flag assertions.
+- Fixed unclosed object readers in filesystem storage tests (`tests/storage/filesystem_test.go`) to prevent file descriptor and resource leaks.
+
+### Security
+
+- Strengthened directory traversal protection across storage engine and multipart upload operations (`internal/storage/filesystem.go`, `internal/storage/multipart.go`, `internal/storage/paths.go`) by enforcing strict path prefix validations against bucket boundaries and multipart temporary directories.
 
 ## [1.0.0] - 2026-08-06
 
