@@ -2,6 +2,8 @@
 # golangci-lint configuration for Stiva
 # ================================================================
 
+version: "2"
+
 linters:
   enable:
     - bodyclose
@@ -12,39 +14,55 @@ linters:
     - noctx
     - revive
     - unconvert
-
-linters-settings:
-  gosec:
-    excludes:
-      # MD5 is required by S3 ETag and SSE-C key-MD5 specs.
-      - G401
-      - G501
-      - G115
-  revive:
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*os.File).Close
+        - (io.Closer).Close
+        - os.Remove
+        - os.RemoveAll
+        - (*go.etcd.io/bbolt.DB).Close
+        - (net.Listener).Close
+        - (*net.TCPListener).Close
+    gosec:
+      excludes:
+        # MD5 is required by S3 ETag and SSE-C key-MD5 specs.
+        - G401
+        - G501
+        - G115
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+        - name: var-naming
+          disabled: true
+        - name: increment-decrement
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: exported
-        disabled: true
-      - name: var-naming
-        disabled: true
-      - name: increment-decrement
-        disabled: true
-  errcheck:
-    exclude-functions:
-      - (*os.File).Close
-      - (io.Closer).Close
-      - os.Remove
-      - os.RemoveAll
-      - (*go.etcd.io/bbolt.DB).Close
-      - (net.Listener).Close
-      - (*net.TCPListener).Close
-
+      - linters:
+          - errcheck
+          - gosec
+          - ineffassign
+          - noctx
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - errcheck
-        - ineffassign
-        - gosec
-        - noctx
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
