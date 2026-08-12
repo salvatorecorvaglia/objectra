@@ -29,6 +29,7 @@ data/
 *.sqlite3
 
 # Temp files & Logs
+RELEASE_NOTES.md
 *.tmp
 *.bak
 *.log
