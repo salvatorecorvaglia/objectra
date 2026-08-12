@@ -1587,8 +1587,9 @@ func TestBucketLifecycleAndLogging(t *testing.T) {
 	}
 
 	// Verify logs/test.log current version was expired (since versioning is Enabled, it should create a delete marker)
-	_, _, err = engine.GetObject(ctx, expBucket, "logs/test.log", "")
+	rTest, _, err := engine.GetObject(ctx, expBucket, "logs/test.log", "")
 	if err == nil {
+		rTest.Close()
 		t.Error("expected logs/test.log to be expired and unavailable, but got nil error")
 	} else {
 		var s3Err *storage.S3Error
@@ -1599,21 +1600,26 @@ func TestBucketLifecycleAndLogging(t *testing.T) {
 	}
 
 	// Verify logs/keep.log still exists
-	_, _, err = engine.GetObject(ctx, expBucket, "logs/keep.log", "")
+	rKeep, _, err := engine.GetObject(ctx, expBucket, "logs/keep.log", "")
 	if err != nil {
 		t.Errorf("expected logs/keep.log to exist, got %v", err)
+	} else {
+		rKeep.Close()
 	}
 
 	// Verify archive/versioned.txt v1 is deleted (NoSuchKey or similar for that specific version ID)
-	_, _, err = engine.GetObject(ctx, expBucket, "archive/versioned.txt", v1Info.VersionID)
+	rV1, _, err := engine.GetObject(ctx, expBucket, "archive/versioned.txt", v1Info.VersionID)
 	if err == nil {
+		rV1.Close()
 		t.Error("expected versioned v1 to be permanently deleted, got nil error")
 	}
 
 	// Verify archive/versioned.txt v2 still exists
-	_, _, err = engine.GetObject(ctx, expBucket, "archive/versioned.txt", v2Info.VersionID)
+	rV2, _, err := engine.GetObject(ctx, expBucket, "archive/versioned.txt", v2Info.VersionID)
 	if err != nil {
 		t.Errorf("expected latest version to still exist, got %v", err)
+	} else {
+		rV2.Close()
 	}
 
 	// 3. Test Logging
