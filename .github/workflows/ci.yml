@@ -1,10 +1,3 @@
-# ================================================================
-# Stiva — Continuous Integration
-# ================================================================
-# Runs on every push to main and on pull requests targeting main.
-# Jobs: lint, vulncheck, test, build
-# ================================================================
-
 name: CI
 
 on:
@@ -27,7 +20,6 @@ permissions:
   contents: read
 
 jobs:
-  # ── Lint ──────────────────────────────────────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -62,10 +54,6 @@ jobs:
       - name: Run govulncheck
         uses: golang/govulncheck-action@v1
 
-  # ── Test ──────────────────────────────────────────────────────
-  # Windows is included because internal/storage/paths.go carries
-  # Windows-specific path-traversal logic that must be exercised, not
-  # just cross-compiled.
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -94,7 +82,6 @@ jobs:
         run: |
           total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
           echo "Total coverage: ${total}%"
-          # Ratchet: raise this floor as coverage improves; never lower it.
           floor=60.0
           awk -v t="$total" -v f="$floor" 'BEGIN { if (t+0 < f+0) { printf "Coverage %.1f%% is below the %.1f%% floor\n", t, f; exit 1 } }'
 
@@ -106,7 +93,6 @@ jobs:
           path: coverage.out
           retention-days: 14
 
-  # ── Build ─────────────────────────────────────────────────────
   build:
     name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
