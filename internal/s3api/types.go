@@ -265,6 +265,15 @@ type CopyObjectResult struct {
 	ETag         string   `xml:"ETag"`
 }
 
+// --- UploadPartCopy ---
+
+// CopyPartResult is the XML response for UploadPartCopy.
+type CopyPartResult struct {
+	XMLName      xml.Name `xml:"CopyPartResult"`
+	LastModified string   `xml:"LastModified"`
+	ETag         string   `xml:"ETag"`
+}
+
 // --- Error ---
 
 // ErrorResponse is the XML error response format.

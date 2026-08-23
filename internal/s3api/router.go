@@ -483,6 +483,8 @@ func (rt *Router) handleObjectOps(w http.ResponseWriter, r *http.Request, bucket
 		}
 	case http.MethodPut:
 		switch {
+		case r.Header.Get("x-amz-copy-source") != "" && query.Get("partNumber") != "" && query.Get("uploadId") != "":
+			rt.handleUploadPartCopy(w, r, bucket, key)
 		case r.Header.Get("x-amz-copy-source") != "":
 			if rejectUnhandledSubresource(w, query, resource) {
 				return
@@ -558,7 +560,7 @@ func (rt *Router) handleGetBucketCORS(w http.ResponseWriter, _ *http.Request, bu
 
 func (rt *Router) handlePutBucketCORS(w http.ResponseWriter, r *http.Request, bucket string) {
 	var reqBody CORSConfigurationXML
-	if err := xml.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(r.Body, maxXMLRequestBody)).Decode(&reqBody); err != nil {
 		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", "/"+bucket)
 		return
 	}

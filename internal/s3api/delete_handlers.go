@@ -12,9 +12,11 @@ import (
 // maxDeleteObjectsPerRequest matches the S3 limit on batch delete size.
 const maxDeleteObjectsPerRequest = 1000
 
-// maxDeleteRequestBody bounds the XML body for a batch delete so an
-// unauthenticated-sized payload cannot exhaust memory.
-const maxDeleteRequestBody = 2 << 20 // 2MB
+// maxXMLRequestBody bounds the XML body accepted by subresource/config PUT
+// endpoints and batch delete, so a client that skips real payload signing
+// (UNSIGNED-PAYLOAD, or any body-size mode not covered by auth.HashPayload's
+// checks) cannot force unbounded xml.Decoder allocation.
+const maxXMLRequestBody = 2 << 20 // 2MB
 
 // handleDeleteObjects handles POST /<bucket>?delete (DeleteObjects).
 //
@@ -25,7 +27,7 @@ func (rt *Router) handleDeleteObjects(w http.ResponseWriter, r *http.Request, bu
 	resource := "/" + bucket
 
 	var req DeleteObjectsRequest
-	if err := xml.NewDecoder(io.LimitReader(r.Body, maxDeleteRequestBody)).Decode(&req); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(r.Body, maxXMLRequestBody)).Decode(&req); err != nil {
 		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", resource)
 		return
 	}

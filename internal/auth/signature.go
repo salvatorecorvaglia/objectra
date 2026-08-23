@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -20,6 +21,8 @@ import (
 const (
 	amzDateHeader        = "X-Amz-Date"
 	unsignedPayload      = "UNSIGNED-PAYLOAD"
+	streamingPayload     = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+	chunkSignaturePrefix = "AWS4-HMAC-SHA256-PAYLOAD"
 	aws4HMACSHA256Format = "AWS4-HMAC-SHA256\n%s\n%s\n%s"
 	amzSignatureQuery    = "X-Amz-Signature"
 
@@ -128,7 +131,8 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 
 	// Verify request payload matches content SHA256 header (if not unsigned or streaming)
 	payloadHash := r.Header.Get("X-Amz-Content-Sha256")
-	if payloadHash != "" && payloadHash != unsignedPayload && payloadHash != "STREAMING-AWS4-HMAC-SHA256-PAYLOAD" {
+	isStreaming := payloadHash == streamingPayload
+	if payloadHash != "" && payloadHash != unsignedPayload && !isStreaming {
 		actualHash, err := HashPayload(r)
 		if err != nil {
 			return fmt.Errorf("failed to hash request payload: %w", err)
@@ -160,6 +164,19 @@ func (v *SigV4Verifier) Verify(r *http.Request) error {
 
 	if !hmac.Equal([]byte(expectedSig), []byte(parsed.Signature)) {
 		return &AuthError{Code: "SignatureDoesNotMatch", Message: "The request signature we calculated does not match the signature you provided."}
+	}
+
+	// STREAMING-AWS4-HMAC-SHA256-PAYLOAD carries the body as a sequence of
+	// aws-chunked frames, each individually signed and chained from the
+	// request's own signature above. The header signature alone says nothing
+	// about the body, so it must be decoded and each chunk verified here —
+	// otherwise the chunk framing (and any chunk whose declared signature
+	// doesn't match its data) would be written to disk as if it were the
+	// object's real content.
+	if isStreaming {
+		if err := decodeStreamingPayload(r, signingKey, dateStr, scope, expectedSig); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -516,11 +533,31 @@ func HashPayload(r *http.Request) (string, error) {
 	shaWriter := sha256.New()
 	_, _ = shaWriter.Write(buf)
 
-	_, err = io.Copy(io.MultiWriter(tmpFile, shaWriter), r.Body)
+	// r.ContentLength is -1 for a chunked Transfer-Encoding request, so the
+	// upfront check above never fires for one. Cap this copy independently of
+	// Content-Length so such a request can't spool an unbounded body to disk.
+	remaining := io.Reader(r.Body)
+	if MaxPayloadSize > 0 {
+		allowed := MaxPayloadSize - int64(len(buf))
+		if allowed < 0 {
+			allowed = 0
+		}
+		remaining = io.LimitReader(r.Body, allowed+1)
+	}
+
+	written, err := io.Copy(io.MultiWriter(tmpFile, shaWriter), remaining)
 	if err != nil {
 		tmpFile.Close()
 		os.Remove(tmpName)
 		return "", err
+	}
+	if MaxPayloadSize > 0 && int64(len(buf))+written > MaxPayloadSize {
+		tmpFile.Close()
+		os.Remove(tmpName)
+		return "", &AuthError{
+			Code:    "EntityTooLarge",
+			Message: "Your proposed upload exceeds the maximum allowed size.",
+		}
 	}
 
 	if err := tmpFile.Close(); err != nil {
@@ -555,6 +592,157 @@ func (t *tempFileReadCloser) Close() error {
 	os.Remove(t.path)
 	t.File = nil
 	return err
+}
+
+// emptyPayloadHash is the SHA256 hash of an empty string, used by the
+// aws-chunked chunk-signing string-to-sign as a stand-in for "hash of signed
+// trailer headers" when the request carries none.
+var emptyPayloadHash = hashSHA256(nil)
+
+// decodeStreamingPayload replaces r.Body with the dechunked payload carried
+// by an aws-chunked / STREAMING-AWS4-HMAC-SHA256-PAYLOAD request, verifying
+// each chunk's signature against the chain seeded by the request's own
+// Authorization signature. A chunk whose declared signature doesn't match is
+// rejected outright rather than written to disk.
+//
+// Wire format per chunk: "<hex-size>;chunk-signature=<sig>\r\n<data>\r\n",
+// terminated by a zero-size chunk. Trailer chunks (STREAMING-*-TRAILER, used
+// for post-payload checksums) are not part of this format and are rejected
+// by the caller before reaching here, since their payload hash header
+// doesn't match streamingPayload.
+func decodeStreamingPayload(r *http.Request, signingKey []byte, dateStr, scope, seedSignature string) error {
+	if r.Body == nil {
+		return nil
+	}
+
+	br := bufio.NewReader(r.Body)
+
+	tempDir := TempDir
+	if tempDir == "" {
+		tempDir = os.TempDir()
+	}
+
+	var mem bytes.Buffer
+	var tmpFile *os.File
+	var tmpName string
+	cleanup := func() {
+		if tmpFile != nil {
+			tmpFile.Close()
+			os.Remove(tmpName)
+		}
+	}
+	spooled := int64(0)
+	writeOut := func(p []byte) error {
+		if MaxPayloadSize > 0 && spooled+int64(len(p)) > MaxPayloadSize {
+			return &AuthError{Code: "EntityTooLarge", Message: "Your proposed upload exceeds the maximum allowed size."}
+		}
+		spooled += int64(len(p))
+		if tmpFile == nil && mem.Len()+len(p) > maxInMemoryPayload {
+			f, err := os.CreateTemp(tempDir, "stiva-chunked-*")
+			if err != nil {
+				return fmt.Errorf("failed to create temp file for chunked payload: %w", err)
+			}
+			tmpFile = f
+			tmpName = f.Name()
+			if _, err := tmpFile.Write(mem.Bytes()); err != nil {
+				return err
+			}
+			mem.Reset()
+		}
+		if tmpFile != nil {
+			_, err := tmpFile.Write(p)
+			return err
+		}
+		mem.Write(p)
+		return nil
+	}
+
+	prevSignature := seedSignature
+	for {
+		header, err := br.ReadString('\n')
+		if err != nil {
+			cleanup()
+			return &AuthError{Code: "SignatureDoesNotMatch", Message: "malformed chunked payload: could not read chunk header"}
+		}
+		header = strings.TrimRight(header, "\r\n")
+
+		sizeStr, declaredSig, ok := strings.Cut(header, ";chunk-signature=")
+		if !ok {
+			cleanup()
+			return &AuthError{Code: "SignatureDoesNotMatch", Message: "malformed chunked payload: missing chunk-signature"}
+		}
+		chunkSize, err := strconv.ParseInt(sizeStr, 16, 64)
+		if err != nil || chunkSize < 0 {
+			cleanup()
+			return &AuthError{Code: "SignatureDoesNotMatch", Message: "malformed chunked payload: invalid chunk size"}
+		}
+		if MaxPayloadSize > 0 && chunkSize > MaxPayloadSize {
+			cleanup()
+			return &AuthError{Code: "EntityTooLarge", Message: "Your proposed upload exceeds the maximum allowed size."}
+		}
+
+		chunkData := make([]byte, chunkSize)
+		if chunkSize > 0 {
+			if _, err := io.ReadFull(br, chunkData); err != nil {
+				cleanup()
+				return &AuthError{Code: "SignatureDoesNotMatch", Message: "malformed chunked payload: truncated chunk data"}
+			}
+		}
+		trailer := make([]byte, 2)
+		if _, err := io.ReadFull(br, trailer); err != nil || trailer[0] != '\r' || trailer[1] != '\n' {
+			cleanup()
+			return &AuthError{Code: "SignatureDoesNotMatch", Message: "malformed chunked payload: missing chunk terminator"}
+		}
+
+		stringToSign := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
+			chunkSignaturePrefix,
+			dateStr,
+			scope,
+			prevSignature,
+			emptyPayloadHash,
+			hashSHA256(chunkData),
+		)
+		expectedSig := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
+		if !hmac.Equal([]byte(expectedSig), []byte(declaredSig)) {
+			cleanup()
+			return &AuthError{Code: "SignatureDoesNotMatch", Message: "chunk signature does not match"}
+		}
+		prevSignature = expectedSig
+
+		if chunkSize == 0 {
+			break
+		}
+		if err := writeOut(chunkData); err != nil {
+			cleanup()
+			return err
+		}
+	}
+
+	if tmpFile != nil {
+		if err := tmpFile.Close(); err != nil {
+			os.Remove(tmpName)
+			return err
+		}
+		f, err := os.Open(tmpName)
+		if err != nil {
+			os.Remove(tmpName)
+			return err
+		}
+		fi, err := f.Stat()
+		if err != nil {
+			f.Close()
+			os.Remove(tmpName)
+			return err
+		}
+		r.Body = &tempFileReadCloser{File: f, path: tmpName}
+		r.ContentLength = fi.Size()
+		return nil
+	}
+
+	data := mem.Bytes()
+	r.Body = io.NopCloser(bytes.NewReader(data))
+	r.ContentLength = int64(len(data))
+	return nil
 }
 
 // PresignGetObject generates a presigned GET URL for S3 compatibility.

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/salvatorecorvaglia/stiva/internal/storage"
 )
@@ -71,13 +73,98 @@ func (rt *Router) handleUploadPart(w http.ResponseWriter, r *http.Request, bucke
 	w.WriteHeader(http.StatusOK)
 }
 
+// handleUploadPartCopy handles PUT /<bucket>/<key>?partNumber=N&uploadId=ID
+// with an x-amz-copy-source header (UploadPartCopy). This is distinct from
+// handleUploadPart, which reads part data from the request body; here the
+// part's content comes from an existing source object instead.
+func (rt *Router) handleUploadPartCopy(w http.ResponseWriter, r *http.Request, bucket, key string) {
+	query := r.URL.Query()
+	uploadID := query.Get("uploadId")
+	partNumberStr := query.Get("partNumber")
+	resource := "/" + bucket + "/" + key
+
+	partNumber, err := strconv.Atoi(partNumberStr)
+	if err != nil || partNumber < 1 {
+		writeS3Error(w, "InvalidArgument", "Invalid part number", resource)
+		return
+	}
+
+	src, err := parseCopySource(r.Header.Get("x-amz-copy-source"))
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+
+	srcParams, err := extractCopySourceSSECParams(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+
+	dstParams, err := extractSSECParams(r)
+	if err != nil {
+		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		return
+	}
+
+	srcCtx := r.Context()
+	if srcParams != nil {
+		srcCtx = context.WithValue(srcCtx, storage.SSECContextKey, srcParams)
+	}
+
+	reader, info, err := rt.engine.GetObject(srcCtx, src.Bucket, src.Key, src.VersionID)
+	if handleStorageError(w, err, resource) {
+		return
+	}
+	defer reader.Close()
+
+	var body io.Reader = reader
+	size := info.Size
+	if rangeHeader := r.Header.Get("x-amz-copy-source-range"); rangeHeader != "" {
+		ranges, err := parseRange(rangeHeader, info.Size)
+		if err != nil || len(ranges) != 1 {
+			writeS3Error(w, "InvalidArgument", "The x-amz-copy-source-range value is invalid", resource)
+			return
+		}
+		ra := ranges[0]
+		if _, err := io.CopyN(io.Discard, reader, ra.start); err != nil {
+			writeS3Error(w, "InternalError", "Failed to read source object", resource)
+			return
+		}
+		body = io.LimitReader(reader, ra.length)
+		size = ra.length
+	}
+
+	dstCtx := r.Context()
+	if dstParams != nil {
+		dstCtx = context.WithValue(dstCtx, storage.SSECContextKey, dstParams)
+	}
+
+	partInfo, err := rt.engine.UploadPart(dstCtx, bucket, key, uploadID, partNumber, body, size)
+	if handleStorageError(w, err, resource) {
+		return
+	}
+
+	if dstParams != nil {
+		w.Header().Set("x-amz-server-side-encryption-customer-algorithm", dstParams.Algorithm)
+		w.Header().Set("x-amz-server-side-encryption-customer-key-MD5", dstParams.KeyMD5)
+	}
+
+	result := CopyPartResult{
+		LastModified: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+		ETag:         fmt.Sprintf(`"%s"`, partInfo.ETag),
+	}
+
+	writeXML(w, http.StatusOK, result)
+}
+
 // handleCompleteMultipartUpload handles POST /<bucket>/<key>?uploadId=ID (CompleteMultipartUpload).
 func (rt *Router) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	uploadID := r.URL.Query().Get("uploadId")
 	resource := "/" + bucket + "/" + key
 
 	var reqBody CompleteMultipartUploadRequest
-	if err := xml.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(r.Body, maxXMLRequestBody)).Decode(&reqBody); err != nil {
 		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", resource)
 		return
 	}

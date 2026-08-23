@@ -2,6 +2,7 @@ package s3api
 
 import (
 	"encoding/xml"
+	"io"
 	"net/http"
 
 	"github.com/salvatorecorvaglia/stiva/internal/storage"
@@ -115,7 +116,7 @@ func (rt *Router) handleGetBucketVersioning(w http.ResponseWriter, _ *http.Reque
 // handlePutBucketVersioning handles PUT /<bucket>?versioning.
 func (rt *Router) handlePutBucketVersioning(w http.ResponseWriter, r *http.Request, bucket string) {
 	var reqBody VersioningConfigurationXML
-	if err := xml.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(r.Body, maxXMLRequestBody)).Decode(&reqBody); err != nil {
 		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", "/"+bucket)
 		return
 	}
@@ -150,7 +151,7 @@ func (rt *Router) handleGetBucketLifecycle(w http.ResponseWriter, _ *http.Reques
 // handlePutBucketLifecycle handles PUT /<bucket>?lifecycle.
 func (rt *Router) handlePutBucketLifecycle(w http.ResponseWriter, r *http.Request, bucket string) {
 	var req storage.LifecycleConfiguration
-	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(r.Body, maxXMLRequestBody)).Decode(&req); err != nil {
 		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", "/"+bucket)
 		return
 	}
@@ -190,7 +191,7 @@ func (rt *Router) handleGetBucketLogging(w http.ResponseWriter, _ *http.Request,
 // handlePutBucketLogging handles PUT /<bucket>?logging.
 func (rt *Router) handlePutBucketLogging(w http.ResponseWriter, r *http.Request, bucket string) {
 	var req storage.BucketLoggingStatus
-	if err := xml.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := xml.NewDecoder(io.LimitReader(r.Body, maxXMLRequestBody)).Decode(&req); err != nil {
 		writeS3Error(w, "MalformedXML", "The XML you provided was not well-formed", "/"+bucket)
 		return
 	}
