@@ -14,6 +14,12 @@ type MetricsTracker struct {
 	BytesUploaded    uint64
 	BytesDownloaded  uint64
 	ActiveMultiparts int64
+	// WebhookDropped/SyncDropped count events discarded because their
+	// dispatcher's bounded queue was full — the only prior signal for this
+	// was a log line, so an operator relying on /metrics had no way to
+	// detect silent notification/replication loss.
+	WebhookDropped uint64
+	SyncDropped    uint64
 
 	// Disk space caching
 	lastDiskCheck time.Time
@@ -58,6 +64,18 @@ func (m *MetricsTracker) DecActiveMultiparts() {
 	atomic.AddInt64(&m.ActiveMultiparts, -1)
 }
 
+// IncWebhookDropped records a webhook event discarded because the dispatch
+// queue was full.
+func (m *MetricsTracker) IncWebhookDropped() {
+	atomic.AddUint64(&m.WebhookDropped, 1)
+}
+
+// IncSyncDropped records a replication task discarded because the dispatch
+// queue was full.
+func (m *MetricsTracker) IncSyncDropped() {
+	atomic.AddUint64(&m.SyncDropped, 1)
+}
+
 // FormatPrometheus generates a plain-text Prometheus-compliant metrics string.
 func (m *MetricsTracker) FormatPrometheus(dataDir string) string {
 	m.diskMu.Lock()
@@ -78,6 +96,8 @@ func (m *MetricsTracker) FormatPrometheus(dataDir string) string {
 	up := atomic.LoadUint64(&m.BytesUploaded)
 	down := atomic.LoadUint64(&m.BytesDownloaded)
 	activeMP := atomic.LoadInt64(&m.ActiveMultiparts)
+	webhookDropped := atomic.LoadUint64(&m.WebhookDropped)
+	syncDropped := atomic.LoadUint64(&m.SyncDropped)
 
 	return fmt.Sprintf(`# HELP stiva_requests_total Total number of S3 requests processed.
 # TYPE stiva_requests_total counter
@@ -106,5 +126,13 @@ stiva_disk_total_bytes %d
 # HELP stiva_disk_free_bytes Free disk space of the storage directory in bytes.
 # TYPE stiva_disk_free_bytes gauge
 stiva_disk_free_bytes %d
-`, reqs, errs, up, down, activeMP, diskTotalVal, diskFreeVal)
+
+# HELP stiva_webhook_dropped_total Total webhook events discarded because the dispatch queue was full.
+# TYPE stiva_webhook_dropped_total counter
+stiva_webhook_dropped_total %d
+
+# HELP stiva_sync_dropped_total Total replication tasks discarded because the dispatch queue was full.
+# TYPE stiva_sync_dropped_total counter
+stiva_sync_dropped_total %d
+`, reqs, errs, up, down, activeMP, diskTotalVal, diskFreeVal, webhookDropped, syncDropped)
 }

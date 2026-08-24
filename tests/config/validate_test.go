@@ -77,6 +77,7 @@ func TestValidateRejectsBadConfig(t *testing.T) {
 		{"bad log level", func(c *config.Config) { c.LogLevel = "verbose" }, "STIVA_LOG_LEVEL"},
 		{"bad log format", func(c *config.Config) { c.LogFormat = "yaml" }, "STIVA_LOG_FORMAT"},
 		{"zero proxy hops", func(c *config.Config) { c.TrustedProxyHops = 0 }, "STIVA_TRUSTED_PROXY_HOPS"},
+		{"negative max object size", func(c *config.Config) { c.MaxObjectSize = -1 }, "STIVA_MAX_OBJECT_SIZE"},
 		{
 			"tls cert without key",
 			func(c *config.Config) { c.TLSEnabled = true; c.TLSCert = "/tmp/c.pem" },
@@ -124,9 +125,10 @@ func TestValidateRejectsBadConfig(t *testing.T) {
 // TestValidateRejectsShortJWTSecret guards the console signing key: HS256 with a
 // short secret can be brute-forced offline from one captured token.
 func TestValidateRejectsShortJWTSecret(t *testing.T) {
-	t.Setenv("STIVA_JWT_SECRET", "short")
+	cfg := validConfig()
+	cfg.JWTSecret = "short"
 
-	err := validConfig().Validate()
+	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("a short STIVA_JWT_SECRET must be rejected")
 	}
@@ -136,9 +138,10 @@ func TestValidateRejectsShortJWTSecret(t *testing.T) {
 }
 
 func TestValidateAcceptsLongJWTSecret(t *testing.T) {
-	t.Setenv("STIVA_JWT_SECRET", strings.Repeat("x", config.MinJWTSecretLen))
+	cfg := validConfig()
+	cfg.JWTSecret = strings.Repeat("x", config.MinJWTSecretLen)
 
-	if err := validConfig().Validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		t.Fatalf("a sufficiently long secret must be accepted: %v", err)
 	}
 }

@@ -50,7 +50,7 @@ func (rt *Router) handleUploadPart(w http.ResponseWriter, r *http.Request, bucke
 
 	params, err := extractSSECParams(r)
 	if err != nil {
-		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		writeSSECError(w, err, resource)
 		return
 	}
 
@@ -97,13 +97,13 @@ func (rt *Router) handleUploadPartCopy(w http.ResponseWriter, r *http.Request, b
 
 	srcParams, err := extractCopySourceSSECParams(r)
 	if err != nil {
-		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		writeSSECError(w, err, resource)
 		return
 	}
 
 	dstParams, err := extractSSECParams(r)
 	if err != nil {
-		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		writeSSECError(w, err, resource)
 		return
 	}
 
@@ -173,7 +173,7 @@ func (rt *Router) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 	// parts on completion and no longer stores the key server-side.
 	params, err := extractSSECParams(r)
 	if err != nil {
-		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		writeSSECError(w, err, resource)
 		return
 	}
 	ctx := r.Context()

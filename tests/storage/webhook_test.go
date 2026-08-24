@@ -120,3 +120,54 @@ func TestWebhook_Integration(t *testing.T) {
 		t.Errorf("expected event s3:ObjectRemoved:Delete, got %q", deleteEvent.EventName)
 	}
 }
+
+// TestWebhookDispatcherShutdownWaitsForPendingRetry guards against a gap
+// where a scheduled webhook retry timer (time.AfterFunc) was not tracked by
+// the dispatcher's WaitGroup: StopWebhookDispatcher (and therefore
+// Server.Shutdown) could report a clean shutdown while a retry — and its
+// outbound HTTP call — was still pending, up to several seconds after the
+// process claimed to have stopped. The receiver here always fails, so a
+// retry is always scheduled; engine.Close() must not return before that
+// scheduled attempt has run.
+func TestWebhookDispatcherShutdownWaitsForPendingRetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	t.Setenv("STIVA_WEBHOOK_URL", server.URL)
+
+	tempDir := t.TempDir()
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, server.URL)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	if err := engine.CreateBucket("webhooks"); err != nil {
+		t.Fatalf("Failed to create bucket: %v", err)
+	}
+
+	content := "shutdown-me"
+	_, err = engine.PutObject(context.Background(), "webhooks", "shutdown.txt", strings.NewReader(content), int64(len(content)), "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	// Give the first (always-failing) attempt time to run and schedule its
+	// retry timer before we shut down.
+	time.Sleep(200 * time.Millisecond)
+
+	start := time.Now()
+	if err := engine.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// The retry backoff for the first retry is ~1s; if Close() returned
+	// almost instantly, the pending timer was not tracked and this shutdown
+	// did not actually wait for it.
+	if elapsed < 700*time.Millisecond {
+		t.Errorf("Close() returned after %v, expected it to block for roughly the pending retry's backoff (~1s) — a scheduled webhook retry is escaping shutdown tracking", elapsed)
+	}
+}

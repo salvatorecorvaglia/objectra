@@ -34,8 +34,11 @@ FROM alpine:3.22
 # wget is used by the container healthcheck.
 RUN apk add --no-cache ca-certificates tzdata wget
 
-# Create non-root user
-RUN addgroup -S stiva && adduser -S stiva -G stiva
+# Create non-root user with a fixed UID/GID: adduser -S assigns whatever the
+# next free system UID happens to be, which isn't guaranteed stable across
+# image rebuilds or Alpine versions and can cause volume permission drift
+# between image versions for orchestrators that pin runAsUser.
+RUN addgroup -S -g 1000 stiva && adduser -S -u 1000 -G stiva stiva
 
 # Create data directory
 RUN mkdir -p /data && chown stiva:stiva /data

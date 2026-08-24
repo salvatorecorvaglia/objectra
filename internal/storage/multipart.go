@@ -83,6 +83,11 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 	if _, err := fs.objectPath(bucket, key); err != nil {
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
 	}
+	// See PutObject: this applies regardless of signing mode, including
+	// UNSIGNED-PAYLOAD, which bypasses the SigV4 layer's own size check.
+	if fs.maxObjectSize > 0 && size > fs.maxObjectSize {
+		return nil, &S3Error{Code: "EntityTooLarge", Message: "Your proposed upload exceeds the maximum allowed part size."}
+	}
 
 	// 1. Lock briefly to get/initialize multipart metadata and validate SSE-C params
 	var ssecParams *SSECParams
@@ -132,6 +137,14 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 		}
 	}
 
+	// Serializes the write-rename-metadata sequence below for this exact part
+	// number, so a retried/duplicate UploadPart call for the same part can't
+	// leave the on-disk file from one request paired with the ETag/size
+	// metadata from another. Other part numbers of the same upload are
+	// unaffected and continue uploading in parallel.
+	unlockPart := fs.lockPart(uploadID, partNumber)
+	defer unlockPart()
+
 	partDir, err := fs.multipartDir(bucket, key, uploadID)
 	if err != nil {
 		return nil, &S3Error{Code: "InvalidArgument", Message: err.Error()}
@@ -177,9 +190,16 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 	}
 
 	hash := md5.New()
-	written, err := io.Copy(io.MultiWriter(out, hash), reader)
+	capped := io.Reader(reader)
+	if fs.maxObjectSize > 0 {
+		capped = io.LimitReader(reader, fs.maxObjectSize+1)
+	}
+	written, err := io.Copy(io.MultiWriter(out, hash), capped)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write part data: %w", err)
+	}
+	if fs.maxObjectSize > 0 && written > fs.maxObjectSize {
+		return nil, &S3Error{Code: "EntityTooLarge", Message: "Your proposed upload exceeds the maximum allowed part size."}
 	}
 
 	if err := bufWriter.Flush(); err != nil {
@@ -572,15 +592,19 @@ func (fs *FilesystemEngine) AbortMultipartUpload(bucket, key, uploadID string) e
 	return err
 }
 
-func (fs *FilesystemEngine) lockUpload(uploadID string) func() {
+// lockKey acquires a refcounted mutex scoped to an arbitrary string key,
+// creating it on first use and removing it once the last holder releases it.
+// Callers from different lock domains (uploads, parts, object keys) must
+// prefix their keys so they can't collide in the shared map.
+func (fs *FilesystemEngine) lockKey(key string) func() {
 	fs.mu.Lock()
 	if fs.locks == nil {
 		fs.locks = make(map[string]*uploadLock)
 	}
-	l, exists := fs.locks[uploadID]
+	l, exists := fs.locks[key]
 	if !exists {
 		l = &uploadLock{}
-		fs.locks[uploadID] = l
+		fs.locks[key] = l
 	}
 	l.refCount++
 	fs.mu.Unlock()
@@ -591,8 +615,29 @@ func (fs *FilesystemEngine) lockUpload(uploadID string) func() {
 		fs.mu.Lock()
 		l.refCount--
 		if l.refCount == 0 {
-			delete(fs.locks, uploadID)
+			delete(fs.locks, key)
 		}
 		fs.mu.Unlock()
 	}
+}
+
+func (fs *FilesystemEngine) lockUpload(uploadID string) func() {
+	return fs.lockKey("upload:" + uploadID)
+}
+
+// lockPart serializes the write-rename-metadata sequence for a single part
+// of a single upload, so a retried/duplicate UploadPart call for the same
+// part number can't leave the on-disk part file from one request paired with
+// the ETag/size metadata from another. Different part numbers (the common
+// case for a parallel multipart upload) are unaffected by each other.
+func (fs *FilesystemEngine) lockPart(uploadID string, partNumber int) func() {
+	return fs.lockKey(fmt.Sprintf("part:%s:%d", uploadID, partNumber))
+}
+
+// lockObjectKey serializes the rename-then-metadata-write sequence in
+// PutObject for a single (bucket, key), so two racing PUTs to the same
+// unversioned key can't leave the on-disk bytes from one request paired with
+// the ETag/size metadata from the other.
+func (fs *FilesystemEngine) lockObjectKey(bucket, key string) func() {
+	return fs.lockKey("object:" + bucket + "/" + key)
 }

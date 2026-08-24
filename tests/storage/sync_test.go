@@ -151,3 +151,118 @@ func TestMirrorSync_Integration(t *testing.T) {
 		t.Errorf("expected destination URI '/backup-bucket/docs/report.txt', got %q", deleteReq.URI)
 	}
 }
+
+// TestMirrorSyncRetriesOnTransientFailure guards against a gap where
+// MirrorSync made exactly one delivery attempt: any transient failure (a
+// remote 5xx, a dropped connection) permanently dropped that replication
+// event with only a log line, silently diverging the backup bucket from the
+// primary. The backup endpoint here fails the first attempt and succeeds on
+// the retry.
+func TestMirrorSyncRetriesOnTransientFailure(t *testing.T) {
+	var mu sync.Mutex
+	var attempts int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempts++
+		n := attempts
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	t.Setenv("STIVA_SYNC_ENDPOINT", server.URL)
+	t.Setenv("STIVA_SYNC_BUCKET", "backup-bucket")
+	t.Setenv("STIVA_SYNC_ACCESS_KEY", "backupaccess")
+	t.Setenv("STIVA_SYNC_SECRET_KEY", "backupsecret")
+	t.Setenv("STIVA_SYNC_REGION", "us-west-2")
+
+	tempDir := t.TempDir()
+	engine, err := storage.NewFilesystemEngine(tempDir, syncConfigFromEnv(), "")
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+	defer engine.Close()
+
+	if err := engine.CreateBucket("primary-bucket"); err != nil {
+		t.Fatalf("Failed to create bucket: %v", err)
+	}
+
+	content := "retry-me"
+	_, err = engine.PutObject(context.Background(), "primary-bucket", "retry.txt", strings.NewReader(content), int64(len(content)), "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := attempts
+		mu.Unlock()
+		if n >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout waiting for retried mirroring attempt (saw %d attempt(s))", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestSyncDispatcherShutdownWaitsForPendingRetry guards against a gap where a
+// scheduled retry timer was not tracked by the dispatcher's WaitGroup:
+// StopSyncDispatcher (and therefore Server.Shutdown) could report a clean
+// shutdown while a retry — and its outbound HTTP call — was still pending.
+// The backup endpoint here always fails, so a retry is always scheduled;
+// engine.Close() must not return before that scheduled attempt has run.
+func TestSyncDispatcherShutdownWaitsForPendingRetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	t.Setenv("STIVA_SYNC_ENDPOINT", server.URL)
+	t.Setenv("STIVA_SYNC_BUCKET", "backup-bucket")
+	t.Setenv("STIVA_SYNC_ACCESS_KEY", "backupaccess")
+	t.Setenv("STIVA_SYNC_SECRET_KEY", "backupsecret")
+	t.Setenv("STIVA_SYNC_REGION", "us-west-2")
+
+	tempDir := t.TempDir()
+	engine, err := storage.NewFilesystemEngine(tempDir, syncConfigFromEnv(), "")
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	if err := engine.CreateBucket("primary-bucket"); err != nil {
+		t.Fatalf("Failed to create bucket: %v", err)
+	}
+
+	content := "shutdown-me"
+	_, err = engine.PutObject(context.Background(), "primary-bucket", "shutdown.txt", strings.NewReader(content), int64(len(content)), "text/plain")
+	if err != nil {
+		t.Fatalf("PutObject failed: %v", err)
+	}
+
+	// Give the first (always-failing) attempt time to run and schedule its
+	// retry timer before we shut down.
+	time.Sleep(200 * time.Millisecond)
+
+	start := time.Now()
+	if err := engine.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// The retry backoff for the first retry is ~1s; if Close() returned
+	// almost instantly, the pending timer was not tracked and this shutdown
+	// did not actually wait for it.
+	if elapsed < 700*time.Millisecond {
+		t.Errorf("Close() returned after %v, expected it to block for roughly the pending retry's backoff (~1s) — a scheduled sync retry is escaping shutdown tracking", elapsed)
+	}
+}

@@ -64,6 +64,32 @@ func buildSSECParams(algo, keyB64, keyMD5B64 string) (*storage.SSECParams, error
 	}, nil
 }
 
+// sseCErrorCodes lists the "<Code>: <message>" prefixes extractSSECParams/
+// buildSSECParams/extractCopySourceSSECParams use, matching the specific S3
+// error codes real S3 returns for each condition (some client tooling
+// branches on these) rather than the generic InvalidArgument every SSE-C
+// validation failure was previously collapsed into.
+var sseCErrorCodes = map[string]bool{
+	"UnsupportedEncryptionAlgorithm": true,
+	"MissingEncryptionKey":           true,
+	"InvalidEncryptionKey":           true,
+	"MissingEncryptionKeyMD5":        true,
+	"InvalidEncryptionKeyMD5":        true,
+}
+
+// writeSSECError writes an S3 error response for an SSE-C validation
+// failure, using the specific error code encoded in the error message
+// (see sseCErrorCodes) instead of a generic InvalidArgument.
+func writeSSECError(w http.ResponseWriter, err error, resource string) {
+	msg := err.Error()
+	code := "InvalidArgument"
+	if prefix, rest, ok := strings.Cut(msg, ": "); ok && sseCErrorCodes[prefix] {
+		code = prefix
+		msg = rest
+	}
+	writeS3Error(w, code, msg, resource)
+}
+
 // handlePutObject handles PUT /<bucket>/<key> (PutObject).
 func (rt *Router) handlePutObject(w http.ResponseWriter, r *http.Request, bucket, key string) {
 	contentType := r.Header.Get(contentTypeHeader)
@@ -76,7 +102,7 @@ func (rt *Router) handlePutObject(w http.ResponseWriter, r *http.Request, bucket
 
 	params, err := extractSSECParams(r)
 	if err != nil {
-		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		writeSSECError(w, err, resource)
 		return
 	}
 
@@ -108,7 +134,7 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 
 	params, err := extractSSECParams(r)
 	if err != nil {
-		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		writeSSECError(w, err, resource)
 		return
 	}
 
@@ -144,6 +170,7 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 		w.Header().Set(amzSSECAlgorithmHeader, info.SSECustomerAlgorithm)
 		w.Header().Set(amzSSECKeyMD5Header, info.SSECustomerKeyMD5)
 	}
+	applyResponseHeaderOverrides(w, r.URL.Query())
 
 	if ifMatch := r.Header.Get("If-Match"); ifMatch != "" {
 		quotedETag := fmt.Sprintf(`"%s"`, info.ETag)
@@ -192,6 +219,27 @@ func (rt *Router) handleGetObject(w http.ResponseWriter, r *http.Request, bucket
 	// Fallback for non-seekable readers: serve full content only.
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, reader)
+}
+
+// applyResponseHeaderOverrides implements the S3 "response header override"
+// query parameters (commonly attached to presigned GetObject URLs). Without
+// this, a presigned link always renders inline per the object's stored
+// Content-Type — including in a browser tab, where there is otherwise no way
+// to force a download for a URL that isn't same-origin with the requester.
+func applyResponseHeaderOverrides(w http.ResponseWriter, query url.Values) {
+	overrides := map[string]string{
+		"response-content-disposition": "Content-Disposition",
+		"response-content-type":        contentTypeHeader,
+		"response-content-language":    "Content-Language",
+		"response-content-encoding":    "Content-Encoding",
+		"response-cache-control":       "Cache-Control",
+		"response-expires":             "Expires",
+	}
+	for param, header := range overrides {
+		if v := query.Get(param); v != "" {
+			w.Header().Set(header, v)
+		}
+	}
 }
 
 type httpRange struct {
@@ -254,7 +302,7 @@ func (rt *Router) handleHeadObject(w http.ResponseWriter, r *http.Request, bucke
 
 	params, err := extractSSECParams(r)
 	if err != nil {
-		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		writeSSECError(w, err, resource)
 		return
 	}
 
@@ -347,14 +395,14 @@ func (rt *Router) handleCopyObject(w http.ResponseWriter, r *http.Request, bucke
 	// destination; S3 carries it in the x-amz-copy-source-* header family.
 	srcParams, err := extractCopySourceSSECParams(r)
 	if err != nil {
-		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		writeSSECError(w, err, resource)
 		return
 	}
 	src.SSEC = srcParams
 
 	dstParams, err := extractSSECParams(r)
 	if err != nil {
-		writeS3Error(w, "InvalidArgument", err.Error(), resource)
+		writeSSECError(w, err, resource)
 		return
 	}
 	ctx := r.Context()

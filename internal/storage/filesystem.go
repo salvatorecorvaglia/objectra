@@ -81,6 +81,12 @@ type FilesystemEngine struct {
 	mu       sync.Mutex
 	locks    map[string]*uploadLock
 
+	// maxObjectSize caps the bytes PutObject/UploadPart will write for a
+	// single object/part, independent of the SigV4 layer's own payload-size
+	// check (which a client sending UNSIGNED-PAYLOAD bypasses entirely).
+	// Zero disables the cap.
+	maxObjectSize int64
+
 	// Sync replication queue
 	syncConfig         *SyncConfig
 	syncQueue          chan syncTask
@@ -92,6 +98,7 @@ type FilesystemEngine struct {
 
 	// Webhook queue
 	webhookURL            string
+	webhookSecret         string
 	webhookQueue          chan webhookTask
 	webhookOnce           sync.Once
 	webhookWG             sync.WaitGroup
@@ -151,6 +158,21 @@ func NewFilesystemEngine(dataDir string, syncCfg *SyncConfig, webhookURL string)
 		},
 		webhookURL: webhookURL,
 	}, nil
+}
+
+// SetWebhookSecret sets the HMAC secret used to sign outgoing webhook
+// payloads, so receivers can authenticate them. Without it, any host that
+// learns the webhook URL can forge events. Must be called before the first
+// event is triggered; the dispatcher reads it per-delivery, not once at
+// startup, so it isn't safe to change concurrently with event delivery.
+func (fs *FilesystemEngine) SetWebhookSecret(secret string) {
+	fs.webhookSecret = secret
+}
+
+// SetMaxObjectSize caps the bytes PutObject/UploadPart will accept for a
+// single object/part. Zero (the default) disables the cap.
+func (fs *FilesystemEngine) SetMaxObjectSize(n int64) {
+	fs.maxObjectSize = n
 }
 
 // Close closes the underlying metadata store and stops workers.
@@ -303,6 +325,14 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	if err := fs.validateBucketName(bucket); err != nil {
 		return nil, err
 	}
+	// A declared Content-Length over the cap is rejected immediately; an
+	// unknown/chunked size (-1) still passes here but is bounded below by
+	// wrapping reader in a LimitReader, so this applies regardless of
+	// signing mode — including UNSIGNED-PAYLOAD, which bypasses the SigV4
+	// layer's own MaxPayloadSize check entirely.
+	if fs.maxObjectSize > 0 && size > fs.maxObjectSize {
+		return nil, &S3Error{Code: "EntityTooLarge", Message: "Your proposed upload exceeds the maximum allowed object size."}
+	}
 
 	exists, err := fs.metadata.BucketExists(bucket)
 	if err != nil {
@@ -419,9 +449,16 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 
 	// Stream data to disk while computing MD5
 	hash := md5.New()
-	written, err := io.Copy(io.MultiWriter(out, hash), reader)
+	capped := io.Reader(reader)
+	if fs.maxObjectSize > 0 {
+		capped = io.LimitReader(reader, fs.maxObjectSize+1)
+	}
+	written, err := io.Copy(io.MultiWriter(out, hash), capped)
 	if err != nil {
 		return nil, fmt.Errorf("failed to write object data: %w", err)
+	}
+	if fs.maxObjectSize > 0 && written > fs.maxObjectSize {
+		return nil, &S3Error{Code: "EntityTooLarge", Message: "Your proposed upload exceeds the maximum allowed object size."}
 	}
 
 	if gzipWriter != nil {
@@ -444,6 +481,13 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 	if err := tmpFile.Close(); err != nil {
 		return nil, fmt.Errorf("failed to close temp file: %w", err)
 	}
+
+	// Serializes the rename-then-metadata-write sequence below for this exact
+	// key, so two racing PUTs to the same unversioned key can't leave the
+	// on-disk bytes from one request paired with the ETag/size metadata from
+	// the other.
+	unlockObj := fs.lockObjectKey(bucket, key)
+	defer unlockObj()
 
 	// Atomically move temp file to final location
 	if !strings.HasPrefix(objPath, bucketPrefix) {

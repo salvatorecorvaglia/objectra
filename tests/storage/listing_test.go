@@ -194,6 +194,96 @@ func TestListObjectVersionsIncludesDeleteMarkers(t *testing.T) {
 	}
 }
 
+// TestListObjectVersionsPaginatesAcrossKeysWithoutDuplicatesOrGaps exercises
+// the cursor-based rewrite of ListObjectVersions across many keys, each with
+// several versions, paging with a small MaxKeys so multiple pages are
+// required. It guards both the pagination contract (NextKeyMarker/
+// NextVersionIDMarker must let the next call resume exactly where the last
+// one stopped, with no duplicate or skipped entries) and per-key ordering
+// (newest version first) — the property the previous full-sort-in-memory
+// implementation got from a single global sort, which the per-key cursor
+// gather-and-sort here must reproduce without ever materializing the whole
+// bucket's version history.
+func TestListObjectVersionsPaginatesAcrossKeysWithoutDuplicatesOrGaps(t *testing.T) {
+	fs := newListEngine(t, "versioned-page")
+	if err := fs.SetBucketVersioning("versioned-page", "Enabled"); err != nil {
+		t.Fatalf("enable versioning: %v", err)
+	}
+
+	keys := []string{"a.txt", "b.txt", "c.txt", "d.txt"}
+	const versionsPerKey = 3
+	for _, key := range keys {
+		for i := 0; i < versionsPerKey; i++ {
+			if _, err := fs.PutObject(context.Background(), "versioned-page", key,
+				strings.NewReader(fmt.Sprintf("%s-v%d", key, i)), int64(len(key)+3), "text/plain"); err != nil {
+				t.Fatalf("put %s v%d: %v", key, i, err)
+			}
+		}
+	}
+
+	type seenEntry struct {
+		key, versionID string
+	}
+	var all []seenEntry
+	seen := make(map[seenEntry]bool)
+
+	keyMarker, versionIDMarker := "", ""
+	pages := 0
+	for {
+		pages++
+		if pages > 50 {
+			t.Fatal("pagination did not terminate — likely stuck repeating a page")
+		}
+		out, err := fs.ListObjectVersions(&storage.ListVersionsInput{
+			Bucket:          "versioned-page",
+			MaxKeys:         2,
+			KeyMarker:       keyMarker,
+			VersionIDMarker: versionIDMarker,
+		})
+		if err != nil {
+			t.Fatalf("ListObjectVersions page %d: %v", pages, err)
+		}
+
+		// Within this page, versions of the same key must appear newest
+		// first (descending LastModified).
+		for i, v := range out.Versions {
+			if i > 0 && v.Key == out.Versions[i-1].Key {
+				if v.LastModified.After(out.Versions[i-1].LastModified) {
+					t.Errorf("page %d: versions of %q not newest-first: %v before %v",
+						pages, v.Key, out.Versions[i-1].LastModified, v.LastModified)
+				}
+			}
+			entry := seenEntry{v.Key, v.VersionID}
+			if seen[entry] {
+				t.Fatalf("page %d: duplicate entry %+v across pages", pages, entry)
+			}
+			seen[entry] = true
+			all = append(all, entry)
+		}
+
+		if !out.IsTruncated {
+			break
+		}
+		if out.NextKeyMarker == "" {
+			t.Fatalf("page %d: truncated but NextKeyMarker is empty", pages)
+		}
+		keyMarker = out.NextKeyMarker
+		versionIDMarker = out.NextVersionIDMarker
+	}
+
+	if len(all) != len(keys)*versionsPerKey {
+		t.Fatalf("collected %d version entries across %d pages, want %d", len(all), pages, len(keys)*versionsPerKey)
+	}
+
+	// Global key ordering across pages must be ascending, matching S3's
+	// contract and what a single-shot (non-paginated) listing would return.
+	for i := 1; i < len(all); i++ {
+		if all[i].key < all[i-1].key {
+			t.Errorf("keys out of order across pages: %q came after %q", all[i].key, all[i-1].key)
+		}
+	}
+}
+
 // TestListPartsReturnsUploadedParts covers the new ListParts surface.
 func TestListPartsReturnsUploadedParts(t *testing.T) {
 	fs := newListEngine(t, "mpu")
@@ -234,7 +324,7 @@ func TestListMultipartUploadsReportsInFlight(t *testing.T) {
 		}
 	}
 
-	uploads, truncated, err := fs.ListMultipartUploads("mpu", "", 100)
+	uploads, truncated, err := fs.ListMultipartUploads("mpu", "", "", "", 100)
 	if err != nil {
 		t.Fatalf("ListMultipartUploads: %v", err)
 	}
@@ -246,5 +336,54 @@ func TestListMultipartUploadsReportsInFlight(t *testing.T) {
 	}
 	if uploads[0].Key != "a.bin" || uploads[1].Key != "b.bin" {
 		t.Errorf("uploads not sorted by key: %q, %q", uploads[0].Key, uploads[1].Key)
+	}
+}
+
+// TestListMultipartUploadsPaginationAdvances guards against a gap where
+// key-marker/upload-id-marker were accepted but never acted on: a caller
+// paging through more in-progress uploads than fit in one response got the
+// exact same first page back every time, regardless of the markers it sent.
+func TestListMultipartUploadsPaginationAdvances(t *testing.T) {
+	fs := newListEngine(t, "mpu-page")
+	keys := []string{"a.bin", "b.bin", "c.bin", "d.bin", "e.bin"}
+	for _, key := range keys {
+		if _, err := fs.CreateMultipartUpload("mpu-page", key, "application/octet-stream"); err != nil {
+			t.Fatalf("create mpu %s: %v", key, err)
+		}
+	}
+
+	page1, truncated, err := fs.ListMultipartUploads("mpu-page", "", "", "", 2)
+	if err != nil {
+		t.Fatalf("ListMultipartUploads page1: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected page1 to be truncated")
+	}
+	if len(page1) != 2 || page1[0].Key != "a.bin" || page1[1].Key != "b.bin" {
+		t.Fatalf("unexpected page1: %+v", page1)
+	}
+
+	last := page1[len(page1)-1]
+	page2, truncated, err := fs.ListMultipartUploads("mpu-page", "", last.Key, last.UploadID, 2)
+	if err != nil {
+		t.Fatalf("ListMultipartUploads page2: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected page2 to be truncated")
+	}
+	if len(page2) != 2 || page2[0].Key != "c.bin" || page2[1].Key != "d.bin" {
+		t.Fatalf("page2 did not advance past the marker (pagination stuck repeating page1?): %+v", page2)
+	}
+
+	last = page2[len(page2)-1]
+	page3, truncated, err := fs.ListMultipartUploads("mpu-page", "", last.Key, last.UploadID, 2)
+	if err != nil {
+		t.Fatalf("ListMultipartUploads page3: %v", err)
+	}
+	if truncated {
+		t.Error("expected page3 to be the final page")
+	}
+	if len(page3) != 1 || page3[0].Key != "e.bin" {
+		t.Fatalf("unexpected page3: %+v", page3)
 	}
 }

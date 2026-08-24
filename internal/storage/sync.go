@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/salvatorecorvaglia/stiva/internal/auth"
 )
@@ -34,6 +35,10 @@ type syncTask struct {
 
 const syncQueueSize = 5000
 const syncWorkerCount = 10
+const (
+	syncMaxRetries  = 3
+	syncBaseBackoff = time.Second
+)
 
 func (fs *FilesystemEngine) initSyncDispatcher() {
 	fs.syncQueue = make(chan syncTask, syncQueueSize)
@@ -42,15 +47,42 @@ func (fs *FilesystemEngine) initSyncDispatcher() {
 		go func() {
 			defer fs.syncWG.Done()
 			for task := range fs.syncQueue {
-				err := performSync(context.Background(), task.fs, task.fs.syncClient, task.cfg, task.bucket, task.key, task.op)
-				if err != nil {
-					slog.Error("[Sync] Mirroring failed", "op", task.op, "bucket", task.bucket, "key", task.key, "error", err)
-				} else {
-					slog.Info("[Sync] Mirroring succeeded", "op", task.op, "bucket", task.bucket, "key", task.key)
-				}
+				fs.attemptSync(task, 0)
 			}
 		}()
 	}
+}
+
+// attemptSync performs one replication attempt for task and, on failure,
+// schedules retries with exponential backoff (matching the webhook
+// dispatcher). Unlike a single unconditional attempt, this means a transient
+// network blip or remote 5xx no longer permanently drops the replication
+// event. Each scheduled retry is tracked by fs.syncWG so StopSyncDispatcher's
+// Wait() blocks until the retry chain finishes rather than returning while a
+// retry is still pending.
+func (fs *FilesystemEngine) attemptSync(task syncTask, n int) {
+	err := performSync(context.Background(), task.fs, task.fs.syncClient, task.cfg, task.bucket, task.key, task.op)
+	if err == nil {
+		slog.Info("[Sync] Mirroring succeeded", "op", task.op, "bucket", task.bucket, "key", task.key)
+		return
+	}
+
+	if atomic.LoadInt32(&fs.isSyncShuttingDown) == 1 {
+		slog.Warn("[Sync] Dispatcher shutting down, abandoning retry", "op", task.op, "bucket", task.bucket, "key", task.key)
+		return
+	}
+	if n >= syncMaxRetries {
+		slog.Error("[Sync] Mirroring failed after retries", "op", task.op, "bucket", task.bucket, "key", task.key, "retries", syncMaxRetries, "error", err)
+		return
+	}
+
+	slog.Warn("[Sync] Mirroring attempt failed, will retry", "op", task.op, "bucket", task.bucket, "key", task.key, "attempt", n, "error", err)
+	backoff := syncBaseBackoff << n
+	fs.syncWG.Add(1)
+	time.AfterFunc(backoff, func() {
+		defer fs.syncWG.Done()
+		fs.attemptSync(task, n+1)
+	})
 }
 
 // StopSyncDispatcher halts replication queue processing, waits for pending transfers, and shuts down workers.
@@ -99,6 +131,7 @@ func (fs *FilesystemEngine) MirrorSync(bucket, key, op string) {
 	select {
 	case fs.syncQueue <- task:
 	default:
+		GlobalMetrics.IncSyncDropped()
 		slog.Warn("[Sync] Sync queue full, dropping sync task", "op", op, "bucket", bucket, "key", key)
 	}
 }

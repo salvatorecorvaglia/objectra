@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -143,6 +142,10 @@ type Options struct {
 	// MaxPresignExpiry bounds how far in the future a generated presigned URL
 	// may be valid. Zero selects defaultMaxPresignExpiry.
 	MaxPresignExpiry time.Duration
+	// MetricsToken, if set, is the bearer token required to read /metrics
+	// independent of a console session. Empty means only a valid console
+	// session token is accepted.
+	MetricsToken string
 }
 
 // Handler serves the web console UI and its REST API.
@@ -158,6 +161,7 @@ type Handler struct {
 	trustProxy       bool
 	trustedProxyHops int
 	maxPresignExpiry time.Duration
+	metricsToken     string
 }
 
 // NewHandler creates a new console handler.
@@ -183,6 +187,7 @@ func NewHandler(opts Options) *Handler {
 		trustProxy:       opts.TrustProxy,
 		trustedProxyHops: hops,
 		maxPresignExpiry: maxExpiry,
+		metricsToken:     opts.MetricsToken,
 	}
 	h.setupRoutes()
 	return h
@@ -201,6 +206,7 @@ func (h *Handler) rateLimitMiddleware(limiter *rateLimiter, next http.HandlerFun
 func (h *Handler) setupRoutes() {
 	// API routes
 	h.mux.HandleFunc("/api/login", h.rateLimitMiddleware(h.loginLimiter, h.handleLogin))
+	h.mux.HandleFunc("/api/config", h.rateLimitMiddleware(h.apiLimiter, h.authMiddleware(h.handleGetConfig)))
 	h.mux.HandleFunc("/api/buckets", h.rateLimitMiddleware(h.apiLimiter, h.authMiddleware(h.handleBuckets)))
 	h.mux.HandleFunc("/api/buckets/", h.rateLimitMiddleware(h.apiLimiter, h.authMiddleware(h.handleBucketObjects)))
 
@@ -310,6 +316,18 @@ func (h *Handler) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 		next(w, r)
 	}
+}
+
+// handleGetConfig exposes non-sensitive server settings the UI needs to
+// render itself correctly — currently just the S3 API port, which the
+// top-bar badge used to hardcode as "Port 9000" regardless of the operator's
+// actual STIVA_S3_PORT.
+func (h *Handler) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": errMethodNotAllowed})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"s3Port": h.s3Port})
 }
 
 // handleLogin handles POST /api/login.
@@ -882,7 +900,7 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 	if s3Endpoint == "" {
 		// Resolve the S3 host from the incoming request (replacing port)
 		scheme := "http"
-		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		if r.TLS != nil || (h.trustProxy && r.Header.Get("X-Forwarded-Proto") == "https") {
 			scheme = "https"
 		}
 
@@ -898,6 +916,20 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 		s3Endpoint = fmt.Sprintf("%s://%s:%d", scheme, hostWithoutPort, h.s3Port)
 	}
 
+	// Recipients open a share link directly, outside the console origin, so
+	// there's no <a download> to fall back on and the object would otherwise
+	// just render inline per its stored Content-Type. Opt-in via ?download=1
+	// so other callers of this endpoint aren't forced into that behavior.
+	extraParams := url.Values{}
+	if r.URL.Query().Get("download") == "1" {
+		filename := key
+		if idx := strings.LastIndex(key, "/"); idx != -1 {
+			filename = key[idx+1:]
+		}
+		extraParams.Set("response-content-disposition",
+			mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
+	}
+
 	presignedURL, err := auth.PresignGetObject(
 		h.creds.AccessKey,
 		h.creds.SecretKey,
@@ -906,6 +938,7 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 		key,
 		expires,
 		s3Endpoint,
+		extraParams,
 	)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -916,12 +949,11 @@ func (h *Handler) handlePresignObject(w http.ResponseWriter, r *http.Request, bu
 }
 
 func (h *Handler) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	metricsToken := os.Getenv("STIVA_METRICS_TOKEN")
 	authorized := false
 
 	authHeader := r.Header.Get("Authorization")
-	if metricsToken != "" {
-		expected := "Bearer " + metricsToken
+	if h.metricsToken != "" {
+		expected := "Bearer " + h.metricsToken
 		if subtle.ConstantTimeCompare([]byte(authHeader), []byte(expected)) == 1 {
 			authorized = true
 		}

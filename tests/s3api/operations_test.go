@@ -236,6 +236,36 @@ func TestGetObjectIfNoneMatch304(t *testing.T) {
 	}
 }
 
+// TestGetObjectResponseHeaderOverrides covers the response-content-disposition
+// (and friends) query parameters real S3 honors on GetObject, commonly used
+// on presigned URLs so a link opened directly in a browser downloads instead
+// of rendering inline per the object's stored Content-Type.
+func TestGetObjectResponseHeaderOverrides(t *testing.T) {
+	rt, eng := newOpsRouter(t)
+	if err := eng.CreateBucket("overrides"); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := eng.PutObject(context.Background(), "overrides", "report.txt",
+		strings.NewReader("hello"), 5, "text/plain"); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet,
+		`/overrides/report.txt?response-content-disposition=attachment%3B+filename%3D%22report.txt%22&response-content-type=application%2Foctet-stream`, nil)
+	w := httptest.NewRecorder()
+	rt.HandleObjectOps(w, req, "overrides", "report.txt")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Disposition"); got != `attachment; filename="report.txt"` {
+		t.Errorf("Content-Disposition = %q, want %q", got, `attachment; filename="report.txt"`)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("Content-Type = %q, want overridden value application/octet-stream", got)
+	}
+}
+
 func TestHeadObjectIfMatchPreconditionFailed(t *testing.T) {
 	rt, eng := newOpsRouter(t)
 	if err := eng.CreateBucket("cond"); err != nil {

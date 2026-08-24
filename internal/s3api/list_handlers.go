@@ -211,8 +211,10 @@ func (rt *Router) handleListMultipartUploads(w http.ResponseWriter, r *http.Requ
 	query := r.URL.Query()
 	maxUploads := maxKeysFromQuery(query.Get("max-uploads"), 1000)
 	prefix := query.Get("prefix")
+	keyMarker := query.Get("key-marker")
+	uploadIDMarker := query.Get("upload-id-marker")
 
-	uploads, truncated, err := rt.engine.ListMultipartUploads(bucket, prefix, maxUploads)
+	uploads, truncated, err := rt.engine.ListMultipartUploads(bucket, prefix, keyMarker, uploadIDMarker, maxUploads)
 	if handleStorageError(w, err, "/"+bucket) {
 		return
 	}
@@ -231,13 +233,15 @@ func (rt *Router) handleListMultipartUploads(w http.ResponseWriter, r *http.Requ
 	}
 
 	result := ListMultipartUploadsResult{
-		Xmlns:       s3XmlNamespace,
-		Bucket:      bucket,
-		Prefix:      prefix,
-		Delimiter:   query.Get("delimiter"),
-		MaxUploads:  maxUploads,
-		IsTruncated: truncated,
-		Uploads:     entries,
+		Xmlns:          s3XmlNamespace,
+		Bucket:         bucket,
+		KeyMarker:      keyMarker,
+		UploadIdMarker: uploadIDMarker,
+		Prefix:         prefix,
+		Delimiter:      query.Get("delimiter"),
+		MaxUploads:     maxUploads,
+		IsTruncated:    truncated,
+		Uploads:        entries,
 	}
 	if truncated && len(entries) > 0 {
 		last := entries[len(entries)-1]

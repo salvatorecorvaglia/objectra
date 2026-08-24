@@ -13,6 +13,7 @@
     let currentPageIndex = 0;
     let pageTokens = [''];
     let shareTargetKey = '';
+    let currentPreviewBlobURL = '';
     let loadedItems = [];
     let currentSortField = 'name';
     let currentSortOrder = 'asc';
@@ -99,6 +100,29 @@
         return resp;
     }
 
+    // Wraps the try/await/if-ok/else-toast pattern repeated across nearly
+    // every mutating console action (create bucket, delete object, toggle
+    // public access, ...), which previously diverged slightly at each call
+    // site in how errors were surfaced. Returns true on success.
+    async function apiAction(method, path, { body = null, isFormData = false, successMsg, errorMsg, onSuccess, onError } = {}) {
+        try {
+            const resp = await api(method, path, body, isFormData);
+            if (resp.ok) {
+                if (successMsg) showToast(successMsg, 'success');
+                if (onSuccess) onSuccess();
+                return true;
+            }
+            const data = await resp.json().catch(() => ({}));
+            showToast(data.error || errorMsg || 'Request failed', 'error');
+            if (onError) onError();
+            return false;
+        } catch (err) {
+            showToast(errorMsg || err.message || 'Request failed', 'error');
+            if (onError) onError();
+            return false;
+        }
+    }
+
     // ---- Toast ----
 
     function showToast(message, type = 'info') {
@@ -162,22 +186,16 @@
         bucketPublicToggle.addEventListener('change', async () => {
             if (!currentBucket) return;
             const publicVal = bucketPublicToggle.checked;
-            try {
-                const resp = await api('POST', `/api/buckets/${currentBucket}/public?public=${publicVal}`);
-                if (resp.ok) {
-                    showToast(`Bucket public access updated`, 'success');
+            await apiAction('POST', `/api/buckets/${currentBucket}/public?public=${publicVal}`, {
+                successMsg: 'Bucket public access updated',
+                errorMsg: 'Failed to update public access',
+                onSuccess: () => {
                     if (bucketPublicBadge) {
                         bucketPublicBadge.style.display = publicVal ? 'inline-flex' : 'none';
                     }
-                } else {
-                    const data = await resp.json();
-                    showToast(data.error || 'Failed to update public access', 'error');
-                    bucketPublicToggle.checked = !publicVal;
-                }
-            } catch (err) {
-                showToast('Failed to update public access', 'error');
-                bucketPublicToggle.checked = !publicVal;
-            }
+                },
+                onError: () => { bucketPublicToggle.checked = !publicVal; },
+            });
         });
     }
 
@@ -195,6 +213,24 @@
         loginScreen.classList.remove('active');
         dashboardScreen.classList.add('active');
         showBucketsView();
+        loadServerConfig();
+    }
+
+    // Populates the top-bar "S3 API: Port ####" badge from the server's
+    // actual STIVA_S3_PORT instead of a hardcoded "9000" that went stale the
+    // moment an operator changed the port.
+    async function loadServerConfig() {
+        try {
+            const resp = await api('GET', '/api/config');
+            if (!resp.ok) return;
+            const data = await resp.json();
+            const badge = document.querySelector('.server-badge');
+            if (badge && data.s3Port) {
+                badge.innerHTML = `<span class="status-dot"></span>S3 API: Port ${data.s3Port}`;
+            }
+        } catch (err) {
+            // Non-critical: the badge just keeps its static fallback text.
+        }
     }
 
     // ---- Buckets ----
@@ -284,18 +320,11 @@
             e.stopPropagation();
             const ok = await confirmPremium(`Delete bucket "${bucket.name}"? It must be empty.`);
             if (!ok) return;
-            try {
-                const resp = await api('DELETE', `/api/buckets/${bucket.name}`);
-                if (resp.ok) {
-                    showToast(`Bucket "${bucket.name}" deleted`, 'success');
-                    loadBuckets();
-                } else {
-                    const data = await resp.json();
-                    showToast(data.error || 'Failed to delete', 'error');
-                }
-            } catch (err) {
-                showToast('Failed to delete bucket', 'error');
-            }
+            await apiAction('DELETE', `/api/buckets/${bucket.name}`, {
+                successMsg: `Bucket "${bucket.name}" deleted`,
+                errorMsg: 'Failed to delete bucket',
+                onSuccess: loadBuckets,
+            });
         });
 
         return card;
@@ -328,22 +357,29 @@
     });
 
     $('#confirm-create-bucket').addEventListener('click', async () => {
-        const name = $('#new-bucket-name').value.trim();
+        const nameInput = $('#new-bucket-name');
+        const name = nameInput.value.trim();
         if (!name) return;
 
-        try {
-            const resp = await api('POST', '/api/buckets', { name });
-            if (resp.ok) {
-                showToast(`Bucket "${name}" created`, 'success');
+        // The input's `pattern` attribute only triggers HTML5 validation on
+        // form submission — this isn't inside a <form>, so it never fired
+        // and invalid names always round-tripped to the server before the
+        // user saw any feedback. reportValidity() runs the same check and
+        // shows the browser's native validation message.
+        if (!nameInput.checkValidity()) {
+            nameInput.reportValidity();
+            return;
+        }
+
+        await apiAction('POST', '/api/buckets', {
+            body: { name },
+            successMsg: `Bucket "${name}" created`,
+            errorMsg: 'Failed to create bucket',
+            onSuccess: () => {
                 closeModal('create-bucket-modal');
                 loadBuckets();
-            } else {
-                const data = await resp.json();
-                showToast(data.error || 'Failed to create bucket', 'error');
-            }
-        } catch (err) {
-            showToast('Failed to create bucket', 'error');
-        }
+            },
+        });
     });
 
     // ---- Objects Browser ----
@@ -641,17 +677,11 @@
             tr.querySelector('.delete-obj-btn').addEventListener('click', async () => {
                 const ok = await confirmPremium(`Delete "${displayName}"?`);
                 if (!ok) return;
-                try {
-                    const resp = await api('DELETE', `/api/buckets/${currentBucket}/objects?key=${encodeURIComponent(item.key)}`);
-                    if (resp.ok) {
-                        showToast(`"${displayName}" deleted`, 'success');
-                        loadObjects();
-                    } else {
-                        showToast('Failed to delete object', 'error');
-                    }
-                } catch (err) {
-                    showToast('Failed to delete object', 'error');
-                }
+                await apiAction('DELETE', `/api/buckets/${currentBucket}/objects?key=${encodeURIComponent(item.key)}`, {
+                    successMsg: `"${displayName}" deleted`,
+                    errorMsg: 'Failed to delete object',
+                    onSuccess: loadObjects,
+                });
             });
         }
 
@@ -952,21 +982,28 @@
         }
     }
 
+    // Fetches through the console's own /objects/download endpoint (same
+    // origin, authenticated with the session token) rather than a presigned
+    // S3-API URL. The presigned URL points at a different port by default,
+    // and browsers ignore the <a download> attribute for cross-origin URLs —
+    // the file would just navigate/render inline instead of downloading. The
+    // console endpoint also always sets Content-Disposition: attachment.
     async function downloadObject(key) {
         try {
-            const resp = await api('GET', `/api/buckets/${currentBucket}/objects/presign?key=${encodeURIComponent(key)}&expires=300`);
+            const resp = await api('GET', `/api/buckets/${currentBucket}/objects/download?key=${encodeURIComponent(key)}`);
             if (!resp.ok) {
-                throw new Error('Failed to generate download link');
+                throw new Error('Failed to download file');
             }
-            const data = await resp.json();
-            const presignedURL = data.url;
+            const blob = await resp.blob();
+            const blobURL = URL.createObjectURL(blob);
 
             const a = document.createElement('a');
-            a.href = presignedURL;
+            a.href = blobURL;
             a.download = key.split('/').pop();
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+            URL.revokeObjectURL(blobURL);
         } catch (err) {
             showToast('Failed to download: ' + err.message, 'error');
         }
@@ -992,20 +1029,18 @@
 
         const placeholderKey = key + FOLDER_PLACEHOLDER;
 
-        try {
-            const resp = await api('POST',
-                `/api/buckets/${currentBucket}/objects/upload?key=${encodeURIComponent(placeholderKey)}`,
-                formData, true);
-            if (resp.ok) {
-                showToast(`Folder "${name}" created`, 'success');
-                closeModal('create-folder-modal');
-                loadObjects();
-            } else {
-                showToast('Failed to create folder', 'error');
-            }
-        } catch (err) {
-            showToast('Failed to create folder', 'error');
-        }
+        await apiAction('POST',
+            `/api/buckets/${currentBucket}/objects/upload?key=${encodeURIComponent(placeholderKey)}`,
+            {
+                body: formData,
+                isFormData: true,
+                successMsg: `Folder "${name}" created`,
+                errorMsg: 'Failed to create folder',
+                onSuccess: () => {
+                    closeModal('create-folder-modal');
+                    loadObjects();
+                },
+            });
     });
 
     // ---- Modal Helpers ----
@@ -1068,6 +1103,10 @@
 
         if (id === 'preview-modal') {
             previewContentContainer.innerHTML = '';
+            if (currentPreviewBlobURL) {
+                URL.revokeObjectURL(currentPreviewBlobURL);
+                currentPreviewBlobURL = '';
+            }
         }
         if (id === 'share-modal') {
             shareTargetKey = '';
@@ -1096,7 +1135,7 @@
         if (!shareTargetKey) return;
         const expires = shareExpires.value;
         try {
-            const resp = await api('GET', `/api/buckets/${currentBucket}/objects/presign?key=${encodeURIComponent(shareTargetKey)}&expires=${expires}`);
+            const resp = await api('GET', `/api/buckets/${currentBucket}/objects/presign?key=${encodeURIComponent(shareTargetKey)}&expires=${expires}&download=1`);
             if (resp.ok) {
                 const data = await resp.json();
                 shareUrlInput.value = data.url;
@@ -1145,40 +1184,40 @@
         openModal('preview-modal');
 
         try {
-            const resp = await api('GET', `/api/buckets/${currentBucket}/objects/presign?key=${encodeURIComponent(key)}&expires=300`);
+            // Fetched through the console's own /objects/download endpoint
+            // (same origin, authenticated) rather than a presigned S3-API
+            // URL: that URL points at a different port by default, which the
+            // console's own CSP (img-src/media-src/frame-src/connect-src
+            // 'self') then blocks, breaking every preview type below. blob:
+            // URLs are already permitted by the CSP for img/media/frame-src.
+            const resp = await api('GET', `/api/buckets/${currentBucket}/objects/download?key=${encodeURIComponent(key)}`);
             if (!resp.ok) {
-                throw new Error('Failed to get presigned URL');
+                throw new Error('Failed to fetch file for preview');
             }
-            const data = await resp.json();
-            const presignedURL = data.url;
+            const blob = await resp.blob();
+            if (currentPreviewBlobURL) {
+                URL.revokeObjectURL(currentPreviewBlobURL);
+            }
+            currentPreviewBlobURL = URL.createObjectURL(blob);
+            const blobURL = currentPreviewBlobURL;
 
             const ext = '.' + filename.split('.').pop().toLowerCase();
 
             if (['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico'].includes(ext)) {
-                previewContentContainer.innerHTML = `<img src="${presignedURL}" style="max-width: 100%; max-height: 60vh; object-fit: contain; border-radius: 6px; border: 1px solid var(--border);">`;
+                previewContentContainer.innerHTML = `<img src="${blobURL}" style="max-width: 100%; max-height: 60vh; object-fit: contain; border-radius: 6px; border: 1px solid var(--border);">`;
             } else if (['.mp4', '.webm', '.ogg', '.mov'].includes(ext)) {
-                previewContentContainer.innerHTML = `<video src="${presignedURL}" controls autoplay style="max-width: 100%; max-height: 60vh; border-radius: 6px; border: 1px solid var(--border);"></video>`;
+                previewContentContainer.innerHTML = `<video src="${blobURL}" controls autoplay style="max-width: 100%; max-height: 60vh; border-radius: 6px; border: 1px solid var(--border);"></video>`;
             } else if (['.mp3', '.wav', '.ogg', '.m4a', '.aac'].includes(ext)) {
                 previewContentContainer.innerHTML = `
                     <div style="padding: 2rem; width: 100%; display: flex; justify-content: center; background: rgba(255, 255, 255, 0.03); border-radius: 6px; border: 1px solid var(--border);">
-                        <audio src="${presignedURL}" controls autoplay style="width: 100%; max-width: 400px;"></audio>
+                        <audio src="${blobURL}" controls autoplay style="width: 100%; max-width: 400px;"></audio>
                     </div>
                 `;
             } else if (ext === '.pdf') {
-                previewContentContainer.innerHTML = `<iframe src="${presignedURL}" sandbox="allow-scripts" style="width: 100%; height: 60vh; border: none; border-radius: 6px; background: white;"></iframe>`;
+                previewContentContainer.innerHTML = `<iframe src="${blobURL}" sandbox="allow-scripts" style="width: 100%; height: 60vh; border: none; border-radius: 6px; background: white;"></iframe>`;
             } else if (['.txt', '.json', '.js', '.ts', '.go', '.html', '.css', '.md', '.log', '.env', '.yml', '.yaml', '.xml', '.ini', '.conf', '.sh', '.py'].includes(ext)) {
-                const headers = {};
                 const isTruncated = size > 256 * 1024;
-                if (isTruncated) {
-                    headers['Range'] = 'bytes=0-262143';
-                }
-                let text = await fetch(presignedURL, { headers }).then(r => {
-                    if (!r.ok) throw new Error('Failed to fetch text body');
-                    return r.text();
-                });
-                if (text.length > 256 * 1024) {
-                    text = text.slice(0, 256 * 1024);
-                }
+                let text = await blob.slice(0, 256 * 1024).text();
                 let escapedText = escapeHtml(text);
                 if (isTruncated) {
                     escapedText += '\n\n--- [TRUNCATED] File is larger than 256 KB. Showing the first 256 KB. ---';

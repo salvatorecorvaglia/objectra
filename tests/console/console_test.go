@@ -6,7 +6,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/salvatorecorvaglia/stiva/internal/auth"
@@ -189,6 +191,179 @@ func TestConsoleEndpoints(t *testing.T) {
 
 	if presignResp.URL == "" {
 		t.Errorf("expected presigned URL, got empty")
+	}
+}
+
+// TestPresignObjectDownloadOverride covers the share-link "force download"
+// option: a share link is opened outside the console origin, so there's no
+// <a download> to fall back on, and without response-content-disposition the
+// object would just render inline per its stored Content-Type in the
+// recipient's browser.
+func TestPresignObjectDownloadOverride(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "console-presign-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, "")
+	if err != nil {
+		t.Fatalf("failed to initialize storage engine: %v", err)
+	}
+	defer engine.Close()
+
+	creds := auth.NewCredentials("access", "secret")
+	handler := console.NewHandler(console.Options{Engine: engine, Creds: creds, S3Port: 9000, Region: "us-east-1", LoginRateLimit: 100, APIRateLimit: 1000})
+
+	if err := engine.CreateBucket("share-bucket"); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+
+	token, err := console.GenerateToken("access")
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/buckets/share-bucket/objects/presign?key=report.txt&expires=3600&download=1", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse presign response: %v", err)
+	}
+
+	parsed, err := url.Parse(resp.URL)
+	if err != nil {
+		t.Fatalf("failed to parse presigned URL: %v", err)
+	}
+	disposition := parsed.Query().Get("response-content-disposition")
+	if disposition == "" {
+		t.Fatal("expected response-content-disposition in the signed query string when download=1")
+	}
+	if !strings.Contains(disposition, "attachment") || !strings.Contains(disposition, "report.txt") {
+		t.Errorf("response-content-disposition = %q, want attachment with filename report.txt", disposition)
+	}
+}
+
+// TestPresignObjectIgnoresXForwardedProtoWhenNotTrusted guards against a gap
+// where X-Forwarded-Proto was trusted unconditionally, unlike the
+// TrustProxy-gated X-Forwarded-For handling elsewhere: a direct, unproxied
+// client could set this header to force "https://" into a generated
+// presigned link even when Stiva is only listening on plain HTTP, producing
+// a broken link.
+func TestPresignObjectIgnoresXForwardedProtoWhenNotTrusted(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "console-xfp-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, "")
+	if err != nil {
+		t.Fatalf("failed to initialize storage engine: %v", err)
+	}
+	defer engine.Close()
+
+	creds := auth.NewCredentials("access", "secret")
+	if err := engine.CreateBucket("xfp-bucket"); err != nil {
+		t.Fatalf("failed to create bucket: %v", err)
+	}
+	token, err := console.GenerateToken("access")
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	newPresignReq := func() *http.Request {
+		req := httptest.NewRequest("GET", "/api/buckets/xfp-bucket/objects/presign?key=report.txt&expires=3600", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("X-Forwarded-Proto", "https")
+		return req
+	}
+
+	presignedURL := func(handler *console.Handler) string {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, newPresignReq())
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected status 200, got %d, body: %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("failed to parse presign response: %v", err)
+		}
+		return resp.URL
+	}
+
+	untrusted := console.NewHandler(console.Options{
+		Engine: engine, Creds: creds, S3Port: 9000, Region: "us-east-1",
+		LoginRateLimit: 100, APIRateLimit: 1000, TrustProxy: false,
+	})
+	if url := presignedURL(untrusted); !strings.HasPrefix(url, "http://") {
+		t.Errorf("with TrustProxy=false, X-Forwarded-Proto must be ignored; got URL %q, want http:// scheme", url)
+	}
+
+	trusted := console.NewHandler(console.Options{
+		Engine: engine, Creds: creds, S3Port: 9000, Region: "us-east-1",
+		LoginRateLimit: 100, APIRateLimit: 1000, TrustProxy: true,
+	})
+	if url := presignedURL(trusted); !strings.HasPrefix(url, "https://") {
+		t.Errorf("with TrustProxy=true, X-Forwarded-Proto should be honored; got URL %q, want https:// scheme", url)
+	}
+}
+
+// TestGetConfigReportsActualS3Port guards against the console's top-bar
+// badge hardcoding "Port 9000" regardless of the operator's actual
+// STIVA_S3_PORT.
+func TestGetConfigReportsActualS3Port(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "console-config-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	engine, err := storage.NewFilesystemEngine(tempDir, nil, "")
+	if err != nil {
+		t.Fatalf("failed to initialize storage engine: %v", err)
+	}
+	defer engine.Close()
+
+	creds := auth.NewCredentials("access", "secret")
+	handler := console.NewHandler(console.Options{
+		Engine: engine, Creds: creds, S3Port: 9900, Region: "us-east-1",
+		LoginRateLimit: 100, APIRateLimit: 1000,
+	})
+
+	token, err := console.GenerateToken("access")
+	if err != nil {
+		t.Fatalf("failed to generate token: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/config", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d, body: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		S3Port int `json:"s3Port"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse config response: %v", err)
+	}
+	if resp.S3Port != 9900 {
+		t.Errorf("s3Port = %d, want 9900 (the configured port, not a hardcoded default)", resp.S3Port)
 	}
 }
 

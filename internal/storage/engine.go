@@ -207,7 +207,7 @@ type Engine interface {
 	// upload was created with SSE-C, because the key is never persisted.
 	CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletePart) (*ObjectInfo, error)
 	AbortMultipartUpload(bucket, key, uploadID string) error
-	ListMultipartUploads(bucket, prefix string, maxUploads int) ([]MultipartUploadInfo, bool, error)
+	ListMultipartUploads(bucket, prefix, keyMarker, uploadIDMarker string, maxUploads int) ([]MultipartUploadInfo, bool, error)
 	ListParts(bucket, key, uploadID string) ([]PartInfo, error)
 
 	// Lifecycle

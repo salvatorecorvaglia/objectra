@@ -746,7 +746,10 @@ func decodeStreamingPayload(r *http.Request, signingKey []byte, dateStr, scope, 
 }
 
 // PresignGetObject generates a presigned GET URL for S3 compatibility.
-func PresignGetObject(accessKey, secretKey, region, bucket, key string, expires time.Duration, s3Endpoint string) (string, error) {
+// extraParams carries additional query parameters to include in the signed
+// URL, such as the "response-content-disposition" family of response-header
+// overrides. It may be nil.
+func PresignGetObject(accessKey, secretKey, region, bucket, key string, expires time.Duration, s3Endpoint string, extraParams url.Values) (string, error) {
 	t := time.Now().UTC()
 	datestamp := t.Format("20060102")
 	amzDate := t.Format("20060102T150405Z")
@@ -759,6 +762,11 @@ func PresignGetObject(accessKey, secretKey, region, bucket, key string, expires 
 	host := u.Host
 
 	query := url.Values{}
+	for k, vs := range extraParams {
+		for _, v := range vs {
+			query.Add(k, v)
+		}
+	}
 	query.Set("X-Amz-Algorithm", "AWS4-HMAC-SHA256")
 	query.Set("X-Amz-Credential", accessKey+"/"+credentialScope)
 	query.Set(amzDateHeader, amzDate)

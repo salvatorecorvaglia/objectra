@@ -1,9 +1,18 @@
 package storage
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
+
+	bolt "go.etcd.io/bbolt"
 )
+
+// errListPageFull stops a bbolt cursor scan early once a page is full. It
+// never escapes this file — db.View() callers translate it back to nil.
+var errListPageFull = errors.New("list page full")
 
 // ListVersionsInput holds parameters for enumerating object versions.
 type ListVersionsInput struct {
@@ -30,6 +39,15 @@ type ListVersionsOutput struct {
 //
 // Versioning was already implemented in the metadata layer but had no API
 // surface, so clients had no way to enumerate or reclaim old versions.
+//
+// This walks the bbolt cursor directly (like ListObjects) rather than
+// collecting every version of every key into memory and sorting the whole
+// thing: a heavily versioned bucket made every page request O(total
+// versions) in both memory and CPU regardless of MaxKeys. Object keys are
+// already stored in sorted order, so the cursor only needs to gather and
+// sort the versions of one key at a time — bounded by that key's own
+// version count, not the bucket's — and can stop entirely once a page is
+// full.
 func (fs *FilesystemEngine) ListObjectVersions(input *ListVersionsInput) (*ListVersionsOutput, error) {
 	if err := fs.validateBucketName(input.Bucket); err != nil {
 		return nil, err
@@ -47,88 +65,134 @@ func (fs *FilesystemEngine) ListObjectVersions(input *ListVersionsInput) (*ListV
 		maxKeys = 1000
 	}
 
-	// Collect the latest pointers and the historical records, de-duplicating by
-	// (key, versionID): the latest pointer is also stored under its version key.
-	seen := make(map[string]bool)
-	var all []ObjectInfo
-
-	collect := func(info *ObjectInfo) error {
-		if input.Prefix != "" && !strings.HasPrefix(info.Key, input.Prefix) {
-			return nil
-		}
-		id := info.Key + "\x00" + info.VersionID
-		if seen[id] {
-			return nil
-		}
-		seen[id] = true
-		all = append(all, *info)
-		return nil
-	}
-
-	if err := fs.metadata.IterateObjectMetas(input.Bucket, collect); err != nil {
-		return nil, err
-	}
-	if err := fs.metadata.IterateObjectVersions(input.Bucket, collect); err != nil {
-		return nil, err
-	}
-
-	// S3 orders by key ascending, then by version recency (newest first).
-	sort.SliceStable(all, func(i, j int) bool {
-		if all[i].Key != all[j].Key {
-			return all[i].Key < all[j].Key
-		}
-		return all[i].LastModified.After(all[j].LastModified)
-	})
-
 	out := &ListVersionsOutput{}
 	prefixSet := make(map[string]bool)
 	started := input.KeyMarker == ""
 	count := 0
+	// lastKey/lastVersionID track the most recently emitted entry (a version,
+	// delete marker, or common prefix) so a page's NextKeyMarker points at
+	// something the caller already received — not at the entry that didn't
+	// fit, which would then be skipped by the started-marker check on the
+	// next page and silently lost.
+	var lastKey, lastVersionID string
 
-	for i := range all {
-		info := all[i]
+	db, releasedb, err := fs.metadata.acquireBucketDB(input.Bucket)
+	if err != nil {
+		return nil, err
+	}
+	defer releasedb()
 
-		if !started {
-			if info.Key == input.KeyMarker &&
-				(input.VersionIDMarker == "" || info.VersionID == input.VersionIDMarker) {
-				started = true
-			}
-			continue
+	bucketPrefix := input.Bucket + "\x00"
+	bucketPrefixBytes := []byte(bucketPrefix)
+
+	seekKey := bucketPrefix
+	switch {
+	case input.KeyMarker != "":
+		// Resuming a previous page: KeyMarker is itself a result key from
+		// that page, so it already accounts for Prefix — no need to combine
+		// the two.
+		seekKey = bucketPrefix + input.KeyMarker
+	case input.Prefix != "":
+		seekKey = bucketPrefix + input.Prefix
+	}
+
+	// objectKeyOf splits a raw bbolt key (already known to carry
+	// bucketPrefix) into just the object key, whether it's the "latest
+	// pointer" entry (bucket\x00key) or a historical version entry
+	// (bucket\x00key\x00versionID).
+	objectKeyOf := func(raw []byte) string {
+		rest := string(raw[len(bucketPrefixBytes):])
+		if idx := strings.IndexByte(rest, 0); idx >= 0 {
+			return rest[:idx]
 		}
+		return rest
+	}
 
-		// Roll keys below a delimiter up into a common prefix.
-		if input.Delimiter != "" {
-			remaining := info.Key[len(input.Prefix):]
-			if idx := strings.Index(remaining, input.Delimiter); idx >= 0 {
-				dirPrefix := input.Prefix + remaining[:idx+len(input.Delimiter)]
-				if !prefixSet[dirPrefix] {
-					if count >= maxKeys {
-						out.IsTruncated = true
-						out.NextKeyMarker = info.Key
-						out.NextVersionIDMarker = info.VersionID
-						break
-					}
-					prefixSet[dirPrefix] = true
-					out.CommonPrefixes = append(out.CommonPrefixes, dirPrefix)
-					count++
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(objectsBucket)
+		if b == nil {
+			return nil
+		}
+		c := b.Cursor()
+
+		k, v := c.Seek([]byte(seekKey))
+		for k != nil && bytes.HasPrefix(k, bucketPrefixBytes) {
+			objectKey := objectKeyOf(k)
+			if input.Prefix != "" && !strings.HasPrefix(objectKey, input.Prefix) {
+				break
+			}
+
+			// Gather every version of this one key — typically a handful,
+			// unlike the bucket as a whole — so it can be sorted into the
+			// newest-first order S3 requires.
+			var keyVersions []ObjectInfo
+			seenVer := make(map[string]bool)
+			for k != nil && bytes.HasPrefix(k, bucketPrefixBytes) && objectKeyOf(k) == objectKey {
+				var info ObjectInfo
+				if err := json.Unmarshal(v, &info); err != nil {
+					return err
 				}
-				continue
+				if !seenVer[info.VersionID] {
+					seenVer[info.VersionID] = true
+					keyVersions = append(keyVersions, info)
+				}
+				k, v = c.Next()
+			}
+
+			sort.SliceStable(keyVersions, func(i, j int) bool {
+				return keyVersions[i].LastModified.After(keyVersions[j].LastModified)
+			})
+
+			for _, info := range keyVersions {
+				if !started {
+					if info.Key == input.KeyMarker &&
+						(input.VersionIDMarker == "" || info.VersionID == input.VersionIDMarker) {
+						started = true
+					}
+					continue
+				}
+
+				// Roll keys below a delimiter up into a common prefix.
+				if input.Delimiter != "" {
+					remaining := info.Key[len(input.Prefix):]
+					if idx := strings.Index(remaining, input.Delimiter); idx >= 0 {
+						dirPrefix := input.Prefix + remaining[:idx+len(input.Delimiter)]
+						if !prefixSet[dirPrefix] {
+							if count >= maxKeys {
+								out.IsTruncated = true
+								out.NextKeyMarker = lastKey
+								out.NextVersionIDMarker = lastVersionID
+								return errListPageFull
+							}
+							prefixSet[dirPrefix] = true
+							out.CommonPrefixes = append(out.CommonPrefixes, dirPrefix)
+							lastKey, lastVersionID = info.Key, info.VersionID
+							count++
+						}
+						continue
+					}
+				}
+
+				if count >= maxKeys {
+					out.IsTruncated = true
+					out.NextKeyMarker = lastKey
+					out.NextVersionIDMarker = lastVersionID
+					return errListPageFull
+				}
+
+				if info.IsDeleteMarker {
+					out.DeleteMarkers = append(out.DeleteMarkers, info)
+				} else {
+					out.Versions = append(out.Versions, info)
+				}
+				lastKey, lastVersionID = info.Key, info.VersionID
+				count++
 			}
 		}
-
-		if count >= maxKeys {
-			out.IsTruncated = true
-			out.NextKeyMarker = info.Key
-			out.NextVersionIDMarker = info.VersionID
-			break
-		}
-
-		if info.IsDeleteMarker {
-			out.DeleteMarkers = append(out.DeleteMarkers, info)
-		} else {
-			out.Versions = append(out.Versions, info)
-		}
-		count++
+		return nil
+	})
+	if err != nil && !errors.Is(err, errListPageFull) {
+		return nil, err
 	}
 
 	sort.Strings(out.CommonPrefixes)
@@ -136,8 +200,18 @@ func (fs *FilesystemEngine) ListObjectVersions(input *ListVersionsInput) (*ListV
 }
 
 // ListMultipartUploads returns the in-progress multipart uploads for a bucket,
-// ordered by key then upload ID.
-func (fs *FilesystemEngine) ListMultipartUploads(bucket, prefix string, maxUploads int) ([]MultipartUploadInfo, bool, error) {
+// ordered by key then upload ID. keyMarker/uploadIDMarker resume listing
+// after that (key, uploadID) pair, matching the NextKeyMarker/
+// NextUploadIdMarker a truncated response returns — without this, a caller
+// paging through more uploads than fit in one response got the same first
+// page back every time, since nothing here previously acted on the markers.
+//
+// Multipart metadata keys are already stored as bucket\x00key\x00uploadID,
+// which sorts in exactly the order this needs, so — like ListObjects — a
+// direct cursor scan produces the right order and can stop as soon as a page
+// is full, instead of loading every in-progress upload in the bucket into
+// memory just to sort and slice it.
+func (fs *FilesystemEngine) ListMultipartUploads(bucket, prefix, keyMarker, uploadIDMarker string, maxUploads int) ([]MultipartUploadInfo, bool, error) {
 	if err := fs.validateBucketName(bucket); err != nil {
 		return nil, false, err
 	}
@@ -153,35 +227,70 @@ func (fs *FilesystemEngine) ListMultipartUploads(bucket, prefix string, maxUploa
 		maxUploads = 1000
 	}
 
+	db, releasedb, err := fs.metadata.acquireBucketDB(bucket)
+	if err != nil {
+		return nil, false, err
+	}
+	defer releasedb()
+
+	bucketPrefix := bucket + "\x00"
+	bucketPrefixBytes := []byte(bucketPrefix)
+
+	seekKey := bucketPrefix
+	switch {
+	case keyMarker != "":
+		seekKey = bucketPrefix + keyMarker + "\x00" + uploadIDMarker
+	case prefix != "":
+		seekKey = bucketPrefix + prefix
+	}
+
 	var uploads []MultipartUploadInfo
-	err = fs.metadata.IterateMultipartMetas(bucket, func(meta *MultipartMeta) error {
-		if prefix != "" && !strings.HasPrefix(meta.Key, prefix) {
+	truncated := false
+
+	err = db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(multipartBucket)
+		if b == nil {
 			return nil
 		}
-		uploads = append(uploads, MultipartUploadInfo{
-			UploadID: meta.UploadID,
-			Bucket:   meta.Bucket,
-			Key:      meta.Key,
-			Created:  meta.Created,
-		})
+		c := b.Cursor()
+
+		k, v := c.Seek([]byte(seekKey))
+		for k != nil && bytes.HasPrefix(k, bucketPrefixBytes) {
+			var meta MultipartMeta
+			if err := json.Unmarshal(v, &meta); err != nil {
+				return err
+			}
+
+			if prefix != "" && !strings.HasPrefix(meta.Key, prefix) {
+				break
+			}
+
+			// Skip the marker entry itself; the caller already has it from
+			// the previous page.
+			if keyMarker != "" && meta.Key == keyMarker && meta.UploadID == uploadIDMarker {
+				k, v = c.Next()
+				continue
+			}
+
+			if len(uploads) >= maxUploads {
+				truncated = true
+				return nil
+			}
+
+			uploads = append(uploads, MultipartUploadInfo{
+				UploadID: meta.UploadID,
+				Bucket:   meta.Bucket,
+				Key:      meta.Key,
+				Created:  meta.Created,
+			})
+			k, v = c.Next()
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, false, err
 	}
 
-	sort.Slice(uploads, func(i, j int) bool {
-		if uploads[i].Key != uploads[j].Key {
-			return uploads[i].Key < uploads[j].Key
-		}
-		return uploads[i].UploadID < uploads[j].UploadID
-	})
-
-	truncated := false
-	if len(uploads) > maxUploads {
-		uploads = uploads[:maxUploads]
-		truncated = true
-	}
 	return uploads, truncated, nil
 }
 

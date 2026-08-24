@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"sync/atomic"
 	"time"
 )
@@ -45,7 +44,7 @@ func (fs *FilesystemEngine) initWebhookDispatcher() {
 		go func() {
 			defer fs.webhookWG.Done()
 			for task := range fs.webhookQueue {
-				sendWebhookEvent(task.url, task.payload)
+				fs.sendWebhookEvent(task.url, task.payload)
 			}
 		}()
 	}
@@ -119,20 +118,17 @@ func (fs *FilesystemEngine) triggerWebhook(eventName string, info *ObjectInfo) {
 	select {
 	case fs.webhookQueue <- task:
 	default:
+		GlobalMetrics.IncWebhookDropped()
 		slog.Warn("[Webhook] Webhook queue full, dropping event", "event", eventName, "bucket", info.Bucket, "key", info.Key)
 	}
 }
-
-// webhookSecret signs outgoing payloads so receivers can authenticate them.
-// Without a signature any host that learns the endpoint URL can forge events.
-var webhookSecret = os.Getenv("STIVA_WEBHOOK_SECRET")
 
 const (
 	webhookMaxRetries  = 3
 	webhookBaseBackoff = time.Second
 )
 
-func sendWebhookEvent(url string, payload WebhookPayload) {
+func (fs *FilesystemEngine) sendWebhookEvent(url string, payload WebhookPayload) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		slog.Error("[Webhook] Failed to marshal payload", "error", err)
@@ -141,10 +137,18 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 
 	// Sleeping between attempts on the worker goroutine stalled the whole pool:
 	// one dead endpoint blocked a worker for the full backoff on every event,
-	// and the queue silently overflowed. Retries now run on their own timer.
+	// and the queue silently overflowed. Retries now run on their own timer,
+	// each tracked by fs.webhookWG so StopWebhookDispatcher's Wait() actually
+	// blocks until the retry chain finishes instead of reporting a clean
+	// shutdown while a scheduled retry (and its outbound HTTP call) is still
+	// pending.
 	var attempt func(n int)
 	attempt = func(n int) {
-		if deliverWebhook(url, data) {
+		if fs.deliverWebhook(url, data) {
+			return
+		}
+		if atomic.LoadInt32(&fs.isWebhookShuttingDown) == 1 {
+			slog.Warn("[Webhook] Dispatcher shutting down, abandoning retry", "event", payload.EventName)
 			return
 		}
 		if n >= webhookMaxRetries {
@@ -153,13 +157,17 @@ func sendWebhookEvent(url string, payload WebhookPayload) {
 			return
 		}
 		backoff := webhookBaseBackoff << n
-		time.AfterFunc(backoff, func() { attempt(n + 1) })
+		fs.webhookWG.Add(1)
+		time.AfterFunc(backoff, func() {
+			defer fs.webhookWG.Done()
+			attempt(n + 1)
+		})
 	}
 	attempt(0)
 }
 
 // deliverWebhook performs a single delivery attempt, reporting success.
-func deliverWebhook(url string, data []byte) bool {
+func (fs *FilesystemEngine) deliverWebhook(url string, data []byte) bool {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
 	if err != nil {
 		slog.Error("[Webhook] Failed to create request", "error", err)
@@ -168,8 +176,8 @@ func deliverWebhook(url string, data []byte) bool {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "Stiva-Webhook-Dispatcher")
 
-	if webhookSecret != "" {
-		mac := hmac.New(sha256.New, []byte(webhookSecret))
+	if fs.webhookSecret != "" {
+		mac := hmac.New(sha256.New, []byte(fs.webhookSecret))
 		_, _ = mac.Write(data)
 		req.Header.Set("X-Stiva-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}

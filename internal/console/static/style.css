@@ -654,7 +654,10 @@ body {
     background: var(--bg-card);
     border: 1px solid var(--border-secondary);
     border-radius: var(--radius-md);
-    overflow: hidden;
+    /* Columns that don't fit a narrow viewport must be reachable by
+       scrolling, not silently clipped: overflow: hidden had no horizontal
+       scroll affordance, so Date/Actions were simply inaccessible on mobile. */
+    overflow-x: auto;
 }
 
 .data-table {

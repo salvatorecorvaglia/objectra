@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/salvatorecorvaglia/stiva/internal/auth"
@@ -29,6 +30,7 @@ type Server struct {
 	consoleServer *http.Server
 	engine        storage.Engine
 	cleanupStop   chan struct{}
+	shutdownOnce  sync.Once
 }
 
 // New creates and configures both servers.
@@ -49,6 +51,8 @@ func New(cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage: %w", err)
 	}
+	engine.SetWebhookSecret(cfg.WebhookSecret)
+	engine.SetMaxObjectSize(cfg.MaxObjectSize)
 
 	// Set temporary directory for auth hashing
 	auth.TempDir = filepath.Join(cfg.DataDir, "tmp")
@@ -57,22 +61,39 @@ func New(cfg *config.Config) (*Server, error) {
 	}
 
 	// Setup persistent JWT secret for Console session tracking
-	jwtSecretEnv := os.Getenv("STIVA_JWT_SECRET")
 	var jwtSecret []byte
-	if jwtSecretEnv != "" {
-		jwtSecret = []byte(jwtSecretEnv)
+	if cfg.JWTSecret != "" {
+		jwtSecret = []byte(cfg.JWTSecret)
 	} else {
 		slog.Warn("STIVA_JWT_SECRET environment variable is not set. A random secret will be generated. For persistent console sessions across restarts, please set STIVA_JWT_SECRET.")
 		storedSecret, err := engine.GetSystemValue("jwt_secret")
-		if err == nil && storedSecret != "" {
-			jwtSecret, _ = hex.DecodeString(storedSecret)
+		if err != nil {
+			// A real I/O error, not "not set" — GetSystemValue returns
+			// ("", nil) when the key is simply absent. Proceeding silently
+			// here previously masked genuine storage problems.
+			slog.Error("[Server] Failed to read persisted JWT secret; a new one will be generated for this run", "error", err)
+		} else if storedSecret != "" {
+			decoded, decodeErr := hex.DecodeString(storedSecret)
+			if decodeErr != nil {
+				// hex.DecodeString returns whatever it decoded before the
+				// error too; discarding it here (rather than keeping a
+				// truncated key) matters because a truncated-but-non-empty
+				// secret would otherwise pass the len==0 check below and be
+				// used anyway, silently invalidating every session with no
+				// diagnostic.
+				slog.Error("[Server] Persisted JWT secret is corrupted; a new one will be generated and all existing console sessions will be invalidated", "error", decodeErr)
+			} else {
+				jwtSecret = decoded
+			}
 		}
 		if len(jwtSecret) == 0 {
 			jwtSecret = make([]byte, 32)
 			if _, err := rand.Read(jwtSecret); err != nil {
 				return nil, fmt.Errorf("failed to generate random JWT secret: %w", err)
 			}
-			_ = engine.PutSystemValue("jwt_secret", hex.EncodeToString(jwtSecret))
+			if err := engine.PutSystemValue("jwt_secret", hex.EncodeToString(jwtSecret)); err != nil {
+				slog.Error("[Server] Failed to persist JWT secret; console sessions will not survive a restart", "error", err)
+			}
 		}
 	}
 	console.SetJWTSecret(jwtSecret)
@@ -107,6 +128,7 @@ func New(cfg *config.Config) (*Server, error) {
 		APIRateLimit:     cfg.APIRateLimit,
 		TrustProxy:       cfg.TrustProxy,
 		TrustedProxyHops: cfg.TrustedProxyHops,
+		MetricsToken:     cfg.MetricsToken,
 	})
 	consoleServer := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ConsolePort),
@@ -131,13 +153,20 @@ func New(cfg *config.Config) (*Server, error) {
 			}
 		}
 
-		tlsCfg := &tls.Config{
+		// Each server gets its own *tls.Config, even though the contents are
+		// identical: ServeTLS runs concurrently for both servers (below),
+		// and each internally mutates its Server.TLSConfig in place (e.g.
+		// http2's onceSetNextProtoDefaults appending to NextProtos). A
+		// shared pointer here is a genuine data race between those two
+		// goroutines, not just a style preference.
+		s3Server.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
 		}
-
-		s3Server.TLSConfig = tlsCfg
-		consoleServer.TLSConfig = tlsCfg
+		consoleServer.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
 	}
 
 	return &Server{
@@ -225,7 +254,19 @@ func (s *Server) Start() error {
 }
 
 // Shutdown gracefully shuts down both servers and stops background workers.
+// It is safe to call more than once — a signal handler racing with a manual
+// admin shutdown call, or an orchestrator retrying after a timeout, could
+// otherwise call this twice and panic closing cleanupStop a second time.
+// Only the first call does any work; later calls return the same result.
 func (s *Server) Shutdown(ctx context.Context) error {
+	var err error
+	s.shutdownOnce.Do(func() {
+		err = s.shutdown(ctx)
+	})
+	return err
+}
+
+func (s *Server) shutdown(ctx context.Context) error {
 	slog.Info("[Server] Shutting down")
 
 	// Stop background workers
