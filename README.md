@@ -10,12 +10,14 @@
 
 ### 📡 S3 API Compatibility
 *   **Core Bucket & Object Operations**: Full support for listing, creating, and deleting buckets, as well as putting, getting, and deleting objects.
-*   **Multipart Uploads**: High-performance concurrent multipart upload support, allowing you to upload large files in chunks with optimized lock contention.
+*   **Multipart Uploads**: High-performance concurrent multipart upload support, allowing you to upload large files in chunks with optimized lock contention, including server-side part copying (`UploadPartCopy`) from existing objects.
 *   **Bucket Lifecycle Rules**: Automatic object expiration rules based on actual object age (`LastModified` timestamp checks).
 *   **Virtual-Host Routing**: Seamless virtual-host bucket resolution support based on custom base domain suffixes.
 *   **CORS (Cross-Origin Resource Sharing)**: Highly configurable CORS handlers supporting exact/wildcard domain matches with scheme, port, and credential header validation.
 *   **SSE-C Encryption**: Server-Side Encryption with Customer-provided keys utilizing constant-time cryptographic checks.
 *   **Partial Content / Range Requests**: Seekable `GetObject` range requests supporting chunk buffering for compressed streams.
+*   **Streaming SigV4 Payloads**: Full verification of `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` (aws-chunked) uploads, validating each chunk's signature against the chain seeded by the request signature.
+*   **Configurable Upload Size Limits**: Optional `STIVA_MAX_OBJECT_SIZE` cap enforced at the storage engine level, closing signing-mode bypasses (e.g. `UNSIGNED-PAYLOAD`).
 
 ### 🖥️ Built-In Web Admin Console
 *   **Stunning Dashboard UI**: Modern SPA dashboard built with vanilla HTML, CSS, and JS (zero heavy npm builds required) featuring rate-limit feedback, ARIA accessibility markup, and ESC key modal closing shortcuts.
@@ -27,8 +29,8 @@
 
 ### 🔄 Replication & Event Notifications
 *   **Active-Passive Mirroring**: Asynchronous replication dispatcher that automatically mirrors newly uploaded objects to a remote S3-compatible destination.
-*   **Webhook Events**: Lightweight JSON payload webhook dispatcher that POSTs notifications to target endpoints on object creation or deletion.
-*   **Prometheus Metrics**: High-performance `/metrics` endpoint presenting native storage metrics, secured with a custom token or Console session JWT.
+*   **Webhook Events**: Lightweight JSON payload webhook dispatcher that POSTs notifications to target endpoints on object creation or deletion, with optional HMAC-SHA256 payload signing (`STIVA_WEBHOOK_SECRET`) and retries with exponential backoff.
+*   **Prometheus Metrics**: High-performance `/metrics` endpoint presenting native storage metrics — including dropped webhook/replication event counters — secured with a custom token or Console session JWT.
 
 ### 🛡️ Production Hardening & Reliability
 *   **Structured Logging**: Production-grade JSON or text structured logs via Go's native `log/slog`.
@@ -141,6 +143,7 @@ Stiva is configured exclusively via environment variables. You can find a baseli
 | **`STIVA_LOGIN_RATE_LIMIT`**| `5` | Maximum console login attempts allowed per minute per IP address. |
 | **`STIVA_API_RATE_LIMIT`**  | `60` | Maximum console API requests allowed per minute per IP address. |
 | **`STIVA_METRICS_TOKEN`** | *None* | Bearer token required to scrape `/metrics`. If empty, requires a console JWT session. |
+| **`STIVA_MAX_OBJECT_SIZE`** | `5368709120` (5GiB) | Maximum size in bytes accepted for a single object or multipart part, enforced by the storage engine regardless of signing mode. `0` disables the cap. |
 | **`STIVA_LOG_LEVEL`** | `info` | Logging verbosity level (`debug`, `info`, `warn`, `error`). |
 | **`STIVA_LOG_FORMAT`** | `text` | Log presentation format (`text` or `json`). |
 | **`STIVA_SYNC_ENDPOINT`** | *None* | Remote S3 API endpoint URL target for asynchronous replication. |
@@ -149,6 +152,7 @@ Stiva is configured exclusively via environment variables. You can find a baseli
 | **`STIVA_SYNC_SECRET_KEY`**| *None* | Remote credentials Secret Key. |
 | **`STIVA_SYNC_REGION`** | `us-east-1` | Remote target region. |
 | **`STIVA_WEBHOOK_URL`** | *None* | Destination HTTP POST endpoint URL to receive webhook event payloads. |
+| **`STIVA_WEBHOOK_SECRET`** | *None* | Shared secret used to sign outgoing webhook payloads (`X-Stiva-Signature: sha256=<hmac>`) so receivers can verify authenticity. |
 | **`STIVA_DISABLE_MIN_PART_SIZE`**| `false` | Disables S3 5MB minimum multipart part size requirement (highly useful for dev/testing). |
 
 ### 🔄 Active-Passive Replication Configuration

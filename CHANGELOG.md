@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-08-25
+
+### Added
+
+- `UploadPartCopy` (`PUT .../<key>?partNumber=N&uploadId=ID` with `x-amz-copy-source`) support for multipart uploads, including `x-amz-copy-source-range` and independent source/destination SSE-C parameters.
+- `STIVA_MAX_OBJECT_SIZE` configuration to cap the bytes accepted for a single object or multipart part at the storage engine level, independent of SigV4 signing mode (closing a bypass where `UNSIGNED-PAYLOAD` requests skipped the existing payload-size check entirely). Defaults to 5GiB.
+- Signature verification for `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` (aws-chunked) request bodies: each chunk is now decoded and its signature validated against the chain seeded by the request's own signature, rather than trusting the framing unverified.
+- `stiva_webhook_dropped_total` and `stiva_sync_dropped_total` Prometheus counters, so an operator can detect silent webhook/replication event loss from a full dispatch queue instead of relying solely on log lines.
+- `/api/config` Console endpoint exposing non-sensitive server settings (currently the S3 API port) so the UI's top-bar badge reflects the operator's actual `STIVA_S3_PORT` instead of a hardcoded `9000`.
+- `?download=1` option on the Console's object presign endpoint, adding a `response-content-disposition: attachment` override for shareable links opened outside the console origin.
+- Startup validation of malformed environment variables (e.g. `STIVA_TLS_ENABLED=enabled`, a non-integer `STIVA_S3_PORT`): `Config.Load()` now records values it couldn't parse and `Validate()` fails startup with a diagnostic instead of `Load()` silently substituting a default.
+
+### Changed
+
+- Replication mirroring dispatcher now retries a failed sync attempt up to 3 times with exponential backoff (matching the existing webhook dispatcher behavior), and shutdown waits for any retry chain in flight to finish before returning.
+- `ListObjectVersions` rewritten to walk the underlying bbolt cursor directly, one key's versions at a time, instead of loading and sorting every version of every key in the bucket into memory — bounding memory and CPU per page rather than per bucket.
+- XML request bodies for bucket subresource/config endpoints (versioning, lifecycle, logging, CORS) are now capped at 2MB via `io.LimitReader`, matching the existing `DeleteObjects` cap, so an unsigned-size payload can't force unbounded `xml.Decoder` allocation.
+- Console object downloads now go through an authenticated, same-origin `/objects/download` endpoint instead of a cross-origin presigned S3 URL, since browsers ignore the `<a download>` attribute for cross-origin links.
+- `STIVA_JWT_SECRET`, `STIVA_METRICS_TOKEN`, and `STIVA_WEBHOOK_SECRET` are now read once into `Config` and threaded through explicitly, replacing scattered `os.Getenv` reads in `server.go`, `console.go`, and `webhook.go`.
+- SSE-C parameter errors in `UploadPart`, `UploadPartCopy`, and `CompleteMultipartUpload` now render as proper SSE-C S3 error responses instead of a generic `InvalidArgument`.
+- `Server.Shutdown` is now idempotent, tolerating a signal handler and a manual/orchestrator shutdown call racing each other without panicking.
+- The S3 API and Console HTTPS listeners now each get their own `*tls.Config` instance instead of sharing one, avoiding a data race from their independent in-place mutations during concurrent `ServeTLS`.
+
+### Fixed
+
+- `HashPayload` now enforces `STIVA_MAX_OBJECT_SIZE` independently of `Content-Length` for chunked-transfer-encoded request bodies (which report `Content-Length: -1`), closing a gap that let such a request spool an unbounded body to disk.
+- `PutObject` now serializes the rename-then-metadata-write sequence per object key, preventing two concurrent PUTs to the same unversioned key from pairing one request's on-disk bytes with the other's ETag/size metadata.
+- Startup JWT secret loading no longer silently swallows genuine I/O errors reading the persisted secret, nor silently uses a corrupted/truncated stored secret; both now log and fall back to generating a fresh one.
+
+### Security
+
+- Object and multipart-part uploads are now bounded by `STIVA_MAX_OBJECT_SIZE` at the storage engine layer, closing a bypass where a client sending `UNSIGNED-PAYLOAD` skipped the SigV4 layer's own payload-size enforcement entirely.
+
 ## [1.1.0] - 2026-08-12
 
 ### Added
