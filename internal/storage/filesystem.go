@@ -449,7 +449,7 @@ func (fs *FilesystemEngine) PutObject(ctx context.Context, bucket, key string, r
 
 	// Stream data to disk while computing MD5
 	hash := md5.New()
-	capped := io.Reader(reader)
+	capped := reader
 	if fs.maxObjectSize > 0 {
 		capped = io.LimitReader(reader, fs.maxObjectSize+1)
 	}

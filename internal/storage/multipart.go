@@ -190,7 +190,7 @@ func (fs *FilesystemEngine) UploadPart(ctx context.Context, bucket, key, uploadI
 	}
 
 	hash := md5.New()
-	capped := io.Reader(reader)
+	capped := reader
 	if fs.maxObjectSize > 0 {
 		capped = io.LimitReader(reader, fs.maxObjectSize+1)
 	}
